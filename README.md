@@ -29,6 +29,7 @@ Simple and lightweight VTT project.
 - Applicative full screen (hide all the menus, `Esc` for exiting)
 - Add apple pencil support
 - Add mobile devices support in general
+- Support music playing (managed by admin, and diffused in all browsers)
 
 ### ⚙️ Infrastructure issues
 
