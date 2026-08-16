@@ -17,6 +17,9 @@ Simple and lightweight VTT project.
 **⭐ Features:**
 - Remind what players have seen but is no more in sight (for example with greyscales instead of original colors)
 - Allow admin measurement to be shown on players browsers
+- Option to hide/show token to players (in order to prepare combat ou embush for example)
+- Remember zoom when coming back into a game
+- Default zoom to see full map in browser window
 - Global default settings:
     - Snap to grid
     - Enable/disable chat
