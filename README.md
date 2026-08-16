@@ -24,6 +24,8 @@ Simple and lightweight VTT project.
     - Grid square size for measurements conversion (1 grid square equals 5 feet or 1,5 meters)
 - Enable/disable lights
 - Applicative full screen (hide all the menus, `Esc` for exiting)
+- Add apple pencil support
+- Add mobile devices support in general
 
 ### ⚙️ Infrastructure issues
 
