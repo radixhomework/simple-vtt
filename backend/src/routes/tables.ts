@@ -15,14 +15,25 @@ const upload = multer({ storage, limits: { fileSize: 150 * 1024 * 1024 } })
 
 function newId() { return crypto.randomUUID().replace(/-/g, '').slice(0, 16) }
 
+const TABLE_COLS = 'id, name, map_image_path, grid_size, uvt_metadata, map_offset_x, map_offset_y, tokens_hidden'
+
+interface TableRow {
+  id: string; name: string; map_image_path: string; grid_size: number
+  uvt_metadata: string; map_offset_x: number; map_offset_y: number; tokens_hidden: number
+}
+
+// SQLite stores booleans as 0/1 — expose real booleans on the REST API
+function toTable(row: TableRow) {
+  return { ...row, tokens_hidden: row.tokens_hidden === 1 }
+}
+
 function getTable(id: string) {
-  return db.prepare('SELECT id, name, map_image_path, grid_size, uvt_metadata, map_offset_x, map_offset_y FROM tables WHERE id=?').get(id) as
-    { id: string; name: string; map_image_path: string; grid_size: number; uvt_metadata: string; map_offset_x: number; map_offset_y: number } | undefined
+  return db.prepare(`SELECT ${TABLE_COLS} FROM tables WHERE id=?`).get(id) as TableRow | undefined
 }
 
 tablesRouter.get('/tables', authMiddleware, (_req, res) => {
-  const rows = db.prepare('SELECT id, name, map_image_path, grid_size, uvt_metadata, map_offset_x, map_offset_y FROM tables').all()
-  res.json(rows)
+  const rows = db.prepare(`SELECT ${TABLE_COLS} FROM tables`).all() as TableRow[]
+  res.json(rows.map(toTable))
 })
 
 tablesRouter.post('/tables', authMiddleware, adminOnly, (req, res) => {
@@ -30,19 +41,19 @@ tablesRouter.post('/tables', authMiddleware, adminOnly, (req, res) => {
   if (!name) { res.status(400).json({ error: 'name required' }); return }
   const id = newId()
   db.prepare('INSERT INTO tables (id, name, map_image_path, grid_size, uvt_metadata, map_offset_x, map_offset_y) VALUES (?,?,?,?,?,?,?)').run(id, name, map_image_path, grid_size, uvt_metadata, map_offset_x, map_offset_y)
-  res.status(201).json(getTable(id))
+  res.status(201).json(toTable(getTable(id)!))
 })
 
 tablesRouter.get('/tables/:id', authMiddleware, (req, res) => {
   const t = getTable(req.params.id)
   if (!t) { res.status(404).json({ error: 'not found' }); return }
-  res.json(t)
+  res.json(toTable(t))
 })
 
 tablesRouter.put('/tables/:id', authMiddleware, adminOnly, (req, res) => {
   const { name, map_image_path, grid_size, uvt_metadata, map_offset_x, map_offset_y } = req.body
   db.prepare('UPDATE tables SET name=?, map_image_path=?, grid_size=?, uvt_metadata=?, map_offset_x=?, map_offset_y=? WHERE id=?').run(name, map_image_path, grid_size, uvt_metadata, map_offset_x, map_offset_y, req.params.id)
-  res.json(getTable(req.params.id))
+  res.json(toTable(getTable(req.params.id)!))
 })
 
 tablesRouter.delete('/tables/:id', authMiddleware, adminOnly, (req, res) => {
@@ -131,7 +142,7 @@ tablesRouter.post('/tables/import', authMiddleware, adminOnly, upload.single('fi
   })
   insertAll()
 
-  res.status(201).json(getTable(tableId))
+  res.status(201).json(toTable(getTable(tableId)!))
 })
 
 // ── Upload image for existing table ───────────────────────────────────────────

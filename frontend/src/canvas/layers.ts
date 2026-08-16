@@ -24,9 +24,11 @@ export function getTokenImage(path: string): HTMLImageElement | null {
 export function preloadTokenImage(path: string): void {
   if (!path || tokenImageCache.has(path)) return
   const img = new Image()
-  img.src = path
+  // crossOrigin must be set before src, otherwise the attribute is ignored
   img.crossOrigin = 'anonymous'
+  img.src = path
   img.onload = () => tokenImageCache.set(path, img)
+  img.onerror = () => console.warn('[vtt] failed to load token image:', path)
 }
 
 export function preloadMapImage(path: string, callback: (img: HTMLImageElement) => void): void {
@@ -35,12 +37,14 @@ export function preloadMapImage(path: string, callback: (img: HTMLImageElement) 
     return
   }
   const img = new Image()
-  img.src = path
+  // crossOrigin must be set before src, otherwise the attribute is ignored
   img.crossOrigin = 'anonymous'
+  img.src = path
   img.onload = () => {
     mapImageCache.set(path, img)
     callback(img)
   }
+  img.onerror = () => console.warn('[vtt] failed to load map image:', path)
 }
 
 export function drawMap(
@@ -398,7 +402,7 @@ export function drawMeasure(
   cam: Camera,
   gridSize: number,
 ) {
-  if (!state.active) return
+  if (!state.active && !state.persist) return
 
   const [x1, y1] = worldToScreen(state.startX, state.startY, cam)
   const [x2, y2] = worldToScreen(state.endX, state.endY, cam)

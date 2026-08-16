@@ -1,0 +1,7 @@
+.git
+**/node_modules
+**/dist
+backend/public
+backend/vtt.db*
+uploads
+data

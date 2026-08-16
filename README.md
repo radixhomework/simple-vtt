@@ -1,4 +1,4 @@
-# Simple VTT
+# RHW Simple VTT
 
 Simple and lightweight VTT project.
 
@@ -7,16 +7,16 @@ Simple and lightweight VTT project.
 ### Applicative issues
 
 **🐛 Bugs:**
-- Map not always loaded while opening a game, settings and tokens either
-- Block tokens before walking through a wall or close door or window
-- While changing settings, buttons are not updated (enabled/disabled)
-- Rename routes :
+- [x] Map not always loaded while opening a game, settings and tokens either
+- [x] Block tokens before walking through a wall or close door or window
+- [x] While changing settings, buttons are not updated (enabled/disabled)
+- [x] Rename routes :
     - lobby → vtt
     - game → map 
 
 **⭐ Features:**
-- Remind what players have seen but is no more in sight (for example with greyscales instead of original colors)
-- Allow admin measurement to be shown on players browsers
+- [x] Remind what players have seen but is no more in sight (for example with greyscales instead of original colors)
+- [x] Allow admin measurement to be shown on players browsers
 - Global default settings:
     - Snap to grid
     - Enable/disable chat

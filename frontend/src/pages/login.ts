@@ -42,7 +42,7 @@ export function renderLogin(root: HTMLElement, onLogin: (user: User) => void) {
             <polygon points="32,8 56,48 8,48" stroke="#4a90d9" stroke-width="3" fill="none"/>
             <circle cx="32" cy="32" r="6" fill="#4a90d9"/>
           </svg>
-          rhwvtt
+          RHW Simple VTT
         </div>
         <form id="login-form">
           <div class="login-field">

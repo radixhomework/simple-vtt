@@ -55,7 +55,7 @@ function newId(): string {
 
 function sendTableState(client: Client) {
   const table = db.prepare(
-    'SELECT id, name, map_image_path, grid_size, uvt_metadata, map_offset_x, map_offset_y FROM tables WHERE id=?'
+    'SELECT id, name, map_image_path, grid_size, uvt_metadata, map_offset_x, map_offset_y, tokens_hidden FROM tables WHERE id=?'
   ).get(client.tableId) as Record<string, unknown> | undefined
 
   if (!table) return
@@ -78,7 +78,7 @@ function sendTableState(client: Client) {
   send(client, {
     type: 'table_state',
     payload: {
-      table: { ...table, has_vision: undefined },
+      table: { ...table, tokens_hidden: table.tokens_hidden === 1, has_vision: undefined },
       tokens: (tokens as Record<string, unknown>[]).map(normalizeToken),
       fog,
       portals,
@@ -100,6 +100,16 @@ function handleMessage(client: Client, raw: string) {
   switch (type) {
     case 'token_move': {
       const { token_id, x, y } = payload as { token_id: string; x: number; y: number }
+      if (client.role !== 'admin') {
+        // Enforce players_move_own_only: non-admins may only move their own
+        // tokens, unless the setting explicitly allows moving any token.
+        const token = db.prepare('SELECT owner FROM tokens WHERE id=? AND table_id=?')
+          .get(token_id, client.tableId) as { owner: string } | undefined
+        const setting = db.prepare("SELECT value FROM settings WHERE key='players_move_own_only'")
+          .get() as { value: string } | undefined
+        const ownOnly = setting ? setting.value === 'true' : true
+        if (!token || (ownOnly && token.owner !== client.username)) break
+      }
       db.prepare('UPDATE tokens SET x=?, y=? WHERE id=? AND table_id=?')
         .run(x, y, token_id, client.tableId)
       broadcast(client.tableId, raw, client)
@@ -151,6 +161,23 @@ function handleMessage(client: Client, raw: string) {
         }
       }
       broadcast(client.tableId, raw)
+      break
+    }
+
+    case 'measure_update': {
+      // Admin-only: broadcast the admin's measurement to the other clients
+      if (client.role !== 'admin') return
+      broadcast(client.tableId, raw, client)
+      break
+    }
+
+    case 'tokens_visible': {
+      // Admin-only: show/hide tokens for everyone on the table; persisted so
+      // late joiners inherit the state via table_state.
+      if (client.role !== 'admin') return
+      const { visible } = payload as { visible: boolean }
+      db.prepare('UPDATE tables SET tokens_hidden=? WHERE id=?').run(visible ? 0 : 1, client.tableId)
+      broadcast(client.tableId, raw) // include sender: its UI updates through the same path
       break
     }
 

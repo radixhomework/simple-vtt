@@ -1,7 +1,7 @@
 import { api } from './api/client'
 import { renderLogin } from './pages/login'
-import { renderLobby } from './pages/lobby'
-import { renderGame } from './pages/game'
+import { renderVtt } from './pages/vtt'
+import { renderMap } from './pages/map'
 import type { User, Table } from './types'
 
 interface AppState {
@@ -10,6 +10,17 @@ interface AppState {
 }
 
 const state: AppState = { user: null, table: null }
+
+// Teardown callback of the currently mounted page, used to release
+// sockets/listeners when navigating away (including browser back/forward).
+let teardownPage: (() => void) | null = null
+
+function unmountCurrentPage() {
+  if (teardownPage) {
+    teardownPage()
+    teardownPage = null
+  }
+}
 
 async function bootstrap() {
   const root = document.getElementById('app')!
@@ -42,10 +53,11 @@ function route(root: HTMLElement) {
 
   // Not logged in → always go to /login
   if (!state.user) {
+    unmountCurrentPage()
     push('/login')
     renderLogin(root, (user) => {
       state.user = user
-      push('/lobby')
+      push('/vtt')
       route(root)
     })
     return
@@ -53,17 +65,20 @@ function route(root: HTMLElement) {
 
   // Logged in: resolve destination
   if (path === '/' || path === '/login') {
-    push('/lobby')
+    push('/vtt')
     route(root)
     return
   }
 
-  if (path.startsWith('/game/')) {
+  if (path.startsWith('/map/')) {
     const tableId = path.split('/')[2]
     if (tableId && state.table?.id === tableId) {
-      renderGame(root, state.user, state.table, () => {
+      unmountCurrentPage()
+      renderMap(root, state.user, state.table, (teardown) => {
+        teardownPage = teardown
+      }, () => {
         state.table = null
-        push('/lobby')
+        push('/vtt')
         route(root)
       })
       return
@@ -73,17 +88,18 @@ function route(root: HTMLElement) {
       state.table = table
       route(root)
     }).catch(() => {
-      push('/lobby')
+      push('/vtt')
       route(root)
     })
     return
   }
 
-  // Default: lobby
-  push('/lobby')
-  renderLobby(root, state.user, (table) => {
+  // Default: vtt
+  push('/vtt')
+  unmountCurrentPage()
+  renderVtt(root, state.user, (table) => {
     state.table = table
-    push(`/game/${table.id}`)
+    push(`/map/${table.id}`)
     route(root)
   }, () => {
     state.user = null

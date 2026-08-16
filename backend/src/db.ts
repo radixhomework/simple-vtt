@@ -24,7 +24,8 @@ db.exec(`
     grid_size      INTEGER NOT NULL DEFAULT 70,
     uvt_metadata   TEXT NOT NULL DEFAULT '{}',
     map_offset_x   REAL NOT NULL DEFAULT 0,
-    map_offset_y   REAL NOT NULL DEFAULT 0
+    map_offset_y   REAL NOT NULL DEFAULT 0,
+    tokens_hidden  INTEGER NOT NULL DEFAULT 0
   );
 
   CREATE TABLE IF NOT EXISTS tokens (
@@ -67,6 +68,12 @@ db.exec(`
     value TEXT NOT NULL
   );
 `)
+
+// Migration: add tokens_hidden to pre-existing tables databases
+const tableCols = db.prepare('PRAGMA table_info(tables)').all() as Array<{ name: string }>
+if (!tableCols.some(c => c.name === 'tokens_hidden')) {
+  db.exec('ALTER TABLE tables ADD COLUMN tokens_hidden INTEGER NOT NULL DEFAULT 0')
+}
 
 // Seed default settings (INSERT OR IGNORE so existing values are preserved)
 const seedSetting = db.prepare('INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)')

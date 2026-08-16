@@ -35,6 +35,27 @@ export function pathCrossesWall(
   return false
 }
 
+/**
+ * True when the point lies within `eps` of any wall segment. Needed because
+ * pathCrossesWall treats wall endpoints as walkable: without this check a
+ * token could land exactly on a wall line, then step through to the other
+ * side on the next move.
+ */
+export function pointOnWall(
+  x: number, y: number,
+  walls: WallSegment[],
+  eps = 2,
+): boolean {
+  for (const w of walls) {
+    const dx = w.bx - w.ax, dy = w.by - w.ay
+    const lenSq = dx * dx + dy * dy
+    const t = lenSq === 0 ? 0 : Math.max(0, Math.min(1, ((x - w.ax) * dx + (y - w.ay) * dy) / lenSq))
+    const dist = Math.hypot(x - (w.ax + t * dx), y - (w.ay + t * dy))
+    if (dist <= eps) return true
+  }
+  return false
+}
+
 // t along ray from (ox,oy) at angle where it hits segment (ax,ay)-(bx,by), or null
 function raySegmentT(
   ox: number, oy: number, angle: number,

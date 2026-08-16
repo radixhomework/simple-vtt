@@ -59,5 +59,5 @@ setupWebSocket(wss)
 
 const port = parseInt(process.env.PORT || '8080', 10)
 server.listen(port, () => {
-  console.log(`rhwvtt listening on :${port}`)
+  console.log(`RHW Simple VTT listening on :${port}`)
 })

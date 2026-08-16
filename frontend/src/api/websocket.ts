@@ -8,9 +8,26 @@ export class VTTSocket {
   private tableId: string = ''
   private token: string = ''
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null
-  private dead = false
+  private dead = true
 
   connect(tableId: string, token: string) {
+    // A fresh connect always supersedes any previous/pending connection:
+    // cancel a scheduled reconnect and detach the old socket without
+    // triggering its onclose reconnect logic.
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer)
+      this.reconnectTimer = null
+    }
+    if (this.ws) {
+      this.ws.onclose = null
+      this.ws.onmessage = null
+      this.ws.onerror = null
+      if (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING) {
+        this.ws.close()
+      }
+      this.ws = null
+    }
+
     this.tableId = tableId
     this.token = token
     this.dead = false
@@ -21,23 +38,26 @@ export class VTTSocket {
     if (this.dead) return
     const protocol = location.protocol === 'https:' ? 'wss' : 'ws'
     const url = `${protocol}://${location.host}/ws?table=${this.tableId}&token=${this.token}`
-    this.ws = new WebSocket(url)
+    const ws = new WebSocket(url)
+    this.ws = ws
 
-    this.ws.onmessage = (e) => {
+    ws.onmessage = (e) => {
+      if (ws !== this.ws) return // stale socket from a previous connect
       try {
         const msg: WSMessage = JSON.parse(e.data)
         this.handlers.forEach(h => h(msg))
       } catch (_) {}
     }
 
-    this.ws.onclose = () => {
+    ws.onclose = () => {
+      if (ws !== this.ws) return
       if (!this.dead) {
         this.reconnectTimer = setTimeout(() => this._connect(), 3000)
       }
     }
 
-    this.ws.onerror = () => {
-      this.ws?.close()
+    ws.onerror = () => {
+      ws.close()
     }
   }
 
@@ -54,9 +74,17 @@ export class VTTSocket {
 
   disconnect() {
     this.dead = true
-    if (this.reconnectTimer) clearTimeout(this.reconnectTimer)
-    this.ws?.close()
-    this.ws = null
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer)
+      this.reconnectTimer = null
+    }
+    if (this.ws) {
+      this.ws.onclose = null
+      this.ws.onmessage = null
+      this.ws.onerror = null
+      this.ws.close()
+      this.ws = null
+    }
   }
 
   get connected() {

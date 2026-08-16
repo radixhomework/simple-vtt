@@ -11,6 +11,7 @@ export interface Table {
   uvt_metadata?: string
   map_offset_x: number
   map_offset_y: number
+  tokens_hidden: boolean
 }
 
 export interface Token {
@@ -106,9 +107,21 @@ export const DEFAULT_SETTINGS: AppSettings = {
 
 export interface MeasureState {
   active: boolean
+  /** Keep the measurement drawn after the drag ends (shared measurements) */
+  persist?: boolean
   tool: ToolType
   startX: number
   startY: number
   endX: number
   endY: number
+}
+
+/** Admin broadcasts its measurement to every client on the table */
+export interface MeasureUpdatePayload {
+  measure: MeasureState | null
+}
+
+/** Admin shows/hides tokens for every client on the table */
+export interface TokensVisiblePayload {
+  visible: boolean
 }
