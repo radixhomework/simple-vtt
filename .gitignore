@@ -1,0 +1,15 @@
+## Node
+*/node_modules/
+*/dist/
+
+## SQLite
+*.db
+*.db-shm
+*.db-wal
+
+## Docker data
+data/
+
+## OS
+.DS_Store
+Thumbs.db
