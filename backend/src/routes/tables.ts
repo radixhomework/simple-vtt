@@ -1,3 +1,7 @@
+/**
+ * Table CRUD + UVTT import (extracts the map image, grid size and portals
+ * from Universal VTT files) and image uploads (maps, token icons).
+ */
 import { Router } from 'express'
 import multer from 'multer'
 import path from 'path'
@@ -45,8 +49,20 @@ tablesRouter.get('/tables/:id', authMiddleware, (req, res) => {
 })
 
 tablesRouter.put('/tables/:id', authMiddleware, adminOnly, (req, res) => {
-  const { name, map_image_path, grid_size, uvt_metadata, map_offset_x, map_offset_y } = req.body
-  db.prepare('UPDATE tables SET name=?, map_image_path=?, grid_size=?, uvt_metadata=?, map_offset_x=?, map_offset_y=? WHERE id=?').run(name, map_image_path, grid_size, uvt_metadata, map_offset_x, map_offset_y, req.params.id)
+  // Merge: fields absent from the body keep their current value
+  const existing = getTable(req.params.id)
+  if (!existing) { res.status(404).json({ error: 'not found' }); return }
+  const b = req.body
+  const merged = {
+    name:           b.name           !== undefined ? b.name           : existing.name,
+    map_image_path: b.map_image_path !== undefined ? b.map_image_path : existing.map_image_path,
+    grid_size:      b.grid_size      !== undefined ? b.grid_size      : existing.grid_size,
+    uvt_metadata:   b.uvt_metadata   !== undefined ? b.uvt_metadata   : existing.uvt_metadata,
+    map_offset_x:   b.map_offset_x   !== undefined ? b.map_offset_x   : existing.map_offset_x,
+    map_offset_y:   b.map_offset_y   !== undefined ? b.map_offset_y   : existing.map_offset_y,
+  }
+  db.prepare('UPDATE tables SET name=?, map_image_path=?, grid_size=?, uvt_metadata=?, map_offset_x=?, map_offset_y=? WHERE id=?')
+    .run(merged.name, merged.map_image_path, merged.grid_size, merged.uvt_metadata, merged.map_offset_x, merged.map_offset_y, req.params.id)
   res.json(getTable(req.params.id))
 })
 

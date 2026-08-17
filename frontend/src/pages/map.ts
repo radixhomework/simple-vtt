@@ -1,3 +1,11 @@
+/**
+ * Map page — the VTT itself. Owns the game state (table, tokens, fog,
+ * portals, camera, settings, music), three stacked canvases (map/tokens,
+ * fog, UI overlays) and all input: mouse, touch/Apple Pencil, keyboard.
+ * Mutations flow through the WebSocket singleton; server pushes
+ * (table_state, token_*, fog_update, measure_update, music_state,
+ * settings_update, chat) keep every browser in sync.
+ */
 import { api } from '../api/client'
 import { socket } from '../api/websocket'
 import {
@@ -614,7 +622,8 @@ export function renderMap(
       case 'fog_update': {
         const p = msg.payload as FogUpdatePayload
         if (p.action === 'clear_all') {
-          state.fog = []
+          // clear_all may carry the surviving points (erase tool)
+          state.fog = p.points ?? []
         } else if (p.action === 'add') {
           state.fog.push(...p.points)
         }
@@ -1424,7 +1433,8 @@ export function renderMap(
 
   // Keyboard shortcuts
   const onKeydown = (e: KeyboardEvent) => {
-    if ((e.target as HTMLElement).tagName === 'INPUT') return
+    const tag = (e.target as HTMLElement).tagName
+    if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return
     const map: Record<string, ToolType> = { s: 'select', l: 'line', c: 'circle', q: 'square', n: 'cone' }
     if (map[e.key.toLowerCase()]) {
       state.tool = map[e.key.toLowerCase()]
@@ -1496,11 +1506,8 @@ export function renderMap(
 
   function removeFogPoint(wx: number, wy: number) {
     state.fog = state.fog.filter(p => Math.hypot(p.x - wx, p.y - wy) > p.radius * state.table.grid_size)
-    // Clear server state then re-add the remaining points
-    socket.send('fog_update', { action: 'clear_all', points: [] })
-    if (state.fog.length > 0) {
-      socket.send('fog_update', { action: 'add', points: state.fog })
-    }
+    // One atomic clear+re-add so other clients never see an empty flash
+    socket.send('fog_update', { action: 'clear_all', points: state.fog })
     render()
   }
 

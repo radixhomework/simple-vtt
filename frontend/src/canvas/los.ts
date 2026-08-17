@@ -1,3 +1,8 @@
+/**
+ * Line-of-sight geometry: wall segments (UVTT static walls + closed
+ * portals), segment intersection, visibility polygons and movement
+ * blocking (tokens may not cross or land on a wall).
+ */
 export interface WallSegment {
   ax: number; ay: number
   bx: number; by: number

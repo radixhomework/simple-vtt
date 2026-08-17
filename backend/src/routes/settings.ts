@@ -1,3 +1,7 @@
+/**
+ * Global application settings (typed access lives in ../settings). Patching
+ * broadcasts a settings_update to every connected client for live UI sync.
+ */
 import { Router } from 'express'
 import { db } from '../db'
 import { authMiddleware, adminOnly } from '../auth'

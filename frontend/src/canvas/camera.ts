@@ -1,3 +1,8 @@
+/**
+ * Pure camera math: conversions between screen pixels and world units
+ * (token/fog positions are stored in world space = pixels at zoom 1),
+ * grid snapping and zoom anchored at a screen point.
+ */
 import type { Camera } from '../types'
 
 export function screenToWorld(sx: number, sy: number, cam: Camera): [number, number] {

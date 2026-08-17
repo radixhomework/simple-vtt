@@ -1,3 +1,8 @@
+/**
+ * Music library: upload (admin, stored under UPLOADS_DIR), list, delete.
+ * Playback itself is not streamed from here — clients fetch the files via
+ * /uploads and stay in sync through the hub's music_state pushes.
+ */
 import { Router } from 'express'
 import multer from 'multer'
 import path from 'path'

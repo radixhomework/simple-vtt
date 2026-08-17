@@ -1,3 +1,9 @@
+/**
+ * Application entry: tiny history-based router (no framework). Pages are
+ * rendered into #app by render* functions; only one page is mounted at a
+ * time and each registers a teardown callback so navigation (including
+ * back/forward) releases its sockets and listeners.
+ */
 import { api } from './api/client'
 import { renderLogin } from './pages/login'
 import { renderVtt } from './pages/vtt'

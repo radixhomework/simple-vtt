@@ -1,3 +1,7 @@
+/**
+ * Typed REST client. The JWT is read from localStorage on every call;
+ * multipart uploads (maps, music, icons) use their own fetch helpers.
+ */
 import type { Table, Token, User, FogPoint, AppSettings, Portal, MusicTrack } from '../types'
 
 const BASE = '/api'

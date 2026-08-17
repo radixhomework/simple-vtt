@@ -1,7 +1,11 @@
 import jwt from 'jsonwebtoken'
 import { Request, Response, NextFunction } from 'express'
 
+/** Signing secret — override with JWT_SECRET in production. */
 const SECRET = process.env.JWT_SECRET || 'rhwvtt-dev-secret-change-in-production'
+
+/** Token lifetime: clients must re-login after this period. */
+export const TOKEN_TTL = '12h'
 
 export interface JWTPayload {
   username: string
@@ -9,7 +13,7 @@ export interface JWTPayload {
 }
 
 export function signToken(payload: JWTPayload): string {
-  return jwt.sign(payload, SECRET, { expiresIn: '24h' })
+  return jwt.sign(payload, SECRET, { expiresIn: TOKEN_TTL })
 }
 
 export function verifyToken(token: string): JWTPayload | null {
@@ -20,6 +24,8 @@ export function verifyToken(token: string): JWTPayload | null {
   }
 }
 
+/** Accept the JWT from the Authorization header or a ?token= query param
+ *  (browsers cannot set headers on the WebSocket handshake). */
 function extractToken(req: Request): string | null {
   const header = req.headers.authorization
   if (header?.startsWith('Bearer ')) return header.slice(7)
@@ -27,6 +33,7 @@ function extractToken(req: Request): string | null {
   return null
 }
 
+/** Validates the JWT and injects username/role into res.locals. */
 export function authMiddleware(req: Request, res: Response, next: NextFunction) {
   const token = extractToken(req)
   if (!token) { res.status(401).json({ error: 'unauthorized' }); return }
@@ -37,6 +44,7 @@ export function authMiddleware(req: Request, res: Response, next: NextFunction) 
   next()
 }
 
+/** Gate for admin-only routes — mount after authMiddleware. */
 export function adminOnly(_req: Request, res: Response, next: NextFunction) {
   if (res.locals.role !== 'admin') { res.status(403).json({ error: 'forbidden' }); return }
   next()

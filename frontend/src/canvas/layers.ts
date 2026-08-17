@@ -1,3 +1,10 @@
+/**
+ * Stateless canvas painters: map, grid, tokens, portals, fog-of-war and
+ * measurement overlays. Fog composites in three phases — greyscale map
+ * clipped to the explored memory, holes punched for currently visible
+ * areas (destination-out), and a dark layer over never-explored space.
+ * Admins see fog at reduced opacity, players fully opaque.
+ */
 import type { Camera, Token, FogPoint, MeasureState, Portal } from '../types'
 import { worldToScreen } from './camera'
 import { computeVisibilityPolygon, cullWalls } from './los'

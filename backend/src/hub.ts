@@ -4,6 +4,16 @@ import { verifyToken } from './auth'
 import { db } from './db'
 import { loadSettings } from './settings'
 
+/**
+ * WebSocket hub: rooms per table, message dispatch, and server-authoritative
+ * state pushes (table_state, music_state, settings_update).
+ *
+ * Authorization model: `admin` may do anything; `player` may move/edit only
+ * tokens they own (subject to the players_move_own_only setting) and use the
+ * music transport. Everything else is admin-only and silently ignored.
+ */
+
+/** WebSocket client connected to a table room. */
 interface Client {
   ws: WebSocket
   username: string
@@ -202,7 +212,7 @@ function sendTableState(client: Client) {
   send(client, {
     type: 'table_state',
     payload: {
-      table: { ...table, has_vision: undefined },
+      table,
       tokens,
       fog,
       portals,
@@ -252,6 +262,11 @@ function handleMessage(client: Client, raw: string) {
         'SELECT name, x, y, icon_path, has_vision, vision_radius, size, color, owner, hidden FROM tokens WHERE id=? AND table_id=?'
       ).get(t.id, client.tableId) as Record<string, unknown> | undefined
       if (!existing) break
+      // Authorization: admins may edit anything; players only their own
+      // tokens, and they cannot change owner/hidden (admin-only controls).
+      const isOwner = existing.owner === client.username
+      if (client.role !== 'admin' && !isOwner) break
+      const isAdmin = client.role === 'admin'
       const m = {
         name:          t.name          !== undefined ? t.name          : existing.name,
         x:             t.x             !== undefined ? t.x             : existing.x,
@@ -261,8 +276,8 @@ function handleMessage(client: Client, raw: string) {
         vision_radius: t.vision_radius !== undefined ? t.vision_radius : existing.vision_radius,
         size:          t.size          !== undefined ? t.size          : existing.size,
         color:         t.color         !== undefined ? t.color         : existing.color,
-        owner:         t.owner         !== undefined ? t.owner         : existing.owner,
-        hidden:        t.hidden        !== undefined ? t.hidden        : existing.hidden,
+        owner:         isAdmin && t.owner !== undefined ? t.owner : existing.owner,
+        hidden:        isAdmin && t.hidden !== undefined ? t.hidden : existing.hidden,
       }
       const hiddenNow = m.hidden === 1 || m.hidden === true
       const wasHidden = existing.hidden === 1 || existing.hidden === true
@@ -294,14 +309,24 @@ function handleMessage(client: Client, raw: string) {
       if (client.role !== 'admin') return
       const { action, points } = payload as { action: string; points: Array<Record<string, unknown>> }
       if (action === 'clear_all') {
+        // clear_all optionally carries the surviving points (used by the
+        // erase tool: clear + re-add in one atomic step, no client flicker)
         db.prepare('DELETE FROM fog_points WHERE table_id=?').run(client.tableId)
+        if (Array.isArray(points) && points.length > 0) {
+          const insert = db.prepare('INSERT INTO fog_points (id, table_id, x, y, radius) VALUES (?,?,?,?,?)')
+          for (const p of points) {
+            insert.run(newId(), client.tableId, p.x, p.y, p.radius ?? 3)
+          }
+        }
       } else if (action === 'add' && Array.isArray(points)) {
         const insert = db.prepare('INSERT INTO fog_points (id, table_id, x, y, radius) VALUES (?,?,?,?,?)')
         for (const p of points) {
           insert.run(newId(), client.tableId, p.x, p.y, p.radius ?? 3)
         }
       }
-      broadcast(client.tableId, raw)
+      // Exclude the sender: it already applied the change optimistically,
+      // receiving it back would duplicate points in its local state.
+      broadcast(client.tableId, raw, client)
       break
     }
 

@@ -1,3 +1,8 @@
+/**
+ * Token CRUD + fog points. Hidden tokens are withheld from players at this
+ * layer (list) and in the hub (live updates), so their position can never
+ * reach a player's browser.
+ */
 import { Router } from 'express'
 import { db } from '../db'
 import { authMiddleware, adminOnly } from '../auth'
@@ -43,6 +48,13 @@ tokensRouter.put('/tables/:id/tokens/:tokenId', authMiddleware, (req, res) => {
 
   if (!existing) { res.status(404).json({ error: 'not found' }); return }
 
+  // Authorization: admins may edit anything; players only their own tokens,
+  // and cannot change owner/hidden (admin-only controls).
+  const isAdmin = res.locals.role === 'admin'
+  if (!isAdmin && existing.owner !== res.locals.user) {
+    res.status(403).json({ error: 'forbidden' }); return
+  }
+
   // Merge: only override fields that are explicitly present in the request body
   const b = req.body
   const merged = {
@@ -54,8 +66,8 @@ tokensRouter.put('/tables/:id/tokens/:tokenId', authMiddleware, (req, res) => {
     vision_radius: b.vision_radius !== undefined ? b.vision_radius : existing.vision_radius,
     size:          b.size          !== undefined ? b.size          : existing.size,
     color:         b.color         !== undefined ? b.color         : existing.color,
-    owner:         b.owner         !== undefined ? b.owner         : existing.owner,
-    hidden:        b.hidden        !== undefined ? b.hidden        : existing.hidden,
+    owner:         isAdmin && b.owner !== undefined ? b.owner : existing.owner,
+    hidden:        isAdmin && b.hidden !== undefined ? b.hidden : existing.hidden,
   }
 
   db.prepare(

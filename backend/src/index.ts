@@ -1,3 +1,8 @@
+/**
+ * HTTP entry point: Express app wiring, static file serving (uploads + built
+ * frontend with SPA fallback) and the WebSocket server. Route handlers live
+ * in ./routes, realtime logic in ./hub.
+ */
 import express from 'express'
 import http from 'http'
 import path from 'path'
@@ -40,6 +45,9 @@ app.use('/api', tokensRouter)
 app.use('/api', settingsRouter)
 app.use('/api', portalsRouter)
 app.use('/api', musicRouter)
+
+// Unknown API paths must return JSON 404, not the SPA fallback below
+app.use('/api', (_req, res) => { res.status(404).json({ error: 'not found' }) })
 
 // Static: built frontend
 const staticDir = process.env.STATIC_DIR || path.join(process.cwd(), 'public')

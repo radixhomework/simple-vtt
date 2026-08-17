@@ -1,3 +1,8 @@
+/**
+ * Single-table WebSocket client. Auto-reconnects every 3 s while the page
+ * stays open; connect() supersedes any previous connection (stale sockets
+ * are detached and can neither deliver messages nor trigger reconnects).
+ */
 import type { WSMessage } from '../types'
 
 type MessageHandler = (msg: WSMessage) => void

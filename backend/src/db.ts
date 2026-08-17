@@ -1,3 +1,8 @@
+/**
+ * SQLite database: connection, schema creation and lightweight migrations.
+ * WAL journal + foreign keys are enabled for durability and cascading
+ * deletes (tokens/portals/fog die with their table).
+ */
 import Database from 'better-sqlite3'
 import path from 'path'
 import fs from 'fs'
@@ -24,8 +29,7 @@ db.exec(`
     grid_size      INTEGER NOT NULL DEFAULT 70,
     uvt_metadata   TEXT NOT NULL DEFAULT '{}',
     map_offset_x   REAL NOT NULL DEFAULT 0,
-    map_offset_y   REAL NOT NULL DEFAULT 0,
-    tokens_hidden  INTEGER NOT NULL DEFAULT 0
+    map_offset_y   REAL NOT NULL DEFAULT 0
   );
 
   CREATE TABLE IF NOT EXISTS tokens (
@@ -76,13 +80,7 @@ db.exec(`
   );
 `)
 
-// Migration: add tokens_hidden to pre-existing tables databases
-const tableCols = db.prepare('PRAGMA table_info(tables)').all() as Array<{ name: string }>
-if (!tableCols.some(c => c.name === 'tokens_hidden')) {
-  db.exec('ALTER TABLE tables ADD COLUMN tokens_hidden INTEGER NOT NULL DEFAULT 0')
-}
-
-// Migration: add per-token hidden flag to pre-existing databases
+// ── Migrations for databases created before a column existed ─────────────────
 const tokenCols = db.prepare('PRAGMA table_info(tokens)').all() as Array<{ name: string }>
 if (!tokenCols.some(c => c.name === 'hidden')) {
   db.exec('ALTER TABLE tokens ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0')

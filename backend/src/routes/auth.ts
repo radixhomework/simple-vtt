@@ -1,3 +1,8 @@
+/**
+ * Authentication & user management. The admin account is configured through
+ * the environment (ADMIN_USERNAME/ADMIN_PASSWORD) and checked at login time;
+ * all other accounts live in the database with bcrypt-hashed passwords.
+ */
 import { Router } from 'express'
 import bcrypt from 'bcryptjs'
 import { db } from '../db'
@@ -52,6 +57,8 @@ authRouter.get('/users', authMiddleware, adminOnly, (_req, res) => {
 authRouter.post('/users', authMiddleware, adminOnly, (req, res) => {
   const { username, password, role = 'player' } = req.body as { username: string; password: string; role?: string }
   if (!username || !password) { res.status(400).json({ error: 'missing fields' }); return }
+  if (role !== 'admin' && role !== 'player') { res.status(400).json({ error: 'invalid role' }); return }
+  if (username === ADMIN_USER) { res.status(400).json({ error: 'reserved username' }); return }
   const hash = bcrypt.hashSync(password, 10)
   db.prepare('INSERT OR REPLACE INTO users (username, password_hash, role) VALUES (?,?,?)').run(username, hash, role)
   res.status(201).json({ username, role })

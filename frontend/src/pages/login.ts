@@ -1,3 +1,4 @@
+/** Login page: posts credentials, stores the JWT in localStorage. */
 import { api } from '../api/client'
 import type { User } from '../types'
 

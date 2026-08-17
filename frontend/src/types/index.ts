@@ -1,3 +1,7 @@
+/**
+ * Shared frontend types: mirrors of the backend DB rows and WebSocket
+ * payloads, plus client-only state (Camera, ToolType, MeasureState).
+ */
 export interface User {
   username: string
   role: 'admin' | 'player'

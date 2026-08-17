@@ -1,3 +1,7 @@
+/**
+ * VTT home page: table list for everyone; admin sections for creating and
+ * importing tables, managing players and managing the music library.
+ */
 import { api } from '../api/client'
 import type { User, Table } from '../types'
 

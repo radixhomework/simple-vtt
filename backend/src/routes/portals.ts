@@ -1,3 +1,4 @@
+/** Portals (doors/windows) imported from UVTT files — admin can toggle open/closed. */
 import { Router } from 'express'
 import { db } from '../db'
 import { authMiddleware, adminOnly } from '../auth'
