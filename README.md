@@ -24,8 +24,8 @@ Simple and lightweight VTT project.
     - Grid square size for measurements conversion (1 grid square equals 5 feet or 1,5 meters)
 - Enable/disable lights
 - [x] Applicative full screen (hide all the menus, `Esc` for exiting)
-- Add apple pencil support
-- Add mobile devices support in general
+- [x] Add apple pencil support
+- [x] Add mobile devices support in general
 - [x] Support music playing (managed by admin, and diffused in all browsers)
 
 ### ⚙️ Infrastructure issues
@@ -33,4 +33,4 @@ Simple and lightweight VTT project.
 - Reverse proxy (Apache) configuration (supporting websocket)
 - Add Postgres DB (and container in docker compose)
 - Add S3 storage (and container in docker compose)
-- Add Docker .env file with default values
+- [x] Add Docker .env file with default values

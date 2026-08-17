@@ -95,7 +95,7 @@ export function renderMap(
       .header-sep { width: 1px; height: 22px; background: #2d2d4e; }
       .table-name { font-size: 14px; font-weight: 600; color: #e0e0f0; max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
       .canvas-wrap { flex: 1; position: relative; overflow: hidden; }
-      canvas { position: absolute; top: 0; left: 0; cursor: crosshair; }
+      canvas { position: absolute; top: 0; left: 0; cursor: crosshair; touch-action: none; }
       #canvas-main { z-index: 1; }
       #canvas-fog  { z-index: 2; pointer-events: none; }
       #canvas-ui   { z-index: 3; }
@@ -1011,9 +1011,7 @@ export function renderMap(
 
     if (e.button === 1 || (e.button === 2)) {
       // Middle/right mouse = pan
-      state.panning = true
-      state.panStartX = e.offsetX; state.panStartY = e.offsetY
-      state.panCamX = state.camera.x; state.panCamY = state.camera.y
+      startPan(e.offsetX, e.offsetY)
       uiCanvas.style.cursor = 'grabbing'
       return
     }
@@ -1078,38 +1076,97 @@ export function renderMap(
     }
   })
 
+  // ── Shared input logic (mouse + touch) ───────────────────────────────────────
+
+  /** Move the dragged token toward a screen position, blocking at walls. */
+  function dragInputTo(screenX: number, screenY: number) {
+    if (!state.dragging || !state.selectedId) return
+    const [wx, wy] = screenToWorld(screenX - state.dragOffX, screenY - state.dragOffY, state.camera)
+    const snapX = state.snap ? snapToGrid(wx, state.table.grid_size) : wx
+    const snapY = state.snap ? snapToGrid(wy, state.table.grid_size) : wy
+    const token = state.tokens.find(t => t.id === state.selectedId)
+    if (token) {
+      // Block at walls during the drag: only accept positions whose path
+      // from the current position crosses no wall/closed door (and doesn't
+      // land on one), so the token slides along walls but never walks
+      // through them.
+      if (!pathCrossesWall(token.x, token.y, snapX, snapY, state.walls)
+          && !pointOnWall(snapX, snapY, state.walls)) {
+        token.x = snapX
+        token.y = snapY
+      }
+      // Throttle: broadcast live position at ~20 fps so other clients see the drag in real-time
+      const now = Date.now()
+      if (now - lastMoveBroadcast > 50) {
+        socket.send('token_move', { token_id: token.id, x: token.x, y: token.y })
+        lastMoveBroadcast = now
+      }
+    }
+    render()
+  }
+
+  /** Commit the token drag: wall safety net + final broadcast. */
+  function finishTokenDrag() {
+    state.dragging = false
+    const token = state.tokens.find(t => t.id === state.selectedId)
+    if (!token) return
+    // The drag already blocks walls incrementally; this is only a safety
+    // net for races (e.g. a door closed mid-drag by another client).
+    const blocked = pathCrossesWall(
+      state.dragStartX, state.dragStartY,
+      token.x, token.y,
+      state.walls,
+    ) || pointOnWall(token.x, token.y, state.walls)
+    if (blocked) {
+      // Revert locally and tell every other client to snap back too
+      token.x = state.dragStartX
+      token.y = state.dragStartY
+      socket.send('token_move', { token_id: token.id, x: state.dragStartX, y: state.dragStartY })
+      showNotif('Movement blocked by wall')
+      render()
+    } else {
+      socket.send('token_move', { token_id: token.id, x: token.x, y: token.y })
+    }
+  }
+
+  /** End the active measurement; keep it on screen when shared. */
+  function finishMeasure() {
+    if (!state.measure.active) return
+    state.measure.active = false
+    // Keep a shared measurement visible after release — on the players'
+    // screens (broadcast) and on the admin's own screen for consistency
+    if (isAdmin && state.shareMeasure) {
+      const persisted: MeasureState = { ...state.measure, active: false, persist: true }
+      socket.send('measure_update', { measure: persisted })
+      state.sharedMeasure = persisted
+    }
+    render()
+  }
+
+  /** Begin panning from a screen position (right/middle mouse, touch). */
+  function startPan(screenX: number, screenY: number) {
+    state.panning = true
+    state.panStartX = screenX
+    state.panStartY = screenY
+    state.panCamX = state.camera.x
+    state.panCamY = state.camera.y
+  }
+
+  function panTo(screenX: number, screenY: number) {
+    const dx = (screenX - state.panStartX) / state.camera.zoom
+    const dy = (screenY - state.panStartY) / state.camera.zoom
+    state.camera = { ...state.camera, x: state.panCamX - dx, y: state.panCamY - dy }
+    render()
+  }
+
   uiCanvas.addEventListener('mousemove', (e) => {
     if (state.panning) {
-      const dx = (e.offsetX - state.panStartX) / state.camera.zoom
-      const dy = (e.offsetY - state.panStartY) / state.camera.zoom
-      state.camera = { ...state.camera, x: state.panCamX - dx, y: state.panCamY - dy }
-      render()
+      panTo(e.offsetX, e.offsetY)
       return
     }
 
     if (state.dragging && state.selectedId) {
-      const [wx, wy] = screenToWorld(e.offsetX - state.dragOffX, e.offsetY - state.dragOffY, state.camera)
-      const snapX = state.snap ? snapToGrid(wx, state.table.grid_size) : wx
-      const snapY = state.snap ? snapToGrid(wy, state.table.grid_size) : wy
-      const token = state.tokens.find(t => t.id === state.selectedId)
-      if (token) {
-        // Block at walls during the drag: only accept positions whose path
-        // from the current position crosses no wall/closed door (and doesn't
-        // land on one), so the token slides along walls but never walks
-        // through them.
-        if (!pathCrossesWall(token.x, token.y, snapX, snapY, state.walls)
-            && !pointOnWall(snapX, snapY, state.walls)) {
-          token.x = snapX
-          token.y = snapY
-        }
-        // Throttle: broadcast live position at ~20 fps so other clients see the drag in real-time
-        const now = Date.now()
-        if (now - lastMoveBroadcast > 50) {
-          socket.send('token_move', { token_id: token.id, x: token.x, y: token.y })
-          lastMoveBroadcast = now
-        }
-      }
-      render()
+      dragInputTo(e.offsetX, e.offsetY)
       return
     }
 
@@ -1141,91 +1198,228 @@ export function renderMap(
     }
 
     if (state.dragging && state.selectedId) {
-      state.dragging = false
-      const token = state.tokens.find(t => t.id === state.selectedId)
-      if (token) {
-        // The drag already blocks walls incrementally; this is only a safety
-        // net for races (e.g. a door closed mid-drag by another client).
-        const blocked = pathCrossesWall(
-          state.dragStartX, state.dragStartY,
-          token.x, token.y,
-          state.walls,
-        ) || pointOnWall(token.x, token.y, state.walls)
-        if (blocked) {
-          // Revert locally and tell every other client to snap back too
-          token.x = state.dragStartX
-          token.y = state.dragStartY
-          socket.send('token_move', { token_id: token.id, x: state.dragStartX, y: state.dragStartY })
-          showNotif('Movement blocked by wall')
-          render()
-        } else {
-          socket.send('token_move', { token_id: token.id, x: token.x, y: token.y })
-        }
-      }
+      finishTokenDrag()
       return
     }
 
     if (state.measure.active && e.button === 0) {
-      state.measure.active = false
-      // Keep a shared measurement visible after release — on the players'
-      // screens (broadcast) and on the admin's own screen for consistency
-      if (isAdmin && state.shareMeasure) {
-        const persisted: MeasureState = { ...state.measure, active: false, persist: true }
-        socket.send('measure_update', { measure: persisted })
-        state.sharedMeasure = persisted
-      }
-      render()
+      finishMeasure()
     }
   })
 
   uiCanvas.addEventListener('contextmenu', e => e.preventDefault())
 
-  // Touch support (basic pinch-zoom + pan)
-  let touches: Touch[] = []
+  // ── Touch / Apple Pencil support ─────────────────────────────────────────────
+  // One finger or pencil: drag tokens (or use the active tool); a tap on a
+  // token selects it, a tap on empty space deselects. Two fingers: pinch
+  // zoom + pan. A single finger on empty space also pans the map.
+  type TouchMode = 'none' | 'token' | 'pan' | 'measure' | 'pinch' | 'wait'
+  let touchMode: TouchMode = 'none'
+  let touchId: number | null = null
+  let touchStartTime = 0
+  let touchStartX = 0
+  let touchStartY = 0
+  let touchLastX = 0
+  let touchLastY = 0
   let lastTouchDist = 0
+  let lastPinchMidX = 0
+  let lastPinchMidY = 0
+
+  function touchPos(t: Touch): [number, number] {
+    const rect = uiCanvas.getBoundingClientRect()
+    return [t.clientX - rect.left, t.clientY - rect.top]
+  }
+
+  /** Abort a single-finger gesture when a second finger lands. */
+  function cancelTouchGesture() {
+    if (touchMode === 'token' && state.dragging) {
+      // Snap the token back where the drag started
+      const token = state.tokens.find(t => t.id === state.selectedId)
+      if (token) {
+        token.x = state.dragStartX
+        token.y = state.dragStartY
+        socket.send('token_move', { token_id: token.id, x: token.x, y: token.y })
+      }
+      state.dragging = false
+    }
+    if (state.measure.active) state.measure.active = false
+    state.panning = false
+    render()
+  }
+
   uiCanvas.addEventListener('touchstart', (e) => {
     e.preventDefault()
-    touches = Array.from(e.touches)
-    if (touches.length === 2) {
+    const list = Array.from(e.touches)
+
+    if (list.length >= 2) {
+      cancelTouchGesture()
+      touchMode = 'pinch'
       lastTouchDist = Math.hypot(
-        touches[0].clientX - touches[1].clientX,
-        touches[0].clientY - touches[1].clientY,
+        list[0].clientX - list[1].clientX,
+        list[0].clientY - list[1].clientY,
       )
-    } else if (touches.length === 1) {
-      const rect = uiCanvas.getBoundingClientRect()
-      state.panning = true
-      state.panStartX = touches[0].clientX - rect.left
-      state.panStartY = touches[0].clientY - rect.top
-      state.panCamX = state.camera.x; state.panCamY = state.camera.y
+      lastPinchMidX = (list[0].clientX + list[1].clientX) / 2
+      lastPinchMidY = (list[0].clientY + list[1].clientY) / 2
+      return
     }
+
+    if (list.length !== 1 || touchMode !== 'none') return
+    const t = list[0]
+    const [x, y] = touchPos(t)
+    touchId = t.identifier
+    touchStartTime = Date.now()
+    touchStartX = touchLastX = x
+    touchStartY = touchLastY = y
+    const [wx, wy] = screenToWorld(x, y, state.camera)
+
+    // Active tools first (same behaviour as a left click)
+    if (state.tool === 'fog-reveal' && isAdmin) { addFogPoint(wx, wy); return }
+    if (state.tool === 'fog-erase' && isAdmin) { removeFogPoint(wx, wy); return }
+    if (state.tool !== 'select') {
+      state.measure = { active: true, tool: state.tool, startX: wx, startY: wy, endX: wx, endY: wy }
+      if (isAdmin && state.shareMeasure) {
+        socket.send('measure_update', { measure: { ...state.measure } })
+      }
+      touchMode = 'measure'
+      return
+    }
+
+    // Admin: portal tap toggles the door
+    if (isAdmin) {
+      const portalHit = pickPortal(wx, wy, state.portals, state.table.grid_size * 0.3)
+      if (portalHit) {
+        api.togglePortal(state.table.id, portalHit.id, !portalHit.closed)
+          .then(updated => {
+            const idx = state.portals.findIndex(p => p.id === updated.id)
+            if (idx !== -1) state.portals[idx] = updated
+            recomputeWalls()
+            render()
+          })
+          .catch(() => showNotif('Failed to toggle portal'))
+        return
+      }
+    }
+
+    const hit = pickToken(wx, wy, state.tokens, state.table.grid_size)
+    if (hit) {
+      state.selectedId = hit.id
+      const canMove = isAdmin || !state.settings.players_move_own_only || hit.owner === user.username
+      if (canMove) {
+        touchMode = 'token'
+        const [tx, ty] = worldToScreen(hit.x, hit.y, state.camera)
+        state.dragging = true
+        state.dragOffX = x - tx
+        state.dragOffY = y - ty
+        state.dragStartX = hit.x
+        state.dragStartY = hit.y
+      } else {
+        touchMode = 'pan' // selection only — finger pans the map
+        startPan(x, y)
+      }
+      refreshSidebar()
+      if (isAdmin) renderTokenEditor()
+      render()
+      return
+    }
+
+    // Empty space: one finger pans
+    touchMode = 'pan'
+    startPan(x, y)
   }, { passive: false })
 
   uiCanvas.addEventListener('touchmove', (e) => {
     e.preventDefault()
-    const rect = uiCanvas.getBoundingClientRect()
-    if (e.touches.length === 2) {
-      const t = Array.from(e.touches)
-      const d = Math.hypot(t[0].clientX - t[1].clientX, t[0].clientY - t[1].clientY)
-      const cx = (t[0].clientX + t[1].clientX) / 2 - rect.left
-      const cy = (t[0].clientY + t[1].clientY) / 2 - rect.top
-      if (lastTouchDist > 0) {
-        const delta = d > lastTouchDist ? 1 : -1
-        state.camera = zoomAround(state.camera, cx, cy, delta)
+    const list = Array.from(e.touches)
+
+    if (touchMode === 'pinch') {
+      if (list.length >= 2) {
+        const rect = uiCanvas.getBoundingClientRect()
+        const cx = (list[0].clientX + list[1].clientX) / 2 - rect.left
+        const cy = (list[0].clientY + list[1].clientY) / 2 - rect.top
+        const midScreenX = (list[0].clientX + list[1].clientX) / 2
+        const midScreenY = (list[0].clientY + list[1].clientY) / 2
+        const d = Math.hypot(
+          list[0].clientX - list[1].clientX,
+          list[0].clientY - list[1].clientY,
+        )
+        if (lastTouchDist > 0) {
+          const delta = d > lastTouchDist ? 1 : -1
+          state.camera = zoomAround(state.camera, cx, cy, delta)
+          // Two-finger pan: follow the midpoint movement
+          const dx = (midScreenX - lastPinchMidX) / state.camera.zoom
+          const dy = (midScreenY - lastPinchMidY) / state.camera.zoom
+          state.camera = { ...state.camera, x: state.camera.x - dx, y: state.camera.y - dy }
+        }
+        lastTouchDist = d
+        lastPinchMidX = midScreenX
+        lastPinchMidY = midScreenY
+        render()
       }
-      lastTouchDist = d
-      render()
-    } else if (e.touches.length === 1 && state.panning) {
-      const ox = e.touches[0].clientX - rect.left
-      const oy = e.touches[0].clientY - rect.top
-      const dx = (ox - state.panStartX) / state.camera.zoom
-      const dy = (oy - state.panStartY) / state.camera.zoom
-      state.camera = { ...state.camera, x: state.panCamX - dx, y: state.panCamY - dy }
+      return
+    }
+
+    if (touchMode === 'wait') return
+
+    const t = list.find(t => t.identifier === touchId)
+    if (!t) return
+    const [x, y] = touchPos(t)
+    touchLastX = x
+    touchLastY = y
+
+    if (touchMode === 'token') {
+      dragInputTo(x, y)
+      return
+    }
+    if (touchMode === 'pan' && state.panning) {
+      panTo(x, y)
+      return
+    }
+    if (touchMode === 'measure' && state.measure.active) {
+      const [wx, wy] = screenToWorld(x, y, state.camera)
+      state.measure.endX = wx; state.measure.endY = wy
+      const now = Date.now()
+      if (isAdmin && state.shareMeasure && now - lastMeasureBroadcast > 50) {
+        socket.send('measure_update', { measure: { ...state.measure } })
+        lastMeasureBroadcast = now
+      }
       render()
     }
   }, { passive: false })
 
-  uiCanvas.addEventListener('touchend', () => {
-    state.panning = false; touches = []; lastTouchDist = 0
+  uiCanvas.addEventListener('touchend', (e) => {
+    const remaining = Array.from(e.touches)
+
+    if (touchMode === 'pinch') {
+      // Require all fingers up before starting a new gesture (avoids jumps)
+      if (remaining.length === 0) touchMode = 'none'
+      else if (remaining.length === 1) touchMode = 'wait'
+      return
+    }
+    if (touchMode === 'wait') {
+      if (remaining.length === 0) touchMode = 'none'
+      return
+    }
+    if (remaining.length > 0 || touchMode === 'none') return
+
+    if (touchMode === 'token') finishTokenDrag()
+    if (touchMode === 'measure') finishMeasure()
+
+    const dt = Date.now() - touchStartTime
+    const moved = Math.hypot(touchLastX - touchStartX, touchLastY - touchStartY)
+    if (touchMode === 'pan' && dt < 300 && moved < 10) {
+      // Tap on empty space: deselect
+      const [wx, wy] = screenToWorld(touchStartX, touchStartY, state.camera)
+      if (!pickToken(wx, wy, state.tokens, state.table.grid_size)) {
+        state.selectedId = null
+        refreshSidebar()
+        if (isAdmin) renderTokenEditor()
+        render()
+      }
+    }
+
+    state.panning = false
+    touchMode = 'none'
+    touchId = null
   })
 
   // Keyboard shortcuts

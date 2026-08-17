@@ -2,18 +2,19 @@ services:
   rhwvtt:
     build: .
     ports:
-      - "8080:8080"
+      - "${HTTP_PORT:-8080}:8080"
     volumes:
       - vtt-data:/data
     environment:
+      # Container-internal paths (fixed by the image layout)
       - PORT=8080
       - DB_PATH=/data/vtt.db
       - UPLOADS_DIR=/data/uploads
       - STATIC_DIR=/app/public
-      # Change these in production:
-      - JWT_SECRET=change-me-in-production
-      - ADMIN_USERNAME=admin
-      - ADMIN_PASSWORD=admin
+      # Deployment configuration — see .env
+      - JWT_SECRET=${JWT_SECRET:-change-me-in-production}
+      - ADMIN_USERNAME=${ADMIN_USERNAME:-admin}
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD:-admin}
     restart: unless-stopped
 
 volumes:
