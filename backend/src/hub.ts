@@ -2,6 +2,7 @@ import { WebSocketServer, WebSocket } from 'ws'
 import { IncomingMessage } from 'http'
 import { verifyToken } from './auth'
 import { db } from './db'
+import { loadSettings } from './settings'
 
 interface Client {
   ws: WebSocket
@@ -22,9 +23,9 @@ function unregister(client: Client) {
   tables.get(client.tableId)?.delete(client)
 }
 
-function broadcast(tableId: string, data: string, exclude?: Client) {
+function broadcast(tableId: string, data: string, exclude?: Client, adminOnly = false) {
   tables.get(tableId)?.forEach(c => {
-    if (c !== exclude && c.ws.readyState === WebSocket.OPEN) {
+    if (c !== exclude && (!adminOnly || c.role === 'admin') && c.ws.readyState === WebSocket.OPEN) {
       c.ws.send(data)
     }
   })
@@ -49,27 +50,150 @@ function send(client: Client, msg: object) {
   }
 }
 
+/**
+ * Push a fresh table_state to every client connected to a table. Used by
+ * REST handlers after mutations that change what players are allowed to
+ * see (e.g. token visibility).
+ */
+export function pushTableStateToTable(tableId: string) {
+  tables.get(tableId)?.forEach(c => sendTableState(c))
+}
+
+// ── Music ─────────────────────────────────────────────────────────────────────
+// Server-authoritative playback state per table. `position` is the track
+// position in seconds at `updatedAt` (ms); clients derive the live position.
+
+interface MusicState {
+  current: string | null
+  playing: boolean
+  position: number
+  updatedAt: number
+  queue: string[]
+}
+
+const musicStates = new Map<string, MusicState>()
+
+function musicTracks(): Array<{ id: string; name: string; path: string }> {
+  return db.prepare('SELECT id, name, path FROM music ORDER BY rowid').all() as Array<{ id: string; name: string; path: string }>
+}
+
+function getMusicState(tableId: string): MusicState {
+  let st = musicStates.get(tableId)
+  if (!st) {
+    st = { current: null, playing: false, position: 0, updatedAt: Date.now(), queue: musicTracks().map(t => t.id) }
+    musicStates.set(tableId, st)
+  }
+  return st
+}
+
+function musicStatePayload(st: MusicState) {
+  return {
+    current: st.current,
+    playing: st.playing,
+    position: st.position,
+    updatedAt: st.updatedAt,
+    queue: st.queue,
+    tracks: musicTracks(),
+  }
+}
+
+function pushMusicState(tableId: string) {
+  broadcast(tableId, JSON.stringify({ type: 'music_state', payload: musicStatePayload(getMusicState(tableId)) }))
+}
+
+/** Rebuild each table's queue after the music library changes (upload/delete). */
+export function musicLibraryChanged() {
+  const tracks = musicTracks()
+  const ids = new Set(tracks.map(t => t.id))
+  tables.forEach((_clients, tableId) => {
+    const st = getMusicState(tableId)
+    st.queue = st.queue.filter(id => ids.has(id))
+    for (const id of ids) if (!st.queue.includes(id)) st.queue.push(id)
+    if (st.current && !ids.has(st.current)) {
+      st.current = null
+      st.playing = false
+      st.position = 0
+      st.updatedAt = Date.now()
+    }
+    pushMusicState(tableId)
+  })
+}
+
+function handleMusicControl(client: Client, payload: Record<string, unknown>) {
+  const { action, trackId, dir } = payload as { action: string; trackId?: string; dir?: number }
+  const st = getMusicState(client.tableId)
+  const now = Date.now()
+  // Live position at the time of the command
+  const pos = () => (st.playing ? st.position + (now - st.updatedAt) / 1000 : st.position)
+  const startTrack = (id: string) => { st.current = id; st.position = 0; st.playing = true; st.updatedAt = now }
+
+  switch (action) {
+    case 'play':
+      if (!st.current && st.queue.length > 0) startTrack(st.queue[0])
+      else { st.position = pos(); st.playing = true; st.updatedAt = now }
+      break
+    case 'pause':
+      st.position = pos(); st.playing = false; st.updatedAt = now
+      break
+    case 'next':
+    case 'prev': {
+      if (st.queue.length === 0) break
+      const idx = st.current ? st.queue.indexOf(st.current) : -1
+      const delta = action === 'next' ? 1 : -1
+      startTrack(st.queue[idx === -1 ? 0 : (idx + delta + st.queue.length) % st.queue.length])
+      break
+    }
+    case 'select':
+      // Choosing a specific track is admin-only; everyone controls transport
+      if (client.role !== 'admin') break
+      if (trackId && st.queue.includes(trackId)) startTrack(trackId)
+      break
+    case 'ended':
+      // Auto-advance when a track finishes; guarded so only the first
+      // client's "ended" event switches tracks (others are ignored).
+      if (!trackId || st.current !== trackId) break
+      if (st.queue.length === 0) break
+      startTrack(st.queue[(st.queue.indexOf(trackId) + 1) % st.queue.length])
+      break
+    case 'move': {
+      // Reorder the queue (any user)
+      if (!trackId || dir === undefined) break
+      const i = st.queue.indexOf(trackId)
+      const j = i + dir
+      if (i === -1 || j < 0 || j >= st.queue.length) break
+      ;[st.queue[i], st.queue[j]] = [st.queue[j], st.queue[i]]
+      break
+    }
+  }
+  pushMusicState(client.tableId)
+}
+
 function newId(): string {
   return crypto.randomUUID().replace(/-/g, '').slice(0, 16)
 }
 
 function sendTableState(client: Client) {
   const table = db.prepare(
-    'SELECT id, name, map_image_path, grid_size, uvt_metadata, map_offset_x, map_offset_y, tokens_hidden FROM tables WHERE id=?'
+    'SELECT id, name, map_image_path, grid_size, uvt_metadata, map_offset_x, map_offset_y FROM tables WHERE id=?'
   ).get(client.tableId) as Record<string, unknown> | undefined
 
   if (!table) return
 
-  const tokens = db.prepare(
-    'SELECT id, table_id, name, x, y, icon_path, has_vision, vision_radius, size, color, owner FROM tokens WHERE table_id=?'
-  ).all(client.tableId)
+  const tokenRows = db.prepare(
+    'SELECT id, table_id, name, x, y, icon_path, has_vision, vision_radius, size, color, owner, hidden FROM tokens WHERE table_id=?'
+  ).all(client.tableId) as Array<Record<string, unknown>>
+
+  // Hidden tokens (and their sight) are invisible to players; admins keep
+  // the full picture.
+  const tokens = client.role === 'admin'
+    ? tokenRows.map(normalizeToken)
+    : tokenRows.filter(t => t.hidden !== 1).map(normalizeToken)
 
   const fog = db.prepare(
     'SELECT id, table_id, x, y, radius FROM fog_points WHERE table_id=?'
   ).all(client.tableId)
 
-  const settingRows = db.prepare('SELECT key, value FROM settings').all() as { key: string; value: string }[]
-  const settings = Object.fromEntries(settingRows.map(r => [r.key, r.value === 'true']))
+  const settings = loadSettings()
 
   const portalRows = db.prepare('SELECT id, table_id, x1, y1, x2, y2, closed FROM portals WHERE table_id=?')
     .all(client.tableId) as Record<string, unknown>[]
@@ -78,8 +202,8 @@ function sendTableState(client: Client) {
   send(client, {
     type: 'table_state',
     payload: {
-      table: { ...table, tokens_hidden: table.tokens_hidden === 1, has_vision: undefined },
-      tokens: (tokens as Record<string, unknown>[]).map(normalizeToken),
+      table: { ...table, has_vision: undefined },
+      tokens,
       fog,
       portals,
       settings,
@@ -88,7 +212,11 @@ function sendTableState(client: Client) {
 }
 
 function normalizeToken(row: Record<string, unknown>) {
-  return { ...row, has_vision: row.has_vision === 1 || row.has_vision === true }
+  return {
+    ...row,
+    has_vision: row.has_vision === 1 || row.has_vision === true,
+    hidden: row.hidden === 1 || row.hidden === true,
+  }
 }
 
 function handleMessage(client: Client, raw: string) {
@@ -100,26 +228,28 @@ function handleMessage(client: Client, raw: string) {
   switch (type) {
     case 'token_move': {
       const { token_id, x, y } = payload as { token_id: string; x: number; y: number }
+      const tokenRow = db.prepare('SELECT owner, hidden FROM tokens WHERE id=? AND table_id=?')
+        .get(token_id, client.tableId) as { owner: string; hidden: number } | undefined
       if (client.role !== 'admin') {
         // Enforce players_move_own_only: non-admins may only move their own
         // tokens, unless the setting explicitly allows moving any token.
-        const token = db.prepare('SELECT owner FROM tokens WHERE id=? AND table_id=?')
-          .get(token_id, client.tableId) as { owner: string } | undefined
         const setting = db.prepare("SELECT value FROM settings WHERE key='players_move_own_only'")
           .get() as { value: string } | undefined
         const ownOnly = setting ? setting.value === 'true' : true
-        if (!token || (ownOnly && token.owner !== client.username)) break
+        if (!tokenRow || (ownOnly && tokenRow.owner !== client.username)) break
       }
+      if (!tokenRow) break
       db.prepare('UPDATE tokens SET x=?, y=? WHERE id=? AND table_id=?')
         .run(x, y, token_id, client.tableId)
-      broadcast(client.tableId, raw, client)
+      // Moves of hidden tokens are for admin eyes only
+      broadcast(client.tableId, raw, client, tokenRow.hidden === 1)
       break
     }
 
     case 'token_update': {
       const t = (payload as { token: Record<string, unknown> }).token
       const existing = db.prepare(
-        'SELECT name, x, y, icon_path, has_vision, vision_radius, size, color, owner FROM tokens WHERE id=? AND table_id=?'
+        'SELECT name, x, y, icon_path, has_vision, vision_radius, size, color, owner, hidden FROM tokens WHERE id=? AND table_id=?'
       ).get(t.id, client.tableId) as Record<string, unknown> | undefined
       if (!existing) break
       const m = {
@@ -132,12 +262,23 @@ function handleMessage(client: Client, raw: string) {
         size:          t.size          !== undefined ? t.size          : existing.size,
         color:         t.color         !== undefined ? t.color         : existing.color,
         owner:         t.owner         !== undefined ? t.owner         : existing.owner,
+        hidden:        t.hidden        !== undefined ? t.hidden        : existing.hidden,
       }
+      const hiddenNow = m.hidden === 1 || m.hidden === true
+      const wasHidden = existing.hidden === 1 || existing.hidden === true
       db.prepare(
-        `UPDATE tokens SET name=?, x=?, y=?, icon_path=?, has_vision=?, vision_radius=?, size=?, color=?, owner=?
+        `UPDATE tokens SET name=?, x=?, y=?, icon_path=?, has_vision=?, vision_radius=?, size=?, color=?, owner=?, hidden=?
          WHERE id=? AND table_id=?`
-      ).run(m.name, m.x, m.y, m.icon_path, m.has_vision ? 1 : 0, m.vision_radius, m.size, m.color, m.owner, t.id, client.tableId)
-      broadcast(client.tableId, raw, client)
+      ).run(m.name, m.x, m.y, m.icon_path, m.has_vision ? 1 : 0, m.vision_radius, m.size, m.color, m.owner, hiddenNow ? 1 : 0, t.id, client.tableId)
+
+      if (hiddenNow !== wasHidden) {
+        // Visibility changed: push a fresh table_state so players gain/lose
+        // the token (and its sight) immediately.
+        tables.get(client.tableId)?.forEach(c => sendTableState(c))
+      } else {
+        // Updates of hidden tokens are for admin eyes only
+        broadcast(client.tableId, raw, client, hiddenNow)
+      }
       break
     }
 
@@ -171,15 +312,9 @@ function handleMessage(client: Client, raw: string) {
       break
     }
 
-    case 'tokens_visible': {
-      // Admin-only: show/hide tokens for everyone on the table; persisted so
-      // late joiners inherit the state via table_state.
-      if (client.role !== 'admin') return
-      const { visible } = payload as { visible: boolean }
-      db.prepare('UPDATE tables SET tokens_hidden=? WHERE id=?').run(visible ? 0 : 1, client.tableId)
-      broadcast(client.tableId, raw) // include sender: its UI updates through the same path
+    case 'music_control':
+      handleMusicControl(client, payload)
       break
-    }
 
     case 'chat':
       broadcast(client.tableId, raw, client)
@@ -209,6 +344,7 @@ export function setupWebSocket(wss: WebSocketServer) {
     const client: Client = { ws, username: payload.username, role: payload.role, tableId }
     register(client)
     sendTableState(client)
+    send(client, { type: 'music_state', payload: musicStatePayload(getMusicState(tableId)) })
 
     ws.on('message', (data) => handleMessage(client, data.toString()))
     ws.on('close', () => unregister(client))

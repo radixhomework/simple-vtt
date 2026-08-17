@@ -401,6 +401,8 @@ export function drawMeasure(
   state: MeasureState,
   cam: Camera,
   gridSize: number,
+  unitSize = 1,
+  unit = '',
 ) {
   if (!state.active && !state.persist) return
 
@@ -415,6 +417,13 @@ export function drawMeasure(
   const dy = state.endY - state.startY
   const dist = Math.hypot(dx, dy) / gridSize
 
+  // Convert a grid-square distance to the configured real-world unit
+  const fmt = (sq: number) => {
+    if (!unit) return `${sq.toFixed(1)} sq`
+    const v = sq * unitSize
+    return `${v % 1 === 0 ? v.toFixed(0) : v.toFixed(1)} ${unit}`
+  }
+
   switch (state.tool) {
     case 'line': {
       ctx.beginPath()
@@ -425,7 +434,7 @@ export function drawMeasure(
       ctx.setLineDash([6, 3])
       ctx.stroke()
       ctx.setLineDash([])
-      drawDistLabel(ctx, x2, y2, dist)
+      drawDistLabel(ctx, x2, y2, fmt(dist))
       break
     }
     case 'circle': {
@@ -437,7 +446,7 @@ export function drawMeasure(
       ctx.setLineDash([6, 3])
       ctx.stroke()
       ctx.setLineDash([])
-      drawDistLabel(ctx, x1 + r, y1, dist)
+      drawDistLabel(ctx, x1 + r, y1, fmt(dist))
       break
     }
     case 'square': {
@@ -450,7 +459,7 @@ export function drawMeasure(
       ctx.setLineDash([])
       const wGrid = Math.abs(dx) / gridSize
       const hGrid = Math.abs(dy) / gridSize
-      drawDistLabel(ctx, (x1 + x2) / 2, y2, `${wGrid.toFixed(1)}×${hGrid.toFixed(1)}`)
+      drawDistLabel(ctx, (x1 + x2) / 2, y2, `${fmt(wGrid)}×${fmt(hGrid)}`)
       break
     }
     case 'cone': {
@@ -468,7 +477,7 @@ export function drawMeasure(
       ctx.setLineDash([6, 3])
       ctx.stroke()
       ctx.setLineDash([])
-      drawDistLabel(ctx, x2, y2, dist)
+      drawDistLabel(ctx, x2, y2, fmt(dist))
       break
     }
   }

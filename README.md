@@ -17,13 +17,16 @@ Simple and lightweight VTT project.
 **⭐ Features:**
 - [x] Remind what players have seen but is no more in sight (for example with greyscales instead of original colors)
 - [x] Allow admin measurement to be shown on players browsers
-- Global default settings:
+- [x] Global default settings:
     - Snap to grid
     - Enable/disable chat
     - Player move own tokens
     - Grid square size for measurements conversion (1 grid square equals 5 feet or 1,5 meters)
 - Enable/disable lights
-- Applicative full screen (hide all the menus, `Esc` for exiting)
+- [x] Applicative full screen (hide all the menus, `Esc` for exiting)
+- Add apple pencil support
+- Add mobile devices support in general
+- [x] Support music playing (managed by admin, and diffused in all browsers)
 
 ### ⚙️ Infrastructure issues
 

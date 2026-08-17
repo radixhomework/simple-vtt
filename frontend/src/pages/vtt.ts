@@ -181,6 +181,19 @@ function adminHTML() {
       <div class="users-list" id="users-list"></div>
       <div class="msg" id="user-msg"></div>
     </div>
+
+    <div class="admin-section">
+      <h3>Manage Music</h3>
+      <div class="form-row">
+        <div class="form-field">
+          <label>Audio file (mp3, ogg, wav, m4a, flac…)</label>
+          <input type="file" id="music-file" accept="audio/*,.mp3,.ogg,.wav,.m4a,.flac,.opus,.webm" />
+        </div>
+        <button class="btn btn-primary" id="music-upload-btn">Upload</button>
+      </div>
+      <div class="msg" id="music-msg"></div>
+      <div class="users-list" id="music-list"></div>
+    </div>
   `
 }
 
@@ -247,6 +260,24 @@ function bindAdminHandlers(root: HTMLElement, refresh: () => void) {
     }
   })
 
+  // Music upload
+  root.querySelector('#music-upload-btn')?.addEventListener('click', async () => {
+    const input = root.querySelector('#music-file') as HTMLInputElement
+    const msg = root.querySelector('#music-msg') as HTMLElement
+    const file = input.files?.[0]
+    if (!file) { msg.textContent = 'Choose an audio file first'; msg.className = 'msg msg-err'; return }
+    msg.textContent = 'Uploading…'; msg.className = 'msg'
+    try {
+      const track = await api.uploadMusic(file)
+      msg.textContent = `Uploaded "${track.name}"`; msg.className = 'msg msg-ok'
+      input.value = ''
+      loadMusic(root)
+    } catch (e: any) {
+      msg.textContent = 'Upload failed: ' + e.message; msg.className = 'msg msg-err'
+    }
+  })
+  loadMusic(root)
+
   loadUsers(root)
 }
 
@@ -268,6 +299,30 @@ async function loadUsers(root: HTMLElement) {
         if (confirm(`Delete user "${username}"?`)) {
           await api.deleteUser(username)
           loadUsers(root)
+        }
+      })
+    })
+  } catch {}
+}
+
+async function loadMusic(root: HTMLElement) {
+  const list = root.querySelector('#music-list') as HTMLElement
+  if (!list) return
+  try {
+    const tracks = await api.listMusic()
+    list.innerHTML = tracks.length === 0 ? '<span style="font-size:12px;color:#6060a0;">No music uploaded yet.</span>' : tracks.map(t => `
+      <div class="user-chip">
+        <span style="color:#4a90d9">♪</span>
+        ${esc(t.name)}
+        <button data-del-music="${esc(t.id)}" title="Delete music">×</button>
+      </div>
+    `).join('')
+    list.querySelectorAll('[data-del-music]').forEach(el => {
+      el.addEventListener('click', async () => {
+        const id = (el as HTMLElement).dataset.delMusic!
+        if (confirm('Delete this music?')) {
+          await api.deleteMusic(id)
+          loadMusic(root)
         }
       })
     })

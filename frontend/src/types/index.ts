@@ -11,7 +11,6 @@ export interface Table {
   uvt_metadata?: string
   map_offset_x: number
   map_offset_y: number
-  tokens_hidden: boolean
 }
 
 export interface Token {
@@ -26,6 +25,8 @@ export interface Token {
   size: number
   color: string
   owner: string
+  /** Admin-only: hidden tokens (and their sight) are invisible to players */
+  hidden: boolean
 }
 
 export interface FogPoint {
@@ -96,6 +97,10 @@ export interface AppSettings {
   players_move_own_only: boolean
   fog_enabled_default: boolean
   grid_visible_default: boolean
+  snap_default: boolean
+  /** Real-world size of one grid square, in measurement_unit */
+  grid_square_size: number
+  measurement_unit: 'ft' | 'm'
 }
 
 export const DEFAULT_SETTINGS: AppSettings = {
@@ -103,6 +108,9 @@ export const DEFAULT_SETTINGS: AppSettings = {
   players_move_own_only: true,
   fog_enabled_default: true,
   grid_visible_default: true,
+  snap_default: true,
+  grid_square_size: 5,
+  measurement_unit: 'ft',
 }
 
 export interface MeasureState {
@@ -121,7 +129,20 @@ export interface MeasureUpdatePayload {
   measure: MeasureState | null
 }
 
-/** Admin shows/hides tokens for every client on the table */
-export interface TokensVisiblePayload {
-  visible: boolean
+/** Music library track */
+export interface MusicTrack {
+  id: string
+  name: string
+  path: string
+}
+
+/** Server-authoritative music playback state, synced to every client */
+export interface MusicStatePayload {
+  current: string | null
+  playing: boolean
+  /** Track position in seconds at `updatedAt` (ms epoch) */
+  position: number
+  updatedAt: number
+  queue: string[]
+  tracks: MusicTrack[]
 }

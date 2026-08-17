@@ -40,6 +40,7 @@ db.exec(`
     size          REAL NOT NULL DEFAULT 1,
     color         TEXT NOT NULL DEFAULT '#4a90d9',
     owner         TEXT NOT NULL DEFAULT '',
+    hidden        INTEGER NOT NULL DEFAULT 0,
     FOREIGN KEY (table_id) REFERENCES tables(id) ON DELETE CASCADE
   );
 
@@ -63,6 +64,12 @@ db.exec(`
     FOREIGN KEY (table_id) REFERENCES tables(id) ON DELETE CASCADE
   );
 
+  CREATE TABLE IF NOT EXISTS music (
+    id   TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    path TEXT NOT NULL
+  );
+
   CREATE TABLE IF NOT EXISTS settings (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
@@ -75,6 +82,12 @@ if (!tableCols.some(c => c.name === 'tokens_hidden')) {
   db.exec('ALTER TABLE tables ADD COLUMN tokens_hidden INTEGER NOT NULL DEFAULT 0')
 }
 
+// Migration: add per-token hidden flag to pre-existing databases
+const tokenCols = db.prepare('PRAGMA table_info(tokens)').all() as Array<{ name: string }>
+if (!tokenCols.some(c => c.name === 'hidden')) {
+  db.exec('ALTER TABLE tokens ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0')
+}
+
 // Seed default settings (INSERT OR IGNORE so existing values are preserved)
 const seedSetting = db.prepare('INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)')
 const seedAll = db.transaction(() => {
@@ -82,5 +95,8 @@ const seedAll = db.transaction(() => {
   seedSetting.run('players_move_own_only', 'true')
   seedSetting.run('fog_enabled_default',   'true')
   seedSetting.run('grid_visible_default',  'true')
+  seedSetting.run('snap_default',          'true')
+  seedSetting.run('grid_square_size',      '5')
+  seedSetting.run('measurement_unit',      'ft')
 })
 seedAll()

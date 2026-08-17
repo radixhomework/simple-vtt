@@ -8,6 +8,7 @@ import { tablesRouter } from './routes/tables'
 import { tokensRouter } from './routes/tokens'
 import { settingsRouter } from './routes/settings'
 import { portalsRouter } from './routes/portals'
+import { musicRouter } from './routes/music'
 import { setupWebSocket } from './hub'
 
 // db is initialised on import (runs migrations)
@@ -38,6 +39,7 @@ app.use('/api', tablesRouter)
 app.use('/api', tokensRouter)
 app.use('/api', settingsRouter)
 app.use('/api', portalsRouter)
+app.use('/api', musicRouter)
 
 // Static: built frontend
 const staticDir = process.env.STATIC_DIR || path.join(process.cwd(), 'public')

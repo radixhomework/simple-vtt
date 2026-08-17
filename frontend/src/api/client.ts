@@ -1,4 +1,4 @@
-import type { Table, Token, User, FogPoint, AppSettings, Portal } from '../types'
+import type { Table, Token, User, FogPoint, AppSettings, Portal, MusicTrack } from '../types'
 
 const BASE = '/api'
 
@@ -64,6 +64,22 @@ export const api = {
   listPortals: (tableId: string) => request<Portal[]>('GET', `/tables/${tableId}/portals`),
   togglePortal: (tableId: string, portalId: string, closed: boolean) =>
     request<Portal>('PATCH', `/tables/${tableId}/portals/${portalId}`, { closed }),
+
+  // Music
+  listMusic: () => request<MusicTrack[]>('GET', '/music'),
+  deleteMusic: (id: string) => request<void>('DELETE', `/music/${id}`),
+
+  async uploadMusic(file: File): Promise<MusicTrack> {
+    const fd = new FormData()
+    fd.append('music', file)
+    const res = await fetch(BASE + '/music', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${localStorage.getItem('token') ?? ''}` },
+      body: fd,
+    })
+    if (!res.ok) throw new Error(await res.text())
+    return res.json()
+  },
 
   // File uploads
   async importUVTT(file: File, name?: string): Promise<Table> {

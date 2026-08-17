@@ -10,7 +10,7 @@ import type { WallSegment } from '../canvas/los'
 import type {
   User, Table, Token, FogPoint, Portal, Camera, ToolType, MeasureState, AppSettings,
   TableStatePayload, TokenMovePayload, TokenUpdatePayload, TokenDeletePayload, FogUpdatePayload,
-  MeasureUpdatePayload, TokensVisiblePayload,
+  MeasureUpdatePayload, MusicStatePayload,
 } from '../types'
 import { DEFAULT_SETTINGS } from '../types'
 
@@ -30,10 +30,11 @@ interface GameState {
   snap: boolean
   gridVisible: boolean
   fogEnabled: boolean
-  tokensHidden: boolean
+  zen: boolean
   measure: MeasureState
   sharedMeasure: MeasureState | null
   shareMeasure: boolean
+  music: MusicStatePayload | null
   dragging: boolean
   dragOffX: number
   dragOffY: number
@@ -58,6 +59,24 @@ export function renderMap(
   root.innerHTML = `
     <style>
       .game { display: flex; flex-direction: column; height: 100%; background: #000; overflow: hidden; }
+      /* Fullscreen mode: hide every menu, keep only the canvases */
+      .game.zen .game-header, .game.zen .chat-wrap, .game.zen .sidebar, .game.zen .music-panel { display: none; }
+
+      /* Music panel (left side) */
+      .music-panel {
+        position: absolute; left: 0; top: 0; bottom: 0;
+        width: 260px; background: #1a1a2e; border-right: 1px solid #2d2d4e;
+        display: flex; flex-direction: column; z-index: 20; transform: translateX(-100%);
+        transition: transform 0.2s; overflow-y: auto;
+      }
+      .music-panel.open { transform: none; }
+      .music-row {
+        display: flex; align-items: center; gap: 6px; padding: 6px 8px;
+        border-radius: 6px; cursor: pointer; font-size: 13px; transition: background 0.15s;
+      }
+      .music-row:hover { background: #2d2d4e; }
+      .music-row.current { background: #1e3a5f; }
+      .music-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
       .game-header {
         display: flex; align-items: center; gap: 10px;
         padding: 0 12px; height: 44px; background: #1a1a2e;
@@ -98,6 +117,7 @@ export function renderMap(
       }
       .token-item:hover { background: #2d2d4e; }
       .token-item.selected { background: #1e3a5f; }
+      .token-item.token-hidden { opacity: 0.55; }
       .token-dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
       .token-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
       .icon-btn { background: none; border: none; cursor: pointer; color: #9090b0; font-size: 14px; padding: 2px; border-radius: 4px; }
@@ -184,14 +204,15 @@ export function renderMap(
           <button class="header-btn" id="snap-btn">Snap ✓</button>
           <button class="header-btn" id="grid-btn">Grid ✓</button>
           ${isAdmin ? `<button class="header-btn" id="fog-toggle-btn">Fog ✓</button>
-          <button class="header-btn" id="tokens-btn">Tokens ✓</button>
           <button class="header-btn" id="share-measure-btn" title="Share measurements with players">Share ✗</button>` : ''}
         </div>
         <div class="game-header-right">
           ${isAdmin ? `<button class="header-btn" id="add-token-btn">+ Token</button>
           <button class="header-btn" id="clear-fog-btn">Clear Fog</button>` : ''}
+          <button class="header-btn" id="music-btn" title="Music player">🎵</button>
           <button class="header-btn" id="sidebar-btn">Tokens ≡</button>
           ${isAdmin ? `<button class="header-btn" id="settings-btn">⚙ Settings</button>` : ''}
+          <button class="header-btn" id="zen-btn" title="Fullscreen — hide menus (Esc to exit)">⛶</button>
           <span style="font-size:12px;color:#6060a0">${esc(user.username)}</span>
         </div>
       </div>
@@ -200,6 +221,28 @@ export function renderMap(
         <canvas id="canvas-main"></canvas>
         <canvas id="canvas-fog"></canvas>
         <canvas id="canvas-ui"></canvas>
+
+        <div class="music-panel" id="music-panel">
+          <div class="sidebar-section" style="display:flex;align-items:center;justify-content:space-between;">
+            <span style="font-size:13px;font-weight:600;color:#c0c0e0;">Music</span>
+            <button class="icon-btn" id="music-close">✕</button>
+          </div>
+          <div style="padding:12px 14px;display:flex;flex-direction:column;gap:10px;border-bottom:1px solid #2d2d4e;">
+            <div id="music-now" style="font-size:13px;color:#e0e0f0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">Nothing playing</div>
+            <div style="display:flex;align-items:center;gap:6px;">
+              <button class="icon-btn" id="music-prev" title="Previous" style="font-size:16px;">⏮</button>
+              <button class="icon-btn" id="music-play" title="Play / Pause" style="font-size:16px;">▶</button>
+              <button class="icon-btn" id="music-next" title="Next" style="font-size:16px;">⏭</button>
+              <span style="font-size:12px;color:#6060a0;">🔊</span>
+              <input type="range" id="music-vol" min="0" max="1" step="0.05" style="flex:1;accent-color:#4a90d9;" title="Volume" />
+            </div>
+          </div>
+          <div class="sidebar-section">
+            <h4>Queue</h4>
+            <div id="music-queue" style="display:flex;flex-direction:column;gap:4px;"></div>
+          </div>
+        </div>
+
         <div class="sidebar" id="sidebar">
           <div class="sidebar-section">
             <h4>Tokens</h4>
@@ -240,14 +283,15 @@ export function renderMap(
   const fogCtx = fogCanvas.getContext('2d')!
   const uiCtx = uiCanvas.getContext('2d')!
 
+  let rafId = 0
   function resizeCanvases() {
     const w = wrap.clientWidth, h = wrap.clientHeight
     for (const c of [mainCanvas, fogCanvas, uiCanvas]) {
       c.width = w; c.height = h
     }
+    // Resizing a canvas clears it — repaint (zen mode, window resize)
+    render()
   }
-  resizeCanvases()
-  new ResizeObserver(resizeCanvases).observe(wrap)
 
   // Game state
   const state: GameState = {
@@ -266,10 +310,11 @@ export function renderMap(
     snap: true,
     gridVisible: true,
     fogEnabled: true,
-    tokensHidden: !!table.tokens_hidden,
+    zen: false,
     measure: { active: false, tool: 'line', startX: 0, startY: 0, endX: 0, endY: 0 },
     sharedMeasure: null,
     shareMeasure: false,
+    music: null,
     dragging: false, dragOffX: 0, dragOffY: 0, dragStartX: 0, dragStartY: 0,
     panning: false, panStartX: 0, panStartY: 0, panCamX: 0, panCamY: 0,
   }
@@ -300,11 +345,15 @@ export function renderMap(
   loadMap()
 
   // Render loop
-  let rafId = 0
   function render() {
     cancelAnimationFrame(rafId)
     rafId = requestAnimationFrame(() => {
       const w = mainCanvas.width, h = mainCanvas.height
+
+      // Per-token visibility: hidden tokens (and their sight) are invisible
+      // to players; admins keep the full picture, hidden ones ghosted.
+      const visibleTokens = isAdmin ? state.tokens : state.tokens.filter(t => !t.hidden)
+      const hiddenTokens = isAdmin ? state.tokens.filter(t => t.hidden) : []
 
       // Main canvas: map + grid + tokens
       mainCtx.clearRect(0, 0, w, h)
@@ -313,20 +362,25 @@ export function renderMap(
         drawGrid(mainCtx, state.camera, state.table.grid_size, w, h)
       }
       drawPortals(mainCtx, state.portals, state.camera, isAdmin)
-      if (!state.tokensHidden) {
-        drawTokens(mainCtx, state.tokens, state.camera, state.table.grid_size, state.selectedId, user.username, isAdmin)
+      drawTokens(mainCtx, visibleTokens, state.camera, state.table.grid_size, state.selectedId, user.username, isAdmin)
+      if (hiddenTokens.length > 0) {
+        mainCtx.globalAlpha = 0.5
+        drawTokens(mainCtx, hiddenTokens, state.camera, state.table.grid_size, state.selectedId, user.username, isAdmin)
+        mainCtx.globalAlpha = 1
       }
 
-      // Fog canvas
+      // Fog canvas: punched only by the tokens each viewer can see (admins
+      // see the sight of hidden tokens too)
+      const sightTokens = isAdmin ? state.tokens : visibleTokens
       fogCtx.clearRect(0, 0, w, h)
       if (state.fogEnabled) {
         // Keep the explored memory up to date so areas that fall out of
         // sight keep showing in greyscale instead of going fully black
         if (state.exploredCanvas) {
-          updateExplored(state.exploredCanvas, state.tokens, state.fog, state.walls, state.table.grid_size)
+          updateExplored(state.exploredCanvas, sightTokens, state.fog, state.walls, state.table.grid_size)
         }
         drawFog(
-          fogCtx, state.tokens, state.fog, state.walls, state.camera, state.table.grid_size, isAdmin,
+          fogCtx, sightTokens, state.fog, state.walls, state.camera, state.table.grid_size, isAdmin,
           state.exploredCanvas, state.mapImage,
           state.table.map_offset_x, state.table.map_offset_y,
         )
@@ -334,32 +388,54 @@ export function renderMap(
 
       // UI canvas: shared (admin) measurement, then the local measuring tool
       uiCtx.clearRect(0, 0, w, h)
+      const unitSize = state.settings.grid_square_size
+      const unit = state.settings.measurement_unit
       if (state.sharedMeasure) {
-        drawMeasure(uiCtx, state.sharedMeasure, state.camera, state.table.grid_size)
+        drawMeasure(uiCtx, state.sharedMeasure, state.camera, state.table.grid_size, unitSize, unit)
       }
-      drawMeasure(uiCtx, state.measure, state.camera, state.table.grid_size)
+      drawMeasure(uiCtx, state.measure, state.camera, state.table.grid_size, unitSize, unit)
     })
   }
+  resizeCanvases()
+  new ResizeObserver(resizeCanvases).observe(wrap)
 
   // Token list sidebar
   function refreshSidebar() {
     const list = root.querySelector('#token-list') as HTMLElement
     if (!list) return
     list.innerHTML = state.tokens.map(t => `
-      <div class="token-item${t.id === state.selectedId ? ' selected' : ''}" data-token="${t.id}">
+      <div class="token-item${t.id === state.selectedId ? ' selected' : ''}${t.hidden ? ' token-hidden' : ''}" data-token="${t.id}">
         <div class="token-dot" style="background:${t.color}"></div>
         <span class="token-name">${esc(t.name || 'Token')}</span>
-        ${isAdmin ? `<button class="icon-btn" data-focus="${t.id}" title="Focus">⊙</button>` : ''}
+        ${isAdmin ? `<button class="icon-btn" data-toggle-hide="${t.id}" title="${t.hidden ? 'Show to players' : 'Hide from players'}">${t.hidden ? '🚫' : '👁'}</button>
+        <button class="icon-btn" data-focus="${t.id}" title="Focus">⊙</button>` : ''}
       </div>
     `).join('')
 
     list.querySelectorAll('[data-token]').forEach(el => {
       el.addEventListener('click', (e) => {
         const id = (el as HTMLElement).dataset.token!
-        if ((e.target as HTMLElement).closest('[data-focus]')) return
+        if ((e.target as HTMLElement).closest('[data-focus],[data-toggle-hide]')) return
         state.selectedId = id
         refreshSidebar()
         if (isAdmin) renderTokenEditor()
+        render()
+      })
+    })
+    list.querySelectorAll('[data-toggle-hide]').forEach(el => {
+      el.addEventListener('click', async () => {
+        const id = (el as HTMLElement).dataset.toggleHide!
+        const token = state.tokens.find(t => t.id === id)
+        if (!token) return
+        const updated: Token = { ...token, hidden: !token.hidden }
+        try {
+          await api.updateToken(state.table.id, token.id, updated)
+          const idx = state.tokens.findIndex(t => t.id === id)
+          if (idx !== -1) state.tokens[idx] = updated
+          socket.send('token_update', { token: updated })
+          if (state.selectedId === id) renderTokenEditor()
+        } catch { /* REST failed: server will re-sync via broadcast */ }
+        refreshSidebar()
         render()
       })
     })
@@ -394,6 +470,10 @@ export function renderMap(
           <input type="checkbox" id="te-vision" ${token.has_vision ? 'checked' : ''} />
           Has Vision
         </label>
+        <label class="checkbox-row" style="margin-top:6px">
+          <input type="checkbox" id="te-hidden" ${token.hidden ? 'checked' : ''} />
+          Hidden from players
+        </label>
         <div class="field" style="margin-top:8px"><label>Vision Radius (sq)</label><input type="number" id="te-vrad" value="${token.vision_radius}" min="1" max="60" /></div>
         <div class="field"><label>Icon URL / path</label><input type="text" id="te-icon" value="${esc(token.icon_path)}" /></div>
         <label style="display:flex;align-items:center;gap:8px;font-size:12px;cursor:pointer;margin-bottom:10px">
@@ -426,6 +506,7 @@ export function renderMap(
         color: (root.querySelector('#te-color') as HTMLInputElement).value,
         owner: (root.querySelector('#te-owner') as HTMLInputElement).value.trim(),
         has_vision: (root.querySelector('#te-vision') as HTMLInputElement).checked,
+        hidden: (root.querySelector('#te-hidden') as HTMLInputElement).checked,
         vision_radius: parseFloat((root.querySelector('#te-vrad') as HTMLInputElement).value) || 6,
         icon_path: (root.querySelector('#te-icon') as HTMLInputElement).value.trim(),
       }
@@ -463,13 +544,15 @@ export function renderMap(
         state.tokens = p.tokens ?? []
         state.fog = p.fog ?? []
         state.portals = p.portals ?? []
-        state.tokensHidden = !!p.table.tokens_hidden
         if (p.settings) state.settings = { ...DEFAULT_SETTINGS, ...p.settings }
         if (!initialStateLoaded) {
-          // Default-on-join settings apply once, when state first arrives
+          // Default-on-join settings apply once, when state first arrives.
+          // Later table_state pushes (e.g. token visibility toggles) must
+          // NOT reset the user's local view toggles.
           initialStateLoaded = true
           state.gridVisible = state.settings.grid_visible_default
           state.fogEnabled = state.settings.fog_enabled_default
+          state.snap = state.settings.snap_default
         }
         recomputeWalls()
         loadMap()
@@ -490,8 +573,12 @@ export function renderMap(
       case 'settings_update': {
         const p = msg.payload as { settings: AppSettings }
         state.settings = { ...DEFAULT_SETTINGS, ...p.settings }
+        // An admin changed the global defaults: apply them live to the view
+        state.gridVisible = state.settings.grid_visible_default
+        state.fogEnabled = state.settings.fog_enabled_default
+        state.snap = state.settings.snap_default
         applySettings()
-        // Refresh the open settings panel so toggle states stay in sync live
+        // Refresh the open settings panel so control states stay in sync live
         if (root.querySelector('#settings-panel')?.classList.contains('open')) {
           renderSettingsPanel()
         }
@@ -540,11 +627,9 @@ export function renderMap(
         render()
         break
       }
-      case 'tokens_visible': {
-        const p = msg.payload as TokensVisiblePayload
-        state.tokensHidden = !p.visible
-        updateHeaderToggles()
-        render()
+      case 'music_state': {
+        state.music = msg.payload as MusicStatePayload
+        applyMusicState()
         break
       }
       case 'chat': {
@@ -553,6 +638,124 @@ export function renderMap(
       }
     }
   })
+
+  // ── Music player ─────────────────────────────────────────────────────────────
+  // Playback is driven by the server state; the volume is local to each browser.
+  const audio = new Audio()
+  audio.preload = 'auto'
+  const savedVol = parseFloat(localStorage.getItem('musicVolume') ?? '')
+  audio.volume = isFinite(savedVol) && savedVol >= 0 && savedVol <= 1 ? savedVol : 0.7
+
+  let musicUnlockArmed = false
+  function tryPlayMusic() {
+    audio.play().catch(() => {
+      // Browser autoplay policy: retry on the next user gesture
+      if (musicUnlockArmed) return
+      musicUnlockArmed = true
+      showNotif('Click anywhere to enable music')
+      const unlock = () => {
+        musicUnlockArmed = false
+        document.removeEventListener('click', unlock)
+        if (state.music?.playing) audio.play().catch(() => {})
+      }
+      document.addEventListener('click', unlock)
+    })
+  }
+
+  function applyMusicState() {
+    const m = state.music
+    renderMusicPanel()
+    if (!m || !m.current) { audio.pause(); return }
+    const track = m.tracks.find(t => t.id === m.current)
+    if (!track) { audio.pause(); return }
+    if (audio.dataset.trackId !== m.current) {
+      audio.src = track.path
+      audio.dataset.trackId = m.current
+      audio.load()
+    }
+    const pos = m.playing ? m.position + (Date.now() - m.updatedAt) / 1000 : m.position
+    if (Math.abs(audio.currentTime - pos) > 1.5) {
+      try { audio.currentTime = pos } catch { /* metadata not loaded yet */ }
+    }
+    if (m.playing) tryPlayMusic()
+    else audio.pause()
+  }
+
+  audio.addEventListener('loadedmetadata', () => {
+    // Re-sync once the new track's metadata is available
+    const m = state.music
+    if (!m?.playing) return
+    const pos = m.position + (Date.now() - m.updatedAt) / 1000
+    if (Math.abs(audio.currentTime - pos) > 1.5) {
+      try { audio.currentTime = pos } catch {}
+    }
+    tryPlayMusic()
+  })
+  audio.addEventListener('ended', () => {
+    // Server auto-advances; the guard there ignores duplicate ended events
+    if (state.music?.current) {
+      socket.send('music_control', { action: 'ended', trackId: state.music.current })
+    }
+  })
+
+  function renderMusicPanel() {
+    const nowEl = root.querySelector('#music-now')
+    const playBtn = root.querySelector('#music-play')
+    const queueEl = root.querySelector('#music-queue') as HTMLElement | null
+    if (!nowEl || !playBtn || !queueEl) return
+    const m = state.music
+    const cur = m?.current ? m.tracks.find(t => t.id === m.current) : null
+    nowEl.textContent = cur ? `♪ ${cur.name}` : 'Nothing playing'
+    playBtn.textContent = m?.playing ? '⏸' : '▶'
+
+    queueEl.innerHTML = (m?.queue ?? []).map(id => {
+      const t = m!.tracks.find(x => x.id === id)
+      if (!t) return ''
+      return `
+        <div class="music-row${id === m!.current ? ' current' : ''}" data-mtrack="${t.id}" ${isAdmin ? '' : 'style="cursor:default"'}>
+          <span class="music-name">${esc(t.name)}</span>
+          <button class="icon-btn" data-mup="${t.id}" title="Move up">↑</button>
+          <button class="icon-btn" data-mdown="${t.id}" title="Move down">↓</button>
+        </div>`
+    }).join('') || '<div style="font-size:12px;color:#6060a0;">No music uploaded yet</div>'
+
+    queueEl.querySelectorAll('[data-mtrack]').forEach(el => {
+      el.addEventListener('click', (e) => {
+        if ((e.target as HTMLElement).closest('[data-mup],[data-mdown]')) return
+        if (!isAdmin) return // selecting a track is admin-only
+        socket.send('music_control', { action: 'select', trackId: (el as HTMLElement).dataset.mtrack })
+      })
+    })
+    queueEl.querySelectorAll('[data-mup]').forEach(el => {
+      el.addEventListener('click', () =>
+        socket.send('music_control', { action: 'move', trackId: (el as HTMLElement).dataset.mup, dir: -1 }))
+    })
+    queueEl.querySelectorAll('[data-mdown]').forEach(el => {
+      el.addEventListener('click', () =>
+        socket.send('music_control', { action: 'move', trackId: (el as HTMLElement).dataset.mdown, dir: 1 }))
+    })
+  }
+
+  root.querySelector('#music-btn')?.addEventListener('click', () => {
+    root.querySelector('#sidebar')?.classList.remove('open')
+    root.querySelector('#settings-panel')?.classList.remove('open')
+    root.querySelector('#music-panel')?.classList.toggle('open')
+  })
+  root.querySelector('#music-close')?.addEventListener('click', () => {
+    root.querySelector('#music-panel')?.classList.remove('open')
+  })
+  root.querySelector('#music-prev')?.addEventListener('click', () => socket.send('music_control', { action: 'prev' }))
+  root.querySelector('#music-next')?.addEventListener('click', () => socket.send('music_control', { action: 'next' }))
+  root.querySelector('#music-play')?.addEventListener('click', () =>
+    socket.send('music_control', { action: state.music?.playing ? 'pause' : 'play' }))
+  const musicVol = root.querySelector('#music-vol') as HTMLInputElement | null
+  if (musicVol) {
+    musicVol.value = String(audio.volume)
+    musicVol.addEventListener('input', () => {
+      audio.volume = parseFloat(musicVol.value)
+      localStorage.setItem('musicVolume', musicVol.value)
+    })
+  }
 
   // Header buttons
   root.querySelector('#back-btn')!.addEventListener('click', () => {
@@ -564,6 +767,47 @@ export function renderMap(
     root.querySelector('#sidebar')!.classList.toggle('open')
   })
 
+  // Fullscreen (zen) mode — hide every menu AND take the browser fullscreen.
+  // Esc exits the browser fullscreen natively; fullscreenchange brings the
+  // menus back.
+  const gameRoot = root.querySelector('.game') as HTMLElement
+
+  function closeAllPanels() {
+    root.querySelector('#sidebar')?.classList.remove('open')
+    root.querySelector('#settings-panel')?.classList.remove('open')
+    root.querySelector('#music-panel')?.classList.remove('open')
+  }
+
+  async function enterZen() {
+    state.zen = true
+    gameRoot.classList.add('zen')
+    closeAllPanels()
+    // canvas-wrap resizes; the ResizeObserver repaints
+    try { await root.requestFullscreen() } catch { /* browser refused: stay applicative-fullscreen */ }
+  }
+
+  function exitZen() {
+    state.zen = false
+    gameRoot.classList.remove('zen')
+    if (document.fullscreenElement) {
+      document.exitFullscreen().catch(() => {})
+    }
+  }
+
+  root.querySelector('#zen-btn')?.addEventListener('click', () => {
+    if (state.zen) exitZen()
+    else void enterZen()
+  })
+
+  const onFullscreenChange = () => {
+    if (!document.fullscreenElement && state.zen) {
+      // Browser left fullscreen (Esc / F11) — restore the menus too
+      state.zen = false
+      gameRoot.classList.remove('zen')
+    }
+  }
+  document.addEventListener('fullscreenchange', onFullscreenChange)
+
   // Settings panel (admin only)
   const settingsPanel = root.querySelector('#settings-panel') as HTMLElement | null
   const settingsBody = root.querySelector('#settings-body') as HTMLElement | null
@@ -572,11 +816,28 @@ export function renderMap(
     if (!isAdmin || !settingsBody) return
     const s = state.settings
     settingsBody.innerHTML = [
-        settingToggle('chat_enabled',          s.chat_enabled,          'Chat',               'Players can send and receive chat messages'),
-        settingToggle('players_move_own_only', s.players_move_own_only, 'Players move own tokens only', 'When enabled, players can only drag tokens they own'),
-        settingToggle('fog_enabled_default',   s.fog_enabled_default,   'Fog of War (default on)', 'Whether fog is active when joining a table'),
-        settingToggle('grid_visible_default',  s.grid_visible_default,  'Grid (default visible)',     'Whether the grid is shown when joining a table'),
-      ].join('')
+      settingToggle('chat_enabled',          s.chat_enabled,          'Chat',               'Players can send and receive chat messages'),
+      settingToggle('players_move_own_only', s.players_move_own_only, 'Players move own tokens only', 'When enabled, players can only drag tokens they own'),
+      settingToggle('fog_enabled_default',   s.fog_enabled_default,   'Fog of War (default on)', 'Whether fog is active when joining a table'),
+      settingToggle('grid_visible_default',  s.grid_visible_default,  'Grid (default visible)',     'Whether the grid is shown when joining a table'),
+      settingToggle('snap_default',          s.snap_default,          'Snap to grid (default on)', 'Whether tokens snap to the grid when joining a table'),
+      `
+      <label style="display:flex;flex-direction:column;gap:4px;cursor:pointer;">
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;">
+          <span style="font-size:13px;color:#e0e0f0;font-weight:500;">Grid square size</span>
+          <div style="display:flex;align-items:center;gap:6px;">
+            <input type="number" id="set-square-size" value="${s.grid_square_size}" min="0.5" step="0.5"
+              style="width:64px;padding:5px 8px;background:#0f0f1a;border:1px solid #2d2d4e;border-radius:6px;color:#e0e0f0;font-size:13px;outline:none;" />
+            <select id="set-unit"
+              style="padding:5px 8px;background:#0f0f1a;border:1px solid #2d2d4e;border-radius:6px;color:#e0e0f0;font-size:13px;outline:none;">
+              <option value="ft" ${s.measurement_unit === 'ft' ? 'selected' : ''}>ft</option>
+              <option value="m" ${s.measurement_unit === 'm' ? 'selected' : ''}>m</option>
+            </select>
+          </div>
+        </div>
+        <span style="font-size:11px;color:#5050a0;">Real-world size of one grid square, used by the measurement tools</span>
+      </label>`,
+    ].join('')
 
     settingsBody.querySelectorAll<HTMLInputElement>('input[type=checkbox]').forEach(cb => {
       cb.addEventListener('change', async () => {
@@ -590,6 +851,31 @@ export function renderMap(
           cb.checked = !cb.checked // revert on error
         }
       })
+    })
+
+    settingsBody.querySelector('#set-square-size')?.addEventListener('change', async (e) => {
+      const input = e.target as HTMLInputElement
+      const value = parseFloat(input.value)
+      if (!isFinite(value) || value <= 0) { input.value = String(state.settings.grid_square_size); return }
+      try {
+        const updated = await api.patchSettings({ grid_square_size: value })
+        state.settings = { ...state.settings, ...updated }
+        render()
+      } catch {
+        input.value = String(state.settings.grid_square_size)
+      }
+    })
+
+    settingsBody.querySelector('#set-unit')?.addEventListener('change', async (e) => {
+      const select = e.target as HTMLSelectElement
+      const value = select.value === 'm' ? 'm' as const : 'ft' as const
+      try {
+        const updated = await api.patchSettings({ measurement_unit: value })
+        state.settings = { ...state.settings, ...updated }
+        render()
+      } catch {
+        select.value = state.settings.measurement_unit
+      }
     })
   }
 
@@ -605,12 +891,11 @@ export function renderMap(
   }
 
   function applySettings() {
-    // Chat
+    // Chat visibility only. Grid/Fog/Snap are user view toggles: they take
+    // their default on join and when an admin changes the global defaults
+    // (settings_update), but never from routine table_state pushes.
     const chatWrap = root.querySelector('#chat-wrap') as HTMLElement | null
     if (chatWrap) chatWrap.style.display = state.settings.chat_enabled ? '' : 'none'
-    // Keep the view and header toggles in sync with the global settings
-    state.gridVisible = state.settings.grid_visible_default
-    state.fogEnabled = state.settings.fog_enabled_default
     updateHeaderToggles()
     render()
   }
@@ -648,15 +933,6 @@ export function renderMap(
     render()
   })
 
-  // Tokens visibility (admin) — hides tokens for every client on the table
-  const tokensBtn = root.querySelector('#tokens-btn') as HTMLButtonElement
-  tokensBtn?.addEventListener('click', () => {
-    state.tokensHidden = !state.tokensHidden
-    socket.send('tokens_visible', { visible: !state.tokensHidden })
-    updateHeaderToggles()
-    render()
-  })
-
   // Share measurements with players (admin)
   const shareBtn = root.querySelector('#share-measure-btn') as HTMLButtonElement
   shareBtn?.addEventListener('click', () => {
@@ -681,10 +957,6 @@ export function renderMap(
     if (fogToggle) {
       fogToggle.textContent = `Fog ${state.fogEnabled ? '✓' : '✗'}`
       fogToggle.classList.toggle('active', state.fogEnabled)
-    }
-    if (tokensBtn) {
-      tokensBtn.textContent = `Tokens ${state.tokensHidden ? '✗' : '✓'}`
-      tokensBtn.classList.toggle('active', !state.tokensHidden)
     }
     if (shareBtn) {
       shareBtn.textContent = `Share ${state.shareMeasure ? '✓' : '✗'}`
@@ -895,9 +1167,12 @@ export function renderMap(
 
     if (state.measure.active && e.button === 0) {
       state.measure.active = false
-      // Keep a shared measurement visible on players' screens after release
+      // Keep a shared measurement visible after release — on the players'
+      // screens (broadcast) and on the admin's own screen for consistency
       if (isAdmin && state.shareMeasure) {
-        socket.send('measure_update', { measure: { ...state.measure, active: false, persist: true } })
+        const persisted: MeasureState = { ...state.measure, active: false, persist: true }
+        socket.send('measure_update', { measure: persisted })
+        state.sharedMeasure = persisted
       }
       render()
     }
@@ -964,6 +1239,7 @@ export function renderMap(
       })
     }
     if (e.key === 'Escape') {
+      if (state.zen) exitZen()
       state.selectedId = null
       state.measure.active = false
       if (state.shareMeasure) socket.send('measure_update', { measure: null })
@@ -988,7 +1264,10 @@ export function renderMap(
     unsub()
     socket.disconnect()
     document.removeEventListener('keydown', onKeydown)
+    document.removeEventListener('fullscreenchange', onFullscreenChange)
     cancelAnimationFrame(rafId)
+    audio.pause()
+    audio.removeAttribute('src')
   })
 
   // Chat
