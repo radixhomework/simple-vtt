@@ -2,7 +2,7 @@
  * Typed REST client. The JWT is read from localStorage on every call;
  * multipart uploads (maps, music, icons) use their own fetch helpers.
  */
-import type { Table, Token, User, FogPoint, AppSettings, Portal, Asset } from '../types'
+import type { Table, Token, User, FogPoint, AppSettings, Portal, Asset, Floor, Stairs } from '../types'
 
 const BASE = '/api'
 
@@ -56,6 +56,44 @@ export const api = {
     request<Table>('PUT', `/tables/${id}`, data),
   deleteTable: (id: string) => request<void>('DELETE', `/tables/${id}`),
 
+  // Floors (levels) of a table
+  createFloor: (tableId: string, data: { name?: string; grid_size?: number }) =>
+    request<Floor>('POST', `/tables/${tableId}/floors`, data),
+  updateFloor: (floorId: string, data: Partial<Floor>) =>
+    request<Floor>('PUT', `/floors/${floorId}`, data),
+  deleteFloor: (floorId: string) => request<void>('DELETE', `/floors/${floorId}`),
+  async importFloorUVTT(tableId: string, file: File, name?: string): Promise<Floor> {
+    const fd = new FormData()
+    fd.append('file', file)
+    if (name) fd.append('name', name)
+    const res = await fetch(BASE + `/tables/${tableId}/floors/import`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${localStorage.getItem('token') ?? ''}` },
+      body: fd,
+    })
+    if (!res.ok) throw new Error(await res.text())
+    return res.json()
+  },
+  async uploadFloorImage(floorId: string, file: File, width: number, height: number): Promise<{ path: string }> {
+    // Measure the image client-side for the server's dimension check
+    const fd = new FormData()
+    fd.append('image', file)
+    fd.append('width', String(width))
+    fd.append('height', String(height))
+    const res = await fetch(BASE + `/floors/${floorId}/upload-image`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${localStorage.getItem('token') ?? ''}` },
+      body: fd,
+    })
+    if (!res.ok) throw new Error(await res.text())
+    return res.json()
+  },
+
+  // Stairs between floors
+  createStair: (tableId: string, data: Omit<Stairs, 'id' | 'table_id'>) =>
+    request<Stairs>('POST', `/tables/${tableId}/stairs`, data),
+  deleteStair: (id: string) => request<void>('DELETE', `/stairs/${id}`),
+
   // Tokens
   listTokens: (tableId: string) => request<Token[]>('GET', `/tables/${tableId}/tokens`),
   createToken: (tableId: string, token: Partial<Token>) =>
@@ -67,7 +105,8 @@ export const api = {
 
   // Fog
   listFog: (tableId: string) => request<FogPoint[]>('GET', `/tables/${tableId}/fog`),
-  clearFog: (tableId: string) => request<void>('DELETE', `/tables/${tableId}/fog`),
+  clearFog: (tableId: string, floorId?: string) =>
+    request<void>('DELETE', `/tables/${tableId}/fog${floorId ? `?floor_id=${floorId}` : ''}`),
 
   // Settings
   getSettings: () => request<AppSettings>('GET', '/settings'),
