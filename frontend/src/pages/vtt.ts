@@ -1,9 +1,12 @@
 /**
- * VTT home page: table list for everyone; admin sections for creating and
- * importing tables, managing players and managing the music library.
+ * VTT home page. Players see the table list; admins get a multi-page
+ * management console (Maps & Tables, Users, Assets) rendered above it.
+ * Every user can change their own password from here.
  */
 import { api } from '../api/client'
-import type { User, Table } from '../types'
+import type { User, Table, Asset } from '../types'
+
+type AdminPage = 'tables' | 'users' | 'assets'
 
 export function renderVtt(
   root: HTMLElement,
@@ -12,6 +15,7 @@ export function renderVtt(
   onLogout: () => void,
 ) {
   const isAdmin = user.role === 'admin'
+  let adminPage: AdminPage = 'tables'
 
   const render = async () => {
     const tables = await api.listTables()
@@ -27,8 +31,12 @@ export function renderVtt(
         .badge { padding: 2px 8px; border-radius: 12px; font-size: 11px; font-weight: 600; text-transform: uppercase; }
         .badge-admin { background: #7c3aed; color: #e9d5ff; }
         .badge-player { background: #1e40af; color: #bfdbfe; }
-        .lobby-body { flex: 1; overflow-y: auto; padding: 32px; max-width: 900px; margin: 0 auto; width: 100%; }
-        .section-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; }
+        /* lobby-body is the full-width scroll container, so the scrollbar
+           sits against the window's right border; the content column is
+           centered inside it. */
+        .lobby-body { flex: 1; overflow-y: auto; }
+        .lobby-content { max-width: 1000px; margin: 0 auto; width: 100%; padding: 32px; }
+        .section-header { display: flex; align-items: center; justify-content: space-between; margin: 24px 0 16px; }
         .section-title { font-size: 16px; font-weight: 600; color: #c0c0e0; }
         .tables-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 16px; margin-bottom: 32px; }
         .table-card {
@@ -46,8 +54,31 @@ export function renderVtt(
         .btn-danger { background: #dc2626; color: #fff; }
         .btn-ghost { background: transparent; color: #9090b0; border: 1px solid #2d2d4e; }
         .btn-sm { padding: 5px 10px; font-size: 12px; }
+        .admin-nav { display: flex; gap: 6px; border-bottom: 1px solid #2d2d4e; margin-bottom: 24px; flex-wrap: wrap; }
+        .admin-tab {
+          padding: 10px 18px; background: transparent; border: none; border-bottom: 2px solid transparent;
+          color: #9090b0; font-size: 14px; font-weight: 600; cursor: pointer;
+        }
+        .admin-tab:hover { color: #e0e0f0; }
+        .admin-tab.active { color: #4a90d9; border-bottom-color: #4a90d9; }
         .admin-section { background: #1a1a2e; border: 1px solid #2d2d4e; border-radius: 10px; padding: 24px; margin-bottom: 24px; }
         .admin-section h3 { font-size: 14px; font-weight: 600; color: #9090b0; margin-bottom: 16px; text-transform: uppercase; letter-spacing: 0.05em; }
+        .data-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+        .data-table th {
+          text-align: left; padding: 8px 10px; color: #6060a0; font-size: 11px;
+          text-transform: uppercase; letter-spacing: 0.05em; border-bottom: 1px solid #2d2d4e;
+        }
+        .data-table td { padding: 9px 10px; border-bottom: 1px solid #1e1e38; }
+        .data-table tr:last-child td { border-bottom: none; }
+        .data-table select, .data-table input[type=text] {
+          padding: 5px 8px; background: #0f0f1a; border: 1px solid #2d2d4e; border-radius: 6px;
+          color: #e0e0f0; font-size: 12px; outline: none;
+        }
+        .row-actions { text-align: right; white-space: nowrap; }
+        .row-actions .btn { margin-left: 6px; }
+        .folder-head td { cursor: pointer; user-select: none; }
+        .folder-head:hover td { color: #6aa9ff; }
+        .fold-arrow { display: inline-block; width: 14px; }
         .form-row { display: flex; gap: 10px; flex-wrap: wrap; align-items: flex-end; }
         .form-field { display: flex; flex-direction: column; gap: 5px; }
         .form-field label { font-size: 12px; color: #6060a0; }
@@ -62,7 +93,6 @@ export function renderVtt(
           display: flex; align-items: center; gap: 6px; padding: 4px 10px;
           background: #0f0f1a; border: 1px solid #2d2d4e; border-radius: 20px; font-size: 13px;
         }
-        .user-chip button { background: none; border: none; cursor: pointer; color: #f87171; font-size: 14px; line-height: 1; padding: 0 2px; }
         .upload-zone {
           border: 2px dashed #2d2d4e; border-radius: 8px; padding: 20px;
           text-align: center; cursor: pointer; transition: border-color 0.2s; color: #6060a0; font-size: 13px;
@@ -72,6 +102,7 @@ export function renderVtt(
         .msg-ok { color: #34d399; }
         .msg-err { color: #f87171; }
         .empty-state { text-align: center; padding: 48px; color: #4040a0; }
+        .you { font-size: 11px; color: #6060a0; }
       </style>
       <div class="lobby">
         <div class="lobby-header">
@@ -84,13 +115,42 @@ export function renderVtt(
             RHW Simple VTT
           </div>
           <div class="lobby-user">
-            <span>${user.username}</span>
+            <span>${esc(user.username)}</span>
             <span class="badge badge-${user.role}">${user.role}</span>
+            <button class="btn btn-ghost btn-sm" id="pass-btn" title="Change password">🔑</button>
             <button class="btn btn-ghost btn-sm" id="logout-btn">Sign out</button>
           </div>
         </div>
         <div class="lobby-body">
-          ${isAdmin ? adminHTML() : ''}
+          <div class="lobby-content">
+          <div class="admin-section" id="pass-section" style="display:none">
+            <h3>Change Password (${esc(user.username)})</h3>
+            <div class="form-row">
+              <div class="form-field">
+                <label>Current password</label>
+                <input id="pass-current" type="password" autocomplete="current-password" />
+              </div>
+              <div class="form-field">
+                <label>New password</label>
+                <input id="pass-new" type="password" autocomplete="new-password" />
+              </div>
+              <div class="form-field">
+                <label>Confirm new password</label>
+                <input id="pass-confirm" type="password" autocomplete="new-password" />
+              </div>
+              <button class="btn btn-primary" id="pass-save-btn">Save</button>
+            </div>
+            <div class="msg" id="pass-msg"></div>
+          </div>
+
+          ${isAdmin ? `
+          <div class="admin-nav" id="admin-nav">
+            <button class="admin-tab active" data-page="tables">🗺 Maps &amp; Tables</button>
+            <button class="admin-tab" data-page="users">👥 Users</button>
+            <button class="admin-tab" data-page="assets">📦 Assets</button>
+            <span id="version-info" style="margin-left:auto;align-self:center;font-size:11px;color:#6060a0"></span>
+          </div>
+          <div id="admin-page"></div>` : ''}
 
           <div class="section-header">
             <span class="section-title">Tables</span>
@@ -101,28 +161,481 @@ export function renderVtt(
               : tables.map(t => tableCardHTML(t, isAdmin)).join('')
             }
           </div>
+          </div>
         </div>
       </div>
     `
 
     root.querySelector('#logout-btn')!.addEventListener('click', onLogout)
 
-    // Join table
-    root.querySelectorAll('[data-join]').forEach(el => {
+    // Change password (admin and players)
+    const passSection = root.querySelector('#pass-section') as HTMLElement | null
+    root.querySelector('#pass-btn')?.addEventListener('click', () => {
+      if (!passSection) return
+      passSection.style.display = passSection.style.display === 'none' ? '' : 'none'
+    })
+    root.querySelector('#pass-save-btn')?.addEventListener('click', async () => {
+      const msg = root.querySelector('#pass-msg') as HTMLElement
+      const current = (root.querySelector('#pass-current') as HTMLInputElement).value
+      const next = (root.querySelector('#pass-new') as HTMLInputElement).value
+      const confirm2 = (root.querySelector('#pass-confirm') as HTMLInputElement).value
+      if (!current || !next) { msg.textContent = 'Fill in all fields'; msg.className = 'msg msg-err'; return }
+      if (next !== confirm2) { msg.textContent = 'New passwords do not match'; msg.className = 'msg msg-err'; return }
+      try {
+        await api.changePassword(current, next)
+        msg.textContent = 'Password updated'; msg.className = 'msg msg-ok'
+        ;(root.querySelector('#pass-current') as HTMLInputElement).value = ''
+        ;(root.querySelector('#pass-new') as HTMLInputElement).value = ''
+        ;(root.querySelector('#pass-confirm') as HTMLInputElement).value = ''
+      } catch (e: any) {
+        msg.textContent = e.message.includes('401') ? 'Current password is wrong' : 'Update failed: ' + e.message
+        msg.className = 'msg msg-err'
+      }
+    })
+
+    // Join table (cards)
+    root.querySelectorAll('#tables-grid [data-join]').forEach(el => {
       el.addEventListener('click', () => {
         const id = (el as HTMLElement).dataset.join!
         const table = tables.find(t => t.id === id)
         if (table) onJoin(table)
       })
     })
+    root.querySelectorAll('#tables-grid [data-del]').forEach(el => {
+      el.addEventListener('click', async (e) => {
+        e.stopPropagation()
+        const id = (el as HTMLElement).dataset.del!
+        if (confirm('Delete this table and all its data?')) {
+          await api.deleteTable(id)
+          render()
+        }
+      })
+    })
 
-    if (isAdmin) bindAdminHandlers(root, render)
+    if (isAdmin) {
+      // Version line: frontend (build-time) + backend (API)
+      api.getVersion()
+        .then(v => {
+          const el = root.querySelector('#version-info')
+          if (el) el.textContent = `frontend v${__APP_VERSION__} · backend v${v.version}`
+        })
+        .catch(() => {})
+
+      root.querySelectorAll('[data-page]').forEach(btn => {
+        btn.addEventListener('click', () => {
+          adminPage = (btn as HTMLElement).dataset.page as AdminPage
+          root.querySelectorAll('[data-page]').forEach(b => b.classList.toggle('active', b === btn))
+          renderAdminPage()
+        })
+      })
+      renderAdminPage()
+    }
+  }
+
+  // ── Admin pages ────────────────────────────────────────────────────────────
+
+  function renderAdminPage() {
+    const page = root.querySelector('#admin-page') as HTMLElement | null
+    if (!page) return
+    if (adminPage === 'tables') void renderTablesPage(page)
+    else if (adminPage === 'users') void renderUsersPage(page)
+    else void renderAssetsPage(page)
+  }
+
+  /** Page 1: create/import tables + inventory of existing maps. */
+  async function renderTablesPage(page: HTMLElement) {
+    const tables = await api.listTables()
+    page.innerHTML = `
+      <div class="admin-section">
+        <h3>Create Table</h3>
+        <div class="form-row">
+          <div class="form-field">
+            <label>Name</label>
+            <input id="new-table-name" placeholder="My Campaign" />
+          </div>
+          <div class="form-field">
+            <label>Grid (px/sq)</label>
+            <input id="new-table-grid" type="number" value="70" style="width:80px" />
+          </div>
+          <button class="btn btn-primary" id="create-table-btn">Create</button>
+        </div>
+        <div class="msg" id="create-table-msg"></div>
+      </div>
+
+      <div class="admin-section">
+        <h3>Import Universal VTT (.uvtt / .zip)</h3>
+        <div class="upload-zone" id="uvtt-drop">
+          Drop a .uvtt or .zip file here, or click to browse
+          <input type="file" id="uvtt-file" accept=".uvtt,.zip,.dd2vtt" style="display:none" />
+        </div>
+        <div class="msg" id="import-msg"></div>
+      </div>
+
+      <div class="admin-section">
+        <h3>Maps (${tables.length})</h3>
+        ${tables.length === 0 ? '<div class="empty-state">No tables yet.</div>' : `
+        <table class="data-table">
+          <thead>
+            <tr><th>Name</th><th>Grid</th><th>Tokens</th><th>Portals</th><th>Map image</th><th></th></tr>
+          </thead>
+          <tbody>
+            ${tables.map(t => `
+              <tr>
+                <td>${esc(t.name)}</td>
+                <td>${t.grid_size} px/sq</td>
+                <td>${t.token_count ?? '—'}</td>
+                <td>${t.portal_count ?? '—'}</td>
+                <td>${t.map_image_path ? '✓' : '—'}</td>
+                <td class="row-actions">
+                  <button class="btn btn-primary btn-sm" data-mjoin="${t.id}">Join</button>
+                  <button class="btn btn-ghost btn-sm" data-mren="${t.id}">Rename</button>
+                  <button class="btn btn-danger btn-sm" data-mdel="${t.id}">Delete</button>
+                </td>
+              </tr>`).join('')}
+          </tbody>
+        </table>`}
+      </div>
+    `
+
+    const refresh = () => { void render() }
+
+    page.querySelector('#create-table-btn')?.addEventListener('click', async () => {
+      const name = (page.querySelector('#new-table-name') as HTMLInputElement).value.trim()
+      const gridSize = parseInt((page.querySelector('#new-table-grid') as HTMLInputElement).value) || 70
+      const msg = page.querySelector('#create-table-msg') as HTMLElement
+      if (!name) { msg.textContent = 'Enter a table name'; msg.className = 'msg msg-err'; return }
+      try {
+        await api.createTable(name, gridSize)
+        msg.textContent = 'Table created!'; msg.className = 'msg msg-ok'
+        setTimeout(refresh, 600)
+      } catch (e: any) {
+        msg.textContent = e.message; msg.className = 'msg msg-err'
+      }
+    })
+
+    const dropZone = page.querySelector('#uvtt-drop') as HTMLElement
+    const fileInput = page.querySelector('#uvtt-file') as HTMLInputElement
+    const importMsg = page.querySelector('#import-msg') as HTMLElement
+    dropZone.addEventListener('click', () => fileInput.click())
+    dropZone.addEventListener('dragover', (e) => { e.preventDefault(); dropZone.classList.add('drag') })
+    dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag'))
+    dropZone.addEventListener('drop', async (e) => {
+      e.preventDefault()
+      dropZone.classList.remove('drag')
+      const file = e.dataTransfer?.files[0]
+      if (file) await doImport(file, importMsg, refresh)
+    })
+    fileInput.addEventListener('change', async () => {
+      const file = fileInput.files?.[0]
+      if (file) await doImport(file, importMsg, refresh)
+    })
+
+    page.querySelectorAll('[data-mjoin]').forEach(el => {
+      el.addEventListener('click', () => {
+        const t = tables.find(x => x.id === (el as HTMLElement).dataset.mjoin)
+        if (t) onJoin(t)
+      })
+    })
+    page.querySelectorAll('[data-mren]').forEach(el => {
+      el.addEventListener('click', async () => {
+        const id = (el as HTMLElement).dataset.mren!
+        const current = tables.find(x => x.id === id)?.name ?? ''
+        const name = prompt('New table name:', current)?.trim()
+        if (!name || name === current) return
+        try {
+          await api.updateTable(id, { name })
+          refresh()
+        } catch (e: any) {
+          alert('Rename failed: ' + e.message)
+        }
+      })
+    })
+
+    page.querySelectorAll('[data-mdel]').forEach(el => {
+      el.addEventListener('click', async () => {
+        const id = (el as HTMLElement).dataset.mdel!
+        if (confirm('Delete this table and all its data?')) {
+          await api.deleteTable(id)
+          refresh()
+        }
+      })
+    })
+  }
+
+  /** Page 2: user management (roles, password resets). */
+  async function renderUsersPage(page: HTMLElement) {
+    const users = await api.listUsers()
+    page.innerHTML = `
+      <div class="admin-section">
+        <h3>Users</h3>
+        <div class="form-row" style="margin-bottom:20px">
+          <div class="form-field">
+            <label>Username</label>
+            <input id="new-user-name" placeholder="player1" />
+          </div>
+          <div class="form-field">
+            <label>Password</label>
+            <input id="new-user-pass" type="password" placeholder="••••••" />
+          </div>
+          <div class="form-field">
+            <label>Role</label>
+            <select id="new-user-role">
+              <option value="player">Player</option>
+              <option value="admin">Admin</option>
+            </select>
+          </div>
+          <button class="btn btn-primary" id="create-user-btn">Add User</button>
+        </div>
+        <table class="data-table">
+          <thead>
+            <tr><th>Username</th><th>Role</th><th></th></tr>
+          </thead>
+          <tbody>
+            ${users.map(u => `
+              <tr>
+                <td>${esc(u.username)}${u.username === user.username ? ' <span class="you">(you)</span>' : ''}</td>
+                <td>
+                  ${u.username === user.username ? esc(u.role) : `
+                  <select data-role-user="${esc(u.username)}">
+                    <option value="player" ${u.role === 'player' ? 'selected' : ''}>player</option>
+                    <option value="admin" ${u.role === 'admin' ? 'selected' : ''}>admin</option>
+                  </select>`}
+                </td>
+                <td class="row-actions">
+                  <button class="btn btn-ghost btn-sm" data-reset-pass="${esc(u.username)}">Reset password</button>
+                  <button class="btn btn-danger btn-sm" data-del-user="${esc(u.username)}" ${u.username === user.username ? 'disabled' : ''}>Delete</button>
+                </td>
+              </tr>`).join('')}
+          </tbody>
+        </table>
+        <div class="msg" id="user-msg"></div>
+      </div>
+    `
+
+    const msg = page.querySelector('#user-msg') as HTMLElement
+    const refresh = () => void renderUsersPage(page)
+
+    page.querySelector('#create-user-btn')?.addEventListener('click', async () => {
+      const name = (page.querySelector('#new-user-name') as HTMLInputElement).value.trim()
+      const pass = (page.querySelector('#new-user-pass') as HTMLInputElement).value
+      const role = (page.querySelector('#new-user-role') as HTMLSelectElement).value
+      if (!name || !pass) { msg.textContent = 'Fill in username and password'; msg.className = 'msg msg-err'; return }
+      try {
+        await api.createUser(name, pass, role)
+        msg.textContent = 'User created!'; msg.className = 'msg msg-ok'
+        setTimeout(refresh, 500)
+      } catch (e: any) {
+        msg.textContent = e.message; msg.className = 'msg msg-err'
+      }
+    })
+
+    page.querySelectorAll('[data-role-user]').forEach(el => {
+      el.addEventListener('change', async () => {
+        const username = (el as HTMLElement).dataset.roleUser!
+        const role = (el as HTMLSelectElement).value
+        try {
+          await api.updateUserRole(username, role)
+          msg.textContent = `${username} is now ${role}`; msg.className = 'msg msg-ok'
+        } catch (e: any) {
+          msg.textContent = e.message; msg.className = 'msg msg-err'
+          refresh()
+        }
+      })
+    })
+
+    page.querySelectorAll('[data-reset-pass]').forEach(el => {
+      el.addEventListener('click', async () => {
+        const username = (el as HTMLElement).dataset.resetPass!
+        const newPassword = prompt(`New password for "${username}":`)
+        if (!newPassword) return
+        try {
+          await api.resetUserPassword(username, newPassword)
+          msg.textContent = `Password reset for ${username}`; msg.className = 'msg msg-ok'
+        } catch (e: any) {
+          msg.textContent = e.message; msg.className = 'msg msg-err'
+        }
+      })
+    })
+
+    page.querySelectorAll('[data-del-user]').forEach(el => {
+      el.addEventListener('click', async () => {
+        const username = (el as HTMLElement).dataset.delUser!
+        if (confirm(`Delete user "${username}"?`)) {
+          try {
+            await api.deleteUser(username)
+            refresh()
+          } catch (e: any) {
+            msg.textContent = e.message; msg.className = 'msg msg-err'
+          }
+        }
+      })
+    })
+  }
+
+  /** Page 3: shared asset library with folders. */
+  // Folders start folded; unfold state is remembered across refreshes of the
+  // page (it lives outside renderAssetsPage) but resets when leaving the tab.
+  const expandedFolders = new Set<string>()
+
+  async function renderAssetsPage(page: HTMLElement) {
+    const [images, audios] = await Promise.all([api.listAssets('image'), api.listAssets('audio')])
+    const all = [...images, ...audios]
+    const folders = [...new Set(all.map(a => a.folder).filter(Boolean))].sort()
+
+    const folderSelect = (a: Asset) => `
+      <select data-folder="${esc(a.id)}">
+        <option value="" ${a.folder === '' ? 'selected' : ''}>— root —</option>
+        ${folders.map(f => `<option value="${esc(f)}" ${a.folder === f ? 'selected' : ''}>${esc(f)}</option>`).join('')}
+      </select>`
+
+    const assetRows = (kind: 'image' | 'audio') => {
+      const list = kind === 'image' ? images : audios
+      if (list.length === 0) return '<div class="empty-state">Nothing uploaded yet.</div>'
+      const groups = new Map<string, Asset[]>()
+      for (const a of list) {
+        if (!groups.has(a.folder)) groups.set(a.folder, [])
+        groups.get(a.folder)!.push(a)
+      }
+      const rows: string[] = []
+      for (const folder of [...groups.keys()].sort((a, b) => a.localeCompare(b))) {
+        const key = `${kind}:${folder}`
+        const open = expandedFolders.has(key)
+        rows.push(`<tr class="folder-head" data-fold="${esc(key)}">
+          <td colspan="4" style="color:#4a90d9;font-weight:600;border-bottom:1px solid #2d2d4e"><span class="fold-arrow">${open ? '▾' : '▸'}</span>📁 ${folder === '' ? 'Root' : esc(folder)} (${groups.get(folder)!.length})</td>
+        </tr>`)
+        for (const a of groups.get(folder)!) {
+          rows.push(`
+            <tr class="folder-row" data-group="${esc(key)}" ${open ? '' : 'hidden'}>
+              <td>${kind === 'image' ? `<img src="${esc(a.path)}" alt="" style="width:20px;height:20px;border-radius:4px;object-fit:cover;vertical-align:middle;margin-right:8px">` : '<span style="color:#4a90d9;margin-right:8px">♪</span>'}${esc(a.name)}</td>
+              <td>${formatSize(a.size)}</td>
+              <td>${folderSelect(a)}</td>
+              <td class="row-actions"><button class="btn btn-danger btn-sm" data-del-asset="${esc(a.id)}">Delete</button></td>
+            </tr>`)
+        }
+      }
+      return rows.join('')
+    }
+
+    page.innerHTML = `
+      <div class="admin-section">
+        <h3>Upload Asset</h3>
+        <div class="form-row">
+          <div class="form-field">
+            <label>Files</label>
+            <input type="file" id="asset-file" multiple />
+          </div>
+          <div class="form-field">
+            <label>Kind</label>
+            <select id="asset-kind">
+              <option value="image">Image (token icons)</option>
+              <option value="audio">Audio (music)</option>
+            </select>
+          </div>
+          <div class="form-field">
+            <label>Folder</label>
+            <input id="asset-folder" list="asset-folders" placeholder="(root)" style="width:140px" />
+            <datalist id="asset-folders">
+              ${folders.map(f => `<option value="${esc(f)}"></option>`).join('')}
+            </datalist>
+          </div>
+          <button class="btn btn-primary" id="asset-upload-btn">Upload</button>
+        </div>
+        <div class="msg" id="asset-msg"></div>
+      </div>
+
+      <div class="admin-section">
+        <h3>Token Images (${images.length})</h3>
+        <table class="data-table">
+          <thead><tr><th>Name</th><th>Size</th><th>Folder</th><th></th></tr></thead>
+          <tbody>${assetRows('image')}</tbody>
+        </table>
+      </div>
+
+      <div class="admin-section">
+        <h3>Music (${audios.length})</h3>
+        <table class="data-table">
+          <thead><tr><th>Name</th><th>Size</th><th>Folder</th><th></th></tr></thead>
+          <tbody>${assetRows('audio')}</tbody>
+        </table>
+      </div>
+    `
+
+    const msg = page.querySelector('#asset-msg') as HTMLElement
+    const refresh = () => void renderAssetsPage(page)
+
+    page.querySelectorAll('.folder-head').forEach(el => {
+      el.addEventListener('click', () => {
+        const key = (el as HTMLElement).dataset.fold!
+        if (expandedFolders.has(key)) expandedFolders.delete(key)
+        else expandedFolders.add(key)
+        const open = expandedFolders.has(key)
+        el.querySelector('.fold-arrow')!.textContent = open ? '▾' : '▸'
+        page.querySelectorAll(`.folder-row[data-group="${CSS.escape(key)}"]`).forEach(r => { (r as HTMLElement).hidden = !open })
+      })
+    })
+
+    page.querySelector('#asset-upload-btn')?.addEventListener('click', async () => {
+      const files = [...((page.querySelector('#asset-file') as HTMLInputElement).files ?? [])]
+      const kind = (page.querySelector('#asset-kind') as HTMLSelectElement).value as 'image' | 'audio'
+      const folder = (page.querySelector('#asset-folder') as HTMLInputElement).value.trim()
+      if (files.length === 0) { msg.textContent = 'Choose at least one file'; msg.className = 'msg msg-err'; return }
+      let uploaded = 0, duplicates = 0
+      const errors: string[] = []
+      for (const file of files) {
+        msg.textContent = `Uploading ${uploaded + duplicates + errors.length + 1}/${files.length}: ${file.name}…`; msg.className = 'msg'
+        try {
+          const asset = await api.uploadAsset(file, kind)
+          if (folder && asset.folder !== folder) await api.updateAsset(asset.id, { folder })
+          if (asset.existing) duplicates++; else uploaded++
+        } catch (e: any) {
+          errors.push(`${file.name}: ${e.message || 'failed'}`)
+        }
+      }
+      const summary = [uploaded > 0 ? `${uploaded} uploaded` : '', duplicates > 0 ? `${duplicates} duplicate${duplicates > 1 ? 's' : ''} skipped` : '', errors.length > 0 ? `${errors.length} failed` : ''].filter(Boolean).join(' · ')
+      msg.textContent = summary || 'Nothing to upload'
+      msg.className = errors.length > 0 ? 'msg msg-err' : 'msg msg-ok'
+      if (errors.length > 0) msg.title = errors.join('\n')
+      if (uploaded > 0 || duplicates > 0) setTimeout(refresh, 500)
+    })
+
+    page.querySelectorAll('[data-folder]').forEach(el => {
+      el.addEventListener('change', async () => {
+        const id = (el as HTMLElement).dataset.folder!
+        const folder = (el as HTMLSelectElement).value
+        try {
+          await api.updateAsset(id, { folder })
+          refresh()
+        } catch (e: any) {
+          msg.textContent = e.message; msg.className = 'msg msg-err'
+        }
+      })
+    })
+
+    page.querySelectorAll('[data-del-asset]').forEach(el => {
+      el.addEventListener('click', async () => {
+        const id = (el as HTMLElement).dataset.delAsset!
+        if (!confirm('Delete this asset?')) return
+        try {
+          await api.deleteAsset(id)
+          refresh()
+        } catch (e: any) {
+          msg.textContent = e.message || 'Delete failed'; msg.className = 'msg msg-err'
+        }
+      })
+    })
   }
 
   render()
 }
 
-function tableCardHTML(t: import('../types').Table, isAdmin: boolean) {
+function formatSize(bytes: number): string {
+  if (!bytes || bytes <= 0) return '—'
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+}
+
+function tableCardHTML(t: Table, isAdmin: boolean) {
   return `
     <div class="table-card">
       <div class="table-card-name">${esc(t.name)}</div>
@@ -133,204 +646,6 @@ function tableCardHTML(t: import('../types').Table, isAdmin: boolean) {
       </div>
     </div>
   `
-}
-
-function adminHTML() {
-  return `
-    <div class="admin-section">
-      <h3>Create Table</h3>
-      <div class="form-row">
-        <div class="form-field">
-          <label>Name</label>
-          <input id="new-table-name" placeholder="My Campaign" />
-        </div>
-        <div class="form-field">
-          <label>Grid (px/sq)</label>
-          <input id="new-table-grid" type="number" value="70" style="width:80px" />
-        </div>
-        <button class="btn btn-primary" id="create-table-btn">Create</button>
-      </div>
-      <div class="msg" id="create-table-msg"></div>
-    </div>
-
-    <div class="admin-section">
-      <h3>Import Universal VTT (.uvtt / .zip)</h3>
-      <div class="upload-zone" id="uvtt-drop">
-        Drop a .uvtt or .zip file here, or click to browse
-        <input type="file" id="uvtt-file" accept=".uvtt,.zip,.dd2vtt" style="display:none" />
-      </div>
-      <div class="msg" id="import-msg"></div>
-    </div>
-
-    <div class="admin-section">
-      <h3>Manage Players</h3>
-      <div class="form-row">
-        <div class="form-field">
-          <label>Username</label>
-          <input id="new-user-name" placeholder="player1" />
-        </div>
-        <div class="form-field">
-          <label>Password</label>
-          <input id="new-user-pass" type="password" placeholder="••••••" />
-        </div>
-        <div class="form-field">
-          <label>Role</label>
-          <select id="new-user-role">
-            <option value="player">Player</option>
-            <option value="admin">Admin</option>
-          </select>
-        </div>
-        <button class="btn btn-primary" id="create-user-btn">Add User</button>
-      </div>
-      <div class="users-list" id="users-list"></div>
-      <div class="msg" id="user-msg"></div>
-    </div>
-
-    <div class="admin-section">
-      <h3>Manage Music</h3>
-      <div class="form-row">
-        <div class="form-field">
-          <label>Audio file (mp3, ogg, wav, m4a, flac…)</label>
-          <input type="file" id="music-file" accept="audio/*,.mp3,.ogg,.wav,.m4a,.flac,.opus,.webm" />
-        </div>
-        <button class="btn btn-primary" id="music-upload-btn">Upload</button>
-      </div>
-      <div class="msg" id="music-msg"></div>
-      <div class="users-list" id="music-list"></div>
-    </div>
-  `
-}
-
-function bindAdminHandlers(root: HTMLElement, refresh: () => void) {
-  // Delete table
-  root.querySelectorAll('[data-del]').forEach(el => {
-    el.addEventListener('click', async (e) => {
-      e.stopPropagation()
-      const id = (el as HTMLElement).dataset.del!
-      if (confirm('Delete this table and all its data?')) {
-        await api.deleteTable(id)
-        refresh()
-      }
-    })
-  })
-
-  // Create table
-  root.querySelector('#create-table-btn')?.addEventListener('click', async () => {
-    const name = (root.querySelector('#new-table-name') as HTMLInputElement).value.trim()
-    const gridSize = parseInt((root.querySelector('#new-table-grid') as HTMLInputElement).value) || 70
-    const msg = root.querySelector('#create-table-msg') as HTMLElement
-    if (!name) { msg.textContent = 'Enter a table name'; msg.className = 'msg msg-err'; return }
-    try {
-      await api.createTable(name, gridSize)
-      msg.textContent = 'Table created!'; msg.className = 'msg msg-ok'
-      setTimeout(refresh, 800)
-    } catch (e: any) {
-      msg.textContent = e.message; msg.className = 'msg msg-err'
-    }
-  })
-
-  // UVTT import drag & drop
-  const dropZone = root.querySelector('#uvtt-drop') as HTMLElement
-  const fileInput = root.querySelector('#uvtt-file') as HTMLInputElement
-  const importMsg = root.querySelector('#import-msg') as HTMLElement
-
-  dropZone.addEventListener('click', () => fileInput.click())
-  dropZone.addEventListener('dragover', (e) => { e.preventDefault(); dropZone.classList.add('drag') })
-  dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag'))
-  dropZone.addEventListener('drop', async (e) => {
-    e.preventDefault()
-    dropZone.classList.remove('drag')
-    const file = e.dataTransfer?.files[0]
-    if (file) await doImport(file, importMsg, refresh)
-  })
-  fileInput.addEventListener('change', async () => {
-    const file = fileInput.files?.[0]
-    if (file) await doImport(file, importMsg, refresh)
-  })
-
-  // Create user
-  root.querySelector('#create-user-btn')?.addEventListener('click', async () => {
-    const name = (root.querySelector('#new-user-name') as HTMLInputElement).value.trim()
-    const pass = (root.querySelector('#new-user-pass') as HTMLInputElement).value
-    const role = (root.querySelector('#new-user-role') as HTMLSelectElement).value
-    const msg = root.querySelector('#user-msg') as HTMLElement
-    if (!name || !pass) { msg.textContent = 'Fill in username and password'; msg.className = 'msg msg-err'; return }
-    try {
-      await api.createUser(name, pass, role)
-      msg.textContent = 'User created!'; msg.className = 'msg msg-ok'
-      loadUsers(root)
-    } catch (e: any) {
-      msg.textContent = e.message; msg.className = 'msg msg-err'
-    }
-  })
-
-  // Music upload
-  root.querySelector('#music-upload-btn')?.addEventListener('click', async () => {
-    const input = root.querySelector('#music-file') as HTMLInputElement
-    const msg = root.querySelector('#music-msg') as HTMLElement
-    const file = input.files?.[0]
-    if (!file) { msg.textContent = 'Choose an audio file first'; msg.className = 'msg msg-err'; return }
-    msg.textContent = 'Uploading…'; msg.className = 'msg'
-    try {
-      const track = await api.uploadMusic(file)
-      msg.textContent = `Uploaded "${track.name}"`; msg.className = 'msg msg-ok'
-      input.value = ''
-      loadMusic(root)
-    } catch (e: any) {
-      msg.textContent = 'Upload failed: ' + e.message; msg.className = 'msg msg-err'
-    }
-  })
-  loadMusic(root)
-
-  loadUsers(root)
-}
-
-async function loadUsers(root: HTMLElement) {
-  const list = root.querySelector('#users-list') as HTMLElement
-  if (!list) return
-  try {
-    const users = await api.listUsers()
-    list.innerHTML = users.map(u => `
-      <div class="user-chip">
-        <span class="badge badge-${u.role}">${u.role[0].toUpperCase()}</span>
-        ${esc(u.username)}
-        <button data-del-user="${esc(u.username)}" title="Delete user">×</button>
-      </div>
-    `).join('')
-    list.querySelectorAll('[data-del-user]').forEach(el => {
-      el.addEventListener('click', async () => {
-        const username = (el as HTMLElement).dataset.delUser!
-        if (confirm(`Delete user "${username}"?`)) {
-          await api.deleteUser(username)
-          loadUsers(root)
-        }
-      })
-    })
-  } catch {}
-}
-
-async function loadMusic(root: HTMLElement) {
-  const list = root.querySelector('#music-list') as HTMLElement
-  if (!list) return
-  try {
-    const tracks = await api.listMusic()
-    list.innerHTML = tracks.length === 0 ? '<span style="font-size:12px;color:#6060a0;">No music uploaded yet.</span>' : tracks.map(t => `
-      <div class="user-chip">
-        <span style="color:#4a90d9">♪</span>
-        ${esc(t.name)}
-        <button data-del-music="${esc(t.id)}" title="Delete music">×</button>
-      </div>
-    `).join('')
-    list.querySelectorAll('[data-del-music]').forEach(el => {
-      el.addEventListener('click', async () => {
-        const id = (el as HTMLElement).dataset.delMusic!
-        if (confirm('Delete this music?')) {
-          await api.deleteMusic(id)
-          loadMusic(root)
-        }
-      })
-    })
-  } catch {}
 }
 
 async function doImport(file: File, msg: HTMLElement, refresh: () => void) {
@@ -345,5 +660,5 @@ async function doImport(file: File, msg: HTMLElement, refresh: () => void) {
 }
 
 function esc(s: string) {
-  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
+  return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
 }

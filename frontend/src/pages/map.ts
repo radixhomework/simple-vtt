@@ -18,7 +18,7 @@ import type { WallSegment } from '../canvas/los'
 import type {
   User, Table, Token, FogPoint, Portal, Camera, ToolType, MeasureState, AppSettings,
   TableStatePayload, TokenMovePayload, TokenUpdatePayload, TokenDeletePayload, FogUpdatePayload,
-  MeasureUpdatePayload, MusicStatePayload,
+  MeasureUpdatePayload, MusicStatePayload, Asset,
 } from '../types'
 import { DEFAULT_SETTINGS } from '../types'
 
@@ -70,14 +70,17 @@ export function renderMap(
       /* Fullscreen mode: hide every menu, keep only the canvases */
       .game.zen .game-header, .game.zen .chat-wrap, .game.zen .sidebar, .game.zen .music-panel { display: none; }
 
-      /* Music panel (left side) */
+      /* Music panel (left side). direction:rtl moves its scrollbar to the
+         panel's left edge — i.e. the window edge, not the middle of the
+         screen. Children re-set ltr to render normally. */
       .music-panel {
         position: absolute; left: 0; top: 0; bottom: 0;
         width: 260px; background: #1a1a2e; border-right: 1px solid #2d2d4e;
         display: flex; flex-direction: column; z-index: 20; transform: translateX(-100%);
-        transition: transform 0.2s; overflow-y: auto;
+        transition: transform 0.2s; overflow-y: auto; direction: rtl;
       }
       .music-panel.open { transform: none; }
+      .music-panel > * { direction: ltr; }
       .music-row {
         display: flex; align-items: center; gap: 6px; padding: 6px 8px;
         border-radius: 6px; cursor: pointer; font-size: 13px; transition: background 0.15s;
@@ -460,11 +463,23 @@ export function renderMap(
     })
   }
 
+  // Shared image library for the token editor (fetched once per page)
+  let imageAssets: Asset[] = []
+  let imageAssetsLoaded = false
+
   function renderTokenEditor() {
     const editorEl = root.querySelector('#token-editor') as HTMLElement
     if (!isAdmin) { editorEl.innerHTML = ''; return }
     const token = state.tokens.find(t => t.id === state.selectedId)
     if (!token) { editorEl.innerHTML = ''; return }
+
+    // Load the shared image list in the background, then re-render
+    if (!imageAssetsLoaded) {
+      imageAssetsLoaded = true
+      api.listAssets('image')
+        .then(list => { imageAssets = list; renderTokenEditor() })
+        .catch(() => {})
+    }
 
     editorEl.innerHTML = `
       <div class="token-editor">
@@ -483,6 +498,12 @@ export function renderMap(
           Hidden from players
         </label>
         <div class="field" style="margin-top:8px"><label>Vision Radius (sq)</label><input type="number" id="te-vrad" value="${token.vision_radius}" min="1" max="60" /></div>
+        <div class="field"><label>Shared image</label>
+          <select id="te-icon-pick">
+            <option value="">— none / custom —</option>
+            ${imageAssets.map(a => `<option value="${esc(a.path)}" ${token.icon_path === a.path ? 'selected' : ''}>${esc(a.name)}</option>`).join('')}
+          </select>
+        </div>
         <div class="field"><label>Icon URL / path</label><input type="text" id="te-icon" value="${esc(token.icon_path)}" /></div>
         <label style="display:flex;align-items:center;gap:8px;font-size:12px;cursor:pointer;margin-bottom:10px">
           <input type="file" id="te-icon-file" accept="image/*" style="display:none" />
@@ -493,6 +514,11 @@ export function renderMap(
       </div>
     `
 
+    root.querySelector('#te-icon-pick')?.addEventListener('change', (e) => {
+      const path = (e.target as HTMLSelectElement).value
+      const iconInput = root.querySelector('#te-icon') as HTMLInputElement
+      if (path) iconInput.value = path
+    })
     root.querySelector('#te-icon-upload-btn')?.addEventListener('click', () => {
       (root.querySelector('#te-icon-file') as HTMLInputElement).click()
     })
@@ -500,9 +526,17 @@ export function renderMap(
       const file = (e.target as HTMLInputElement).files?.[0]
       if (!file) return
       try {
-        const { path } = await api.uploadTokenIcon(file)
-        ;(root.querySelector('#te-icon') as HTMLInputElement).value = path
-        preloadTokenImage(path)
+        // Upload into the shared library (deduplicated by content) and use
+        // the resulting path for this token
+        const asset = await api.uploadAsset(file, 'image')
+        if (!imageAssets.some(a => a.id === asset.id)) imageAssets.push(asset)
+        ;(root.querySelector('#te-icon') as HTMLInputElement).value = asset.path
+        const pick = root.querySelector('#te-icon-pick') as HTMLSelectElement | null
+        if (pick) {
+          pick.innerHTML = `<option value="">— none / custom —</option>` +
+            imageAssets.map(a => `<option value="${esc(a.path)}" ${a.path === asset.path ? 'selected' : ''}>${esc(a.name)}</option>`).join('')
+        }
+        preloadTokenImage(asset.path)
       } catch {}
     })
 

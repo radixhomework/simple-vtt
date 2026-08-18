@@ -13,7 +13,7 @@ import { tablesRouter } from './routes/tables'
 import { tokensRouter } from './routes/tokens'
 import { settingsRouter } from './routes/settings'
 import { portalsRouter } from './routes/portals'
-import { musicRouter } from './routes/music'
+import { assetsRouter } from './routes/assets'
 import { setupWebSocket } from './hub'
 
 // db is initialised on import (runs migrations)
@@ -44,7 +44,16 @@ app.use('/api', tablesRouter)
 app.use('/api', tokensRouter)
 app.use('/api', settingsRouter)
 app.use('/api', portalsRouter)
-app.use('/api', musicRouter)
+app.use('/api', assetsRouter)
+
+// Version information (backend package.json; the frontend ships its own)
+const pkg = (() => {
+  try { return JSON.parse(fs.readFileSync(path.join(process.cwd(), 'package.json'), 'utf8')) as { version?: string } }
+  catch { return {} }
+})()
+app.get('/api/version', (_req, res) => {
+  res.json({ version: pkg.version ?? '0.0.0', name: 'RHW Simple VTT' })
+})
 
 // Unknown API paths must return JSON 404, not the SPA fallback below
 app.use('/api', (_req, res) => { res.status(404).json({ error: 'not found' }) })

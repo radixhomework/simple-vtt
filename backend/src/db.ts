@@ -6,6 +6,7 @@
 import Database from 'better-sqlite3'
 import path from 'path'
 import fs from 'fs'
+import { decodeUploadFilename } from './filename'
 
 const dbPath = process.env.DB_PATH || path.join(process.cwd(), 'vtt.db')
 fs.mkdirSync(path.dirname(dbPath), { recursive: true })
@@ -68,10 +69,15 @@ db.exec(`
     FOREIGN KEY (table_id) REFERENCES tables(id) ON DELETE CASCADE
   );
 
-  CREATE TABLE IF NOT EXISTS music (
-    id   TEXT PRIMARY KEY,
-    name TEXT NOT NULL,
-    path TEXT NOT NULL
+  CREATE TABLE IF NOT EXISTS assets (
+    id     TEXT PRIMARY KEY,
+    kind   TEXT NOT NULL CHECK (kind IN ('image','audio')),
+    name   TEXT NOT NULL,
+    hash   TEXT NOT NULL,
+    path   TEXT NOT NULL,
+    size   INTEGER NOT NULL DEFAULT 0,
+    folder TEXT NOT NULL DEFAULT '',
+    UNIQUE (kind, hash)
   );
 
   CREATE TABLE IF NOT EXISTS settings (
@@ -85,6 +91,35 @@ const tokenCols = db.prepare('PRAGMA table_info(tokens)').all() as Array<{ name:
 if (!tokenCols.some(c => c.name === 'hidden')) {
   db.exec('ALTER TABLE tokens ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0')
 }
+
+// Migration: the standalone music table became the shared assets table
+// (kind='audio'); copy the rows then drop it.
+const musicTable = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='music'").get()
+if (musicTable) {
+  db.exec(`INSERT OR IGNORE INTO assets (id, kind, name, hash, path, size, folder)
+           SELECT id, 'audio', name, '', path, 0, '' FROM music`)
+  db.exec('DROP TABLE music')
+}
+
+// Migration: asset folders
+const assetCols = db.prepare('PRAGMA table_info(assets)').all() as Array<{ name: string }>
+if (!assetCols.some(c => c.name === 'folder')) {
+  db.exec("ALTER TABLE assets ADD COLUMN folder TEXT NOT NULL DEFAULT ''")
+}
+
+// Migration: repair asset and table names mangled by the latin1 decoding of
+// multipart filenames (accents and other non-ASCII characters). Idempotent:
+// already-correct names round-trip to U+FFFD and are left alone.
+const repairNames = db.transaction((table: string) => {
+  const rows = db.prepare(`SELECT id, name FROM ${table}`).all() as Array<{ id: string; name: string }>
+  const update = db.prepare(`UPDATE ${table} SET name=? WHERE id=?`)
+  for (const row of rows) {
+    const fixed = decodeUploadFilename(row.name)
+    if (fixed !== row.name) update.run(fixed, row.id)
+  }
+})
+repairNames('assets')
+repairNames('tables')
 
 // Seed default settings (INSERT OR IGNORE so existing values are preserved)
 const seedSetting = db.prepare('INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)')

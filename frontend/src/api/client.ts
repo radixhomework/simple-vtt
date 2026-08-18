@@ -2,7 +2,7 @@
  * Typed REST client. The JWT is read from localStorage on every call;
  * multipart uploads (maps, music, icons) use their own fetch helpers.
  */
-import type { Table, Token, User, FogPoint, AppSettings, Portal, MusicTrack } from '../types'
+import type { Table, Token, User, FogPoint, AppSettings, Portal, Asset } from '../types'
 
 const BASE = '/api'
 
@@ -32,11 +32,20 @@ export const api = {
 
   me: () => request<User>('GET', '/me'),
 
+  getVersion: () => request<{ version: string; name: string }>('GET', '/version'),
+
+  changePassword: (currentPassword: string, newPassword: string) =>
+    request<{ ok: boolean }>('POST', '/auth/password', { current_password: currentPassword, new_password: newPassword }),
+
   // Users
   listUsers: () => request<User[]>('GET', '/users'),
   createUser: (username: string, password: string, role: string) =>
     request<User>('POST', '/users', { username, password, role }),
   deleteUser: (username: string) => request<void>('DELETE', `/users/${username}`),
+  updateUserRole: (username: string, role: string) =>
+    request<User>('PUT', `/users/${username}`, { role }),
+  resetUserPassword: (username: string, newPassword: string) =>
+    request<{ ok: boolean }>('POST', `/users/${username}/password`, { new_password: newPassword }),
 
   // Tables
   listTables: () => request<Table[]>('GET', '/tables'),
@@ -69,14 +78,16 @@ export const api = {
   togglePortal: (tableId: string, portalId: string, closed: boolean) =>
     request<Portal>('PATCH', `/tables/${tableId}/portals/${portalId}`, { closed }),
 
-  // Music
-  listMusic: () => request<MusicTrack[]>('GET', '/music'),
-  deleteMusic: (id: string) => request<void>('DELETE', `/music/${id}`),
+  // Assets (shared image + audio library, deduplicated server-side)
+  listAssets: (kind: 'image' | 'audio') => request<Asset[]>('GET', `/assets?kind=${kind}`),
+  deleteAsset: (id: string) => request<void>('DELETE', `/assets/${id}`),
+  updateAsset: (id: string, data: { folder: string }) => request<Asset>('PUT', `/assets/${id}`, data),
 
-  async uploadMusic(file: File): Promise<MusicTrack> {
+  async uploadAsset(file: File, kind: 'image' | 'audio'): Promise<Asset> {
     const fd = new FormData()
-    fd.append('music', file)
-    const res = await fetch(BASE + '/music', {
+    fd.append('file', file)
+    fd.append('kind', kind)
+    const res = await fetch(BASE + '/assets', {
       method: 'POST',
       headers: { Authorization: `Bearer ${localStorage.getItem('token') ?? ''}` },
       body: fd,

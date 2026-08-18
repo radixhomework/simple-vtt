@@ -9,6 +9,7 @@ import fs from 'fs'
 import AdmZip from 'adm-zip'
 import { db } from '../db'
 import { authMiddleware, adminOnly } from '../auth'
+import { decodeUploadFilename } from '../filename'
 
 export const tablesRouter = Router()
 
@@ -31,7 +32,12 @@ function getTable(id: string) {
 }
 
 tablesRouter.get('/tables', authMiddleware, (_req, res) => {
-  res.json(db.prepare(`SELECT ${TABLE_COLS} FROM tables`).all())
+  res.json(db.prepare(`
+    SELECT t.id, t.name, t.map_image_path, t.grid_size, t.uvt_metadata, t.map_offset_x, t.map_offset_y,
+      (SELECT COUNT(*) FROM tokens WHERE table_id = t.id)  AS token_count,
+      (SELECT COUNT(*) FROM portals WHERE table_id = t.id) AS portal_count
+    FROM tables t
+  `).all())
 })
 
 tablesRouter.post('/tables', authMiddleware, adminOnly, (req, res) => {
@@ -75,7 +81,7 @@ tablesRouter.delete('/tables/:id', authMiddleware, adminOnly, (req, res) => {
 tablesRouter.post('/tables/import', authMiddleware, adminOnly, upload.single('file'), (req, res) => {
   if (!req.file) { res.status(400).json({ error: 'no file' }); return }
 
-  const ext = path.extname(req.file.originalname).toLowerCase()
+  const ext = path.extname(decodeUploadFilename(req.file.originalname)).toLowerCase()
   let uvttJson: Record<string, unknown>
   let imageBuffer: Buffer | null = null
   let imageExt = '.png'
@@ -128,7 +134,7 @@ tablesRouter.post('/tables/import', authMiddleware, adminOnly, upload.single('fi
     imagePath = `/uploads/${filename}`
   }
 
-  const tableName = req.body.name || path.basename(req.file.originalname, ext)
+  const tableName = req.body.name || path.basename(decodeUploadFilename(req.file.originalname), ext)
   const meta = JSON.stringify(uvttJson)
 
   const insertAll = db.transaction(() => {
@@ -158,7 +164,7 @@ tablesRouter.post('/tables/import', authMiddleware, adminOnly, upload.single('fi
 // ── Upload image for existing table ───────────────────────────────────────────
 tablesRouter.post('/tables/:id/upload-image', authMiddleware, adminOnly, upload.single('image'), (req, res) => {
   if (!req.file) { res.status(400).json({ error: 'no file' }); return }
-  const ext = path.extname(req.file.originalname).toLowerCase() || '.png'
+  const ext = path.extname(decodeUploadFilename(req.file.originalname)).toLowerCase() || '.png'
   const dir = uploadsDir()
   fs.mkdirSync(dir, { recursive: true })
   const filename = `map_${req.params.id}${ext}`
@@ -166,15 +172,4 @@ tablesRouter.post('/tables/:id/upload-image', authMiddleware, adminOnly, upload.
   const imagePath = `/uploads/${filename}`
   db.prepare('UPDATE tables SET map_image_path=? WHERE id=?').run(imagePath, req.params.id)
   res.json({ path: imagePath })
-})
-
-// ── Upload token icon ─────────────────────────────────────────────────────────
-tablesRouter.post('/upload-token-icon', authMiddleware, adminOnly, upload.single('icon'), (req, res) => {
-  if (!req.file) { res.status(400).json({ error: 'no file' }); return }
-  const ext = path.extname(req.file.originalname).toLowerCase() || '.png'
-  const dir = uploadsDir()
-  fs.mkdirSync(dir, { recursive: true })
-  const filename = `token_${newId()}${ext}`
-  fs.writeFileSync(path.join(dir, filename), req.file.buffer)
-  res.json({ path: `/uploads/${filename}` })
 })

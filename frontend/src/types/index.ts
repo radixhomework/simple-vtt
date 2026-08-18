@@ -15,6 +15,9 @@ export interface Table {
   uvt_metadata?: string
   map_offset_x: number
   map_offset_y: number
+  /** listTables() only */
+  token_count?: number
+  portal_count?: number
 }
 
 export interface Token {
@@ -138,6 +141,19 @@ export interface MusicTrack {
   id: string
   name: string
   path: string
+}
+
+/** Shared library asset (token images, music tracks) — deduplicated by content */
+export interface Asset {
+  id: string
+  kind: 'image' | 'audio'
+  name: string
+  path: string
+  size: number
+  /** Organizational folder ('' = root) */
+  folder: string
+  /** true when an upload returned an existing asset instead of creating one */
+  existing?: boolean
 }
 
 /** Server-authoritative music playback state, synced to every client */

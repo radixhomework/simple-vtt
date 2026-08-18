@@ -2,7 +2,7 @@ import jwt from 'jsonwebtoken'
 import { Request, Response, NextFunction } from 'express'
 
 /** Signing secret — override with JWT_SECRET in production. */
-const SECRET = process.env.JWT_SECRET || 'rhwvtt-dev-secret-change-in-production'
+const SECRET = process.env.JWT_SECRET || 'simple-vtt-dev-secret-change-in-production'
 
 /** Token lifetime: clients must re-login after this period. */
 export const TOKEN_TTL = '12h'

@@ -83,8 +83,9 @@ interface MusicState {
 
 const musicStates = new Map<string, MusicState>()
 
+/** Audio library (shared assets). Order = upload order (rowid). */
 function musicTracks(): Array<{ id: string; name: string; path: string }> {
-  return db.prepare('SELECT id, name, path FROM music ORDER BY rowid').all() as Array<{ id: string; name: string; path: string }>
+  return db.prepare("SELECT id, name, path FROM assets WHERE kind='audio' ORDER BY rowid").all() as Array<{ id: string; name: string; path: string }>
 }
 
 function getMusicState(tableId: string): MusicState {
@@ -111,7 +112,7 @@ function pushMusicState(tableId: string) {
   broadcast(tableId, JSON.stringify({ type: 'music_state', payload: musicStatePayload(getMusicState(tableId)) }))
 }
 
-/** Rebuild each table's queue after the music library changes (upload/delete). */
+/** Rebuild each table's queue after the audio library changes (upload/delete). */
 export function musicLibraryChanged() {
   const tracks = musicTracks()
   const ids = new Set(tracks.map(t => t.id))

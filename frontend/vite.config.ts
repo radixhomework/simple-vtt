@@ -1,6 +1,11 @@
 import { defineConfig } from 'vite'
+import pkg from './package.json'
 
 export default defineConfig({
+  define: {
+    // Replaced at build time with the frontend package version
+    __APP_VERSION__: JSON.stringify(pkg.version),
+  },
   server: {
     port: 5173,
     proxy: {
