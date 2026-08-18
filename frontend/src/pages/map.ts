@@ -66,7 +66,7 @@ export function renderMap(
 
   root.innerHTML = `
     <style>
-      .game { display: flex; flex-direction: column; height: 100%; background: #000; overflow: hidden; }
+      .game { display: flex; flex-direction: column; height: 100%; background: #1E211C; overflow: hidden; }
       /* Fullscreen mode: hide every menu, keep only the canvases */
       .game.zen .game-header, .game.zen .chat-wrap, .game.zen .sidebar, .game.zen .music-panel { display: none; }
 
@@ -75,7 +75,7 @@ export function renderMap(
          screen. Children re-set ltr to render normally. */
       .music-panel {
         position: absolute; left: 0; top: 0; bottom: 0;
-        width: 260px; background: #1a1a2e; border-right: 1px solid #2d2d4e;
+        width: 260px; background: var(--surface); border-right: 1px solid var(--border);
         display: flex; flex-direction: column; z-index: 20; transform: translateX(-100%);
         transition: transform 0.2s; overflow-y: auto; direction: rtl;
       }
@@ -85,26 +85,26 @@ export function renderMap(
         display: flex; align-items: center; gap: 6px; padding: 6px 8px;
         border-radius: 6px; cursor: pointer; font-size: 13px; transition: background 0.15s;
       }
-      .music-row:hover { background: #2d2d4e; }
-      .music-row.current { background: #1e3a5f; }
+      .music-row:hover { background: rgba(30,33,28,0.08); }
+      .music-row.current { background: rgba(154,118,86,0.30); }
       .music-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
       .game-header {
         display: flex; align-items: center; gap: 10px;
-        padding: 0 12px; height: 44px; background: #1a1a2e;
-        border-bottom: 1px solid #2d2d4e; flex-shrink: 0; z-index: 10;
+        padding: 0 12px; height: 44px; background: var(--surface);
+        border-bottom: 1px solid var(--border); flex-shrink: 0; z-index: 10;
         user-select: none;
       }
       .game-header-left { display: flex; align-items: center; gap: 8px; }
       .game-header-right { display: flex; align-items: center; gap: 8px; margin-left: auto; }
       .header-btn {
-        padding: 5px 11px; border-radius: 6px; border: 1px solid #2d2d4e;
-        background: transparent; color: #c0c0e0; font-size: 12px; cursor: pointer;
+        padding: 5px 11px; border-radius: 6px; border: 1px solid var(--border);
+        background: transparent; color: var(--text); font-size: 12px; cursor: pointer;
         transition: background 0.15s, border-color 0.15s;
       }
-      .header-btn:hover { background: #2d2d4e; }
-      .header-btn.active { background: #4a90d9; border-color: #4a90d9; color: #fff; }
-      .header-sep { width: 1px; height: 22px; background: #2d2d4e; }
-      .table-name { font-size: 14px; font-weight: 600; color: #e0e0f0; max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .header-btn:hover { background: rgba(30,33,28,0.08); }
+      .header-btn.active { background: var(--brand); border-color: var(--brand); color: var(--on-brand); }
+      .header-sep { width: 1px; height: 22px; background: var(--border); }
+      .table-name { font-family: var(--font-title); font-size: 16px; font-weight: 600; color: var(--text); max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
       .canvas-wrap { flex: 1; position: relative; overflow: hidden; }
       canvas { position: absolute; top: 0; left: 0; cursor: crosshair; touch-action: none; }
       #canvas-main { z-index: 1; }
@@ -114,80 +114,80 @@ export function renderMap(
       /* Sidebar */
       .sidebar {
         position: absolute; right: 0; top: 0; bottom: 0;
-        width: 260px; background: #1a1a2e; border-left: 1px solid #2d2d4e;
+        width: 260px; background: var(--surface); border-left: 1px solid var(--border);
         display: flex; flex-direction: column; z-index: 20; transform: translateX(100%);
         transition: transform 0.2s; overflow-y: auto;
       }
       .sidebar.open { transform: none; }
-      .sidebar-section { padding: 14px; border-bottom: 1px solid #2d2d4e; }
-      .sidebar-section h4 { font-size: 11px; font-weight: 600; color: #6060a0; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 10px; }
+      .sidebar-section { padding: 14px; border-bottom: 1px solid var(--border); }
+      .sidebar-section h4 { font-family: var(--font-title); font-size: 12px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 10px; }
       .token-list { display: flex; flex-direction: column; gap: 6px; }
       .token-item {
         display: flex; align-items: center; gap: 8px; padding: 7px 9px;
         border-radius: 7px; cursor: pointer; font-size: 13px; transition: background 0.15s;
       }
-      .token-item:hover { background: #2d2d4e; }
-      .token-item.selected { background: #1e3a5f; }
+      .token-item:hover { background: rgba(30,33,28,0.08); }
+      .token-item.selected { background: rgba(154,118,86,0.30); }
       .token-item.token-hidden { opacity: 0.55; }
       .token-dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
       .token-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-      .icon-btn { background: none; border: none; cursor: pointer; color: #9090b0; font-size: 14px; padding: 2px; border-radius: 4px; }
-      .icon-btn:hover { color: #e0e0f0; background: #2d2d4e; }
+      .icon-btn { background: none; border: none; cursor: pointer; color: var(--muted); font-size: 14px; padding: 2px; border-radius: 4px; }
+      .icon-btn:hover { color: var(--text); background: rgba(30,33,28,0.08); }
 
       /* Token editor */
       .token-editor { padding: 14px; }
       .field { margin-bottom: 10px; }
-      .field label { display: block; font-size: 11px; color: #6060a0; margin-bottom: 4px; }
+      .field label { display: block; font-size: 11px; color: var(--muted); margin-bottom: 4px; }
       .field input[type=text], .field input[type=number] {
-        width: 100%; padding: 7px 10px; background: #0f0f1a; border: 1px solid #2d2d4e;
-        border-radius: 6px; color: #e0e0f0; font-size: 13px; outline: none;
+        width: 100%; padding: 7px 10px; background: var(--bg); border: 1px solid var(--border);
+        border-radius: 6px; color: var(--text); font-size: 13px; outline: none;
       }
-      .field input:focus { border-color: #4a90d9; }
+      .field input:focus { border-color: var(--accent); }
       .field-row { display: flex; gap: 8px; }
       .field-row .field { flex: 1; }
       .checkbox-row { display: flex; align-items: center; gap: 8px; font-size: 13px; cursor: pointer; }
       .checkbox-row input { cursor: pointer; }
-      .color-input { width: 40px; height: 30px; border: 1px solid #2d2d4e; border-radius: 6px; cursor: pointer; background: none; padding: 2px; }
-      .save-btn { width: 100%; padding: 8px; background: #4a90d9; border: none; border-radius: 7px; color: #fff; font-size: 13px; font-weight: 600; cursor: pointer; margin-top: 4px; }
-      .save-btn:hover { background: #357abd; }
-      .del-btn { width: 100%; padding: 7px; background: transparent; border: 1px solid #dc2626; border-radius: 7px; color: #f87171; font-size: 13px; cursor: pointer; margin-top: 6px; }
-      .del-btn:hover { background: #dc2626; color: #fff; }
+      .color-input { width: 40px; height: 30px; border: 1px solid var(--border); border-radius: 6px; cursor: pointer; background: none; padding: 2px; }
+      .save-btn { width: 100%; padding: 8px; background: var(--brand); border: none; border-radius: 7px; color: var(--on-brand); font-size: 13px; font-weight: 600; cursor: pointer; margin-top: 4px; }
+      .save-btn:hover { background: var(--brand-hover); }
+      .del-btn { width: 100%; padding: 7px; background: transparent; border: 1px solid var(--danger); border-radius: 7px; color: var(--danger); font-size: 13px; cursor: pointer; margin-top: 6px; }
+      .del-btn:hover { background: var(--danger); color: var(--on-brand); }
 
-      /* Chat */
+      /* Chat: dark ink glass so it stays readable over any map */
       .chat-wrap { position: absolute; bottom: 12px; left: 12px; width: 280px; z-index: 20; }
       .chat-messages {
-        background: rgba(10,10,20,0.85); border: 1px solid #2d2d4e; border-radius: 8px;
+        background: rgba(30,33,28,0.85); border: 1px solid rgba(216,208,189,0.25); border-radius: 8px;
         padding: 8px; max-height: 160px; overflow-y: auto; margin-bottom: 6px;
         font-size: 12px; display: flex; flex-direction: column; gap: 3px;
       }
-      .chat-msg { color: #c0c0e0; }
-      .chat-msg strong { color: #4a90d9; }
+      .chat-msg { color: #DCD4C1; }
+      .chat-msg strong { color: #C89B7B; }
       .chat-input-row { display: flex; gap: 6px; }
       .chat-input {
-        flex: 1; padding: 6px 10px; background: rgba(15,15,30,0.9); border: 1px solid #2d2d4e;
-        border-radius: 6px; color: #e0e0f0; font-size: 12px; outline: none;
+        flex: 1; padding: 6px 10px; background: rgba(30,33,28,0.9); border: 1px solid rgba(216,208,189,0.25);
+        border-radius: 6px; color: #DCD4C1; font-size: 12px; outline: none;
       }
-      .chat-send { padding: 6px 12px; background: #4a90d9; border: none; border-radius: 6px; color: #fff; cursor: pointer; font-size: 12px; }
+      .chat-send { padding: 6px 12px; background: var(--brand); border: none; border-radius: 6px; color: var(--on-brand); cursor: pointer; font-size: 12px; }
 
       /* Notifications */
       .notif { position: absolute; top: 52px; left: 50%; transform: translateX(-50%);
-        background: #1a1a2e; border: 1px solid #2d2d4e; border-radius: 8px;
-        padding: 8px 16px; font-size: 13px; color: #e0e0f0; z-index: 30;
+        background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
+        padding: 8px 16px; font-size: 13px; color: var(--text); z-index: 30;
         opacity: 0; transition: opacity 0.3s; pointer-events: none; }
       .notif.show { opacity: 1; }
 
       .toolbar-group { display: flex; gap: 4px; align-items: center; }
       .tool-btn {
-        width: 30px; height: 30px; border-radius: 6px; border: 1px solid #2d2d4e;
-        background: transparent; color: #c0c0e0; cursor: pointer; font-size: 14px;
+        width: 30px; height: 30px; border-radius: 6px; border: 1px solid var(--border);
+        background: transparent; color: var(--text); cursor: pointer; font-size: 14px;
         display: flex; align-items: center; justify-content: center; transition: background 0.15s;
         position: relative;
       }
-      .tool-btn:hover { background: #2d2d4e; }
-      .tool-btn.active { background: #4a90d9; border-color: #4a90d9; color: #fff; }
+      .tool-btn:hover { background: rgba(30,33,28,0.08); }
+      .tool-btn.active { background: var(--brand); border-color: var(--brand); color: var(--on-brand); }
       .tool-btn[title]:hover::after {
         content: attr(title); position: absolute; bottom: -28px; left: 50%; transform: translateX(-50%);
-        background: #000; color: #fff; padding: 3px 7px; border-radius: 4px; font-size: 11px;
+        background: #1E211C; color: #D8D0BD; padding: 3px 7px; border-radius: 4px; font-size: 11px;
         white-space: nowrap; pointer-events: none; z-index: 100;
       }
     </style>
@@ -224,7 +224,7 @@ export function renderMap(
           <button class="header-btn" id="sidebar-btn">Tokens ≡</button>
           ${isAdmin ? `<button class="header-btn" id="settings-btn">⚙ Settings</button>` : ''}
           <button class="header-btn" id="zen-btn" title="Fullscreen — hide menus (Esc to exit)">⛶</button>
-          <span style="font-size:12px;color:#6060a0">${esc(user.username)}</span>
+          <span style="font-size:12px;color:var(--muted)">${esc(user.username)}</span>
         </div>
       </div>
 
@@ -235,17 +235,17 @@ export function renderMap(
 
         <div class="music-panel" id="music-panel">
           <div class="sidebar-section" style="display:flex;align-items:center;justify-content:space-between;">
-            <span style="font-size:13px;font-weight:600;color:#c0c0e0;">Music</span>
+            <span style="font-family:var(--font-title);font-size:15px;font-weight:600;color:var(--text);">Music</span>
             <button class="icon-btn" id="music-close">✕</button>
           </div>
-          <div style="padding:12px 14px;display:flex;flex-direction:column;gap:10px;border-bottom:1px solid #2d2d4e;">
-            <div id="music-now" style="font-size:13px;color:#e0e0f0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">Nothing playing</div>
+          <div style="padding:12px 14px;display:flex;flex-direction:column;gap:10px;border-bottom:1px solid var(--border);">
+            <div id="music-now" style="font-size:13px;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">Nothing playing</div>
             <div style="display:flex;align-items:center;gap:6px;">
               <button class="icon-btn" id="music-prev" title="Previous" style="font-size:16px;">⏮</button>
               <button class="icon-btn" id="music-play" title="Play / Pause" style="font-size:16px;">▶</button>
               <button class="icon-btn" id="music-next" title="Next" style="font-size:16px;">⏭</button>
-              <span style="font-size:12px;color:#6060a0;">🔊</span>
-              <input type="range" id="music-vol" min="0" max="1" step="0.05" style="flex:1;accent-color:#4a90d9;" title="Volume" />
+              <span style="font-size:12px;color:var(--muted);">🔊</span>
+              <input type="range" id="music-vol" min="0" max="1" step="0.05" style="flex:1;accent-color:#4D5947;" title="Volume" />
             </div>
           </div>
           <div class="sidebar-section">
@@ -264,9 +264,9 @@ export function renderMap(
         </div>
 
         ${isAdmin ? `
-        <div class="sidebar" id="settings-panel" style="background:#131320;">
+        <div class="sidebar" id="settings-panel" style="background:var(--surface);">
           <div class="sidebar-section" style="display:flex;align-items:center;justify-content:space-between;">
-            <span style="font-size:13px;font-weight:600;color:#c0c0e0;">Settings</span>
+            <span style="font-family:var(--font-title);font-size:15px;font-weight:600;color:var(--text);">Settings</span>
             <button class="icon-btn" id="settings-close">✕</button>
           </div>
           <div id="settings-body" style="padding:14px;display:flex;flex-direction:column;gap:18px;"></div>
@@ -760,7 +760,7 @@ export function renderMap(
           <button class="icon-btn" data-mup="${t.id}" title="Move up">↑</button>
           <button class="icon-btn" data-mdown="${t.id}" title="Move down">↓</button>
         </div>`
-    }).join('') || '<div style="font-size:12px;color:#6060a0;">No music uploaded yet</div>'
+    }).join('') || '<div style="font-size:12px;color:var(--muted);">No music uploaded yet</div>'
 
     queueEl.querySelectorAll('[data-mtrack]').forEach(el => {
       el.addEventListener('click', (e) => {
@@ -867,18 +867,18 @@ export function renderMap(
       `
       <label style="display:flex;flex-direction:column;gap:4px;cursor:pointer;">
         <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;">
-          <span style="font-size:13px;color:#e0e0f0;font-weight:500;">Grid square size</span>
+          <span style="font-size:13px;color:var(--text);font-weight:500;">Grid square size</span>
           <div style="display:flex;align-items:center;gap:6px;">
             <input type="number" id="set-square-size" value="${s.grid_square_size}" min="0.5" step="0.5"
-              style="width:64px;padding:5px 8px;background:#0f0f1a;border:1px solid #2d2d4e;border-radius:6px;color:#e0e0f0;font-size:13px;outline:none;" />
+              style="width:64px;padding:5px 8px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:13px;outline:none;" />
             <select id="set-unit"
-              style="padding:5px 8px;background:#0f0f1a;border:1px solid #2d2d4e;border-radius:6px;color:#e0e0f0;font-size:13px;outline:none;">
+              style="padding:5px 8px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:13px;outline:none;">
               <option value="ft" ${s.measurement_unit === 'ft' ? 'selected' : ''}>ft</option>
               <option value="m" ${s.measurement_unit === 'm' ? 'selected' : ''}>m</option>
             </select>
           </div>
         </div>
-        <span style="font-size:11px;color:#5050a0;">Real-world size of one grid square, used by the measurement tools</span>
+        <span style="font-size:11px;color:var(--muted);">Real-world size of one grid square, used by the measurement tools</span>
       </label>`,
     ].join('')
 
@@ -1577,7 +1577,8 @@ function pickToken(wx: number, wy: number, tokens: Token[], gridSize: number): T
 }
 
 function randomColor() {
-  const colors = ['#4a90d9', '#e06c75', '#98c379', '#d19a66', '#c678dd', '#56b6c2', '#e5c07b']
+  // Muted naturals that read well on parchment maps
+  const colors = ['#4D5947', '#8A5E61', '#9A7656', '#76604E', '#5C7188', '#8C8A5E', '#6E5E7B']
   return colors[Math.floor(Math.random() * colors.length)]
 }
 
@@ -1589,13 +1590,13 @@ function settingToggle(key: string, value: boolean, label: string, description: 
   return `
     <label style="display:flex;flex-direction:column;gap:4px;cursor:pointer;">
       <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;">
-        <span style="font-size:13px;color:#e0e0f0;font-weight:500;">${esc(label)}</span>
+        <span style="font-size:13px;color:var(--text);font-weight:500;">${esc(label)}</span>
         <div style="position:relative;width:36px;height:20px;flex-shrink:0;">
           <input type="checkbox" data-key="${esc(key)}" ${value ? 'checked' : ''}
             style="opacity:0;width:0;height:0;position:absolute;" />
           <span class="toggle-track" style="
             position:absolute;inset:0;border-radius:20px;transition:background 0.2s;
-            background:${value ? '#4a90d9' : '#2d2d4e'};cursor:pointer;">
+            background:${value ? '#4D5947' : '#B5AB93'};cursor:pointer;">
             <span style="
               position:absolute;top:2px;left:${value ? '18px' : '2px'};
               width:16px;height:16px;border-radius:50%;background:#fff;
@@ -1603,7 +1604,7 @@ function settingToggle(key: string, value: boolean, label: string, description: 
           </span>
         </div>
       </div>
-      <span style="font-size:11px;color:#5050a0;">${esc(description)}</span>
+      <span style="font-size:11px;color:var(--muted);">${esc(description)}</span>
     </label>
   `
 }

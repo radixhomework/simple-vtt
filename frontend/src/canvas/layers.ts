@@ -7,6 +7,7 @@
  */
 import type { Camera, Token, FogPoint, MeasureState, Portal } from '../types'
 import { worldToScreen } from './camera'
+import { PALETTE } from '../theme'
 import { computeVisibilityPolygon, cullWalls } from './los'
 import type { WallSegment } from './los'
 
@@ -62,7 +63,7 @@ export function drawMap(
   mapOffsetY: number,
 ) {
   if (!mapImage) {
-    ctx.fillStyle = '#111827'
+    ctx.fillStyle = PALETTE.ink
     ctx.fillRect(0, 0, ctx.canvas.width, ctx.canvas.height)
     return
   }
@@ -84,7 +85,7 @@ export function drawGrid(
   const startY = -(cam.y % gridSize) * cam.zoom
 
   ctx.beginPath()
-  ctx.strokeStyle = 'rgba(255,255,255,0.12)'
+  ctx.strokeStyle = 'rgba(30,33,28,0.18)'
   ctx.lineWidth = 0.5
 
   for (let x = startX; x < canvasW; x += step) {
@@ -122,7 +123,7 @@ export function drawTokens(
       ctx.drawImage(img, sx - radius, sy - radius, radius * 2, radius * 2)
     } else {
       // Fallback: colored circle
-      ctx.fillStyle = token.color || '#4a90d9'
+      ctx.fillStyle = token.color || PALETTE.moss
       ctx.fill()
       // Draw initials
       ctx.fillStyle = '#fff'
@@ -138,14 +139,14 @@ export function drawTokens(
     ctx.beginPath()
     ctx.arc(sx, sy, radius, 0, Math.PI * 2)
     ctx.lineWidth = selectedId === token.id ? 3 : 1.5
-    ctx.strokeStyle = selectedId === token.id ? '#fbbf24' : token.color
+    ctx.strokeStyle = selectedId === token.id ? PALETTE.copper : token.color
     ctx.stroke()
 
     // Vision indicator
     if (token.has_vision && isAdmin) {
       ctx.beginPath()
       ctx.arc(sx, sy - radius - 4, 4, 0, Math.PI * 2)
-      ctx.fillStyle = '#34d399'
+      ctx.fillStyle = PALETTE.moss
       ctx.fill()
     }
 
@@ -324,7 +325,7 @@ export function drawFog(
     ctx.globalCompositeOperation = 'source-over'
     const blackLayer = new OffscreenCanvas(w, h)
     const bl = blackLayer.getContext('2d')!
-    bl.fillStyle = isAdmin ? 'rgba(0,0,0,0.45)' : '#000'
+    bl.fillStyle = isAdmin ? 'rgba(30,33,28,0.45)' : PALETTE.ink
     bl.fillRect(0, 0, w, h)
     bl.globalCompositeOperation = 'destination-out'
     bl.save()
@@ -336,7 +337,7 @@ export function drawFog(
   } else {
     // ── Fallback: no explored tracking (no map image loaded) ─────────────────
     ctx.globalAlpha = isAdmin ? 0.5 : 1.0
-    ctx.fillStyle = '#000'
+    ctx.fillStyle = PALETTE.ink
     ctx.fillRect(0, 0, w, h)
     ctx.globalAlpha = 1
     ctx.globalCompositeOperation = 'destination-out'
@@ -369,21 +370,21 @@ export function drawPortals(
       ctx.beginPath()
       ctx.moveTo(sx1, sy1)
       ctx.lineTo(sx2, sy2)
-      ctx.strokeStyle = '#a0522d'
+      ctx.strokeStyle = PALETTE.copper
       ctx.lineWidth = lw
       ctx.setLineDash([])
       ctx.stroke()
       // Centre knob
       ctx.beginPath()
       ctx.arc(midX, midY, lw, 0, Math.PI * 2)
-      ctx.fillStyle = '#6b3010'
+      ctx.fillStyle = PALETTE.earth
       ctx.fill()
     } else {
       // Open door — dashed cyan gap
       ctx.beginPath()
       ctx.moveTo(sx1, sy1)
       ctx.lineTo(sx2, sy2)
-      ctx.strokeStyle = 'rgba(80,220,180,0.65)'
+      ctx.strokeStyle = 'rgba(120,150,110,0.75)'
       ctx.lineWidth = Math.max(1.5, 2 * cam.zoom)
       ctx.setLineDash([5 * cam.zoom, 4 * cam.zoom])
       ctx.stroke()
@@ -396,7 +397,7 @@ export function drawPortals(
       ctx.font = `${Math.max(9, 9 * cam.zoom)}px system-ui`
       ctx.textAlign = 'center'
       ctx.textBaseline = 'bottom'
-      ctx.fillStyle = portal.closed ? '#d2691e' : '#40c898'
+      ctx.fillStyle = portal.closed ? PALETTE.copper : PALETTE.moss
       ctx.fillText(label, midX, midY - lw - 2)
     }
   }
@@ -436,7 +437,7 @@ export function drawMeasure(
       ctx.beginPath()
       ctx.moveTo(x1, y1)
       ctx.lineTo(x2, y2)
-      ctx.strokeStyle = '#f59e0b'
+      ctx.strokeStyle = PALETTE.copper
       ctx.lineWidth = 2
       ctx.setLineDash([6, 3])
       ctx.stroke()
@@ -448,7 +449,7 @@ export function drawMeasure(
       const r = Math.hypot(x2 - x1, y2 - y1)
       ctx.beginPath()
       ctx.arc(x1, y1, r, 0, Math.PI * 2)
-      ctx.strokeStyle = '#a78bfa'
+      ctx.strokeStyle = PALETTE.rose
       ctx.lineWidth = 2
       ctx.setLineDash([6, 3])
       ctx.stroke()
@@ -459,7 +460,7 @@ export function drawMeasure(
     case 'square': {
       ctx.beginPath()
       ctx.rect(x1, y1, x2 - x1, y2 - y1)
-      ctx.strokeStyle = '#34d399'
+      ctx.strokeStyle = PALETTE.moss
       ctx.lineWidth = 2
       ctx.setLineDash([6, 3])
       ctx.stroke()
@@ -477,9 +478,9 @@ export function drawMeasure(
       ctx.moveTo(x1, y1)
       ctx.arc(x1, y1, r, angle - halfAngle, angle + halfAngle)
       ctx.closePath()
-      ctx.fillStyle = 'rgba(251, 146, 60, 0.25)'
+      ctx.fillStyle = 'rgba(118, 96, 78, 0.30)'
       ctx.fill()
-      ctx.strokeStyle = '#fb923c'
+      ctx.strokeStyle = PALETTE.earth
       ctx.lineWidth = 2
       ctx.setLineDash([6, 3])
       ctx.stroke()

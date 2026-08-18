@@ -21,96 +21,96 @@ export function renderVtt(
     const tables = await api.listTables()
     root.innerHTML = `
       <style>
-        .lobby { display: flex; flex-direction: column; height: 100%; background: #0f0f1a; color: #e0e0f0; }
+        .lobby { display: flex; flex-direction: column; height: 100%; background: var(--bg); color: var(--text); }
         .lobby-header {
           display: flex; align-items: center; justify-content: space-between;
-          padding: 16px 24px; background: #1a1a2e; border-bottom: 1px solid #2d2d4e;
+          padding: 16px 24px; background: var(--surface); border-bottom: 1px solid var(--border);
         }
-        .lobby-title { font-size: 20px; font-weight: 700; display: flex; align-items: center; gap: 10px; }
-        .lobby-user { display: flex; align-items: center; gap: 12px; font-size: 14px; color: #9090b0; }
+        .lobby-title { font-family: var(--font-title); font-size: 23px; font-weight: 700; display: flex; align-items: center; gap: 10px; }
+        .lobby-user { display: flex; align-items: center; gap: 12px; font-size: 14px; color: var(--muted); }
         .badge { padding: 2px 8px; border-radius: 12px; font-size: 11px; font-weight: 600; text-transform: uppercase; }
-        .badge-admin { background: #7c3aed; color: #e9d5ff; }
-        .badge-player { background: #1e40af; color: #bfdbfe; }
+        .badge-admin { background: var(--brand); color: var(--on-brand); }
+        .badge-player { background: var(--accent); color: var(--on-brand); }
         /* lobby-body is the full-width scroll container, so the scrollbar
            sits against the window's right border; the content column is
            centered inside it. */
         .lobby-body { flex: 1; overflow-y: auto; }
         .lobby-content { max-width: 1000px; margin: 0 auto; width: 100%; padding: 32px; }
         .section-header { display: flex; align-items: center; justify-content: space-between; margin: 24px 0 16px; }
-        .section-title { font-size: 16px; font-weight: 600; color: #c0c0e0; }
+        .section-title { font-family: var(--font-title); font-size: 18px; font-weight: 600; color: var(--text); }
         .tables-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 16px; margin-bottom: 32px; }
         .table-card {
-          background: #1a1a2e; border: 1px solid #2d2d4e; border-radius: 10px;
+          background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
           padding: 20px; cursor: pointer; transition: border-color 0.2s, transform 0.1s;
           display: flex; flex-direction: column; gap: 8px;
         }
-        .table-card:hover { border-color: #4a90d9; transform: translateY(-2px); }
-        .table-card-name { font-size: 16px; font-weight: 600; }
-        .table-card-meta { font-size: 12px; color: #6060a0; }
+        .table-card:hover { border-color: var(--accent); transform: translateY(-2px); }
+        .table-card-name { font-family: var(--font-title); font-size: 17px; font-weight: 600; }
+        .table-card-meta { font-size: 12px; color: var(--muted); }
         .table-card-actions { display: flex; gap: 8px; margin-top: 8px; }
         .btn { padding: 7px 14px; border-radius: 7px; border: none; cursor: pointer; font-size: 13px; font-weight: 500; transition: opacity 0.15s; }
         .btn:hover { opacity: 0.85; }
-        .btn-primary { background: #4a90d9; color: #fff; }
-        .btn-danger { background: #dc2626; color: #fff; }
-        .btn-ghost { background: transparent; color: #9090b0; border: 1px solid #2d2d4e; }
+        .btn-primary { background: var(--brand); color: var(--on-brand); }
+        .btn-danger { background: var(--danger); color: var(--on-brand); }
+        .btn-ghost { background: transparent; color: var(--muted); border: 1px solid var(--border); }
         .btn-sm { padding: 5px 10px; font-size: 12px; }
-        .admin-nav { display: flex; gap: 6px; border-bottom: 1px solid #2d2d4e; margin-bottom: 24px; flex-wrap: wrap; }
+        .admin-nav { display: flex; gap: 6px; border-bottom: 1px solid var(--border); margin-bottom: 24px; flex-wrap: wrap; }
         .admin-tab {
           padding: 10px 18px; background: transparent; border: none; border-bottom: 2px solid transparent;
-          color: #9090b0; font-size: 14px; font-weight: 600; cursor: pointer;
+          color: var(--muted); font-size: 14px; font-weight: 600; cursor: pointer;
         }
-        .admin-tab:hover { color: #e0e0f0; }
-        .admin-tab.active { color: #4a90d9; border-bottom-color: #4a90d9; }
-        .admin-section { background: #1a1a2e; border: 1px solid #2d2d4e; border-radius: 10px; padding: 24px; margin-bottom: 24px; }
-        .admin-section h3 { font-size: 14px; font-weight: 600; color: #9090b0; margin-bottom: 16px; text-transform: uppercase; letter-spacing: 0.05em; }
+        .admin-tab:hover { color: var(--text); }
+        .admin-tab.active { color: var(--brand); border-bottom-color: var(--brand); }
+        .admin-section { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 24px; margin-bottom: 24px; }
+        .admin-section h3 { font-family: var(--font-title); font-size: 15px; font-weight: 600; color: var(--muted); margin-bottom: 16px; text-transform: uppercase; letter-spacing: 0.05em; }
         .data-table { width: 100%; border-collapse: collapse; font-size: 13px; }
         .data-table th {
-          text-align: left; padding: 8px 10px; color: #6060a0; font-size: 11px;
-          text-transform: uppercase; letter-spacing: 0.05em; border-bottom: 1px solid #2d2d4e;
+          text-align: left; padding: 8px 10px; color: var(--muted); font-size: 11px;
+          text-transform: uppercase; letter-spacing: 0.05em; border-bottom: 1px solid var(--border);
         }
-        .data-table td { padding: 9px 10px; border-bottom: 1px solid #1e1e38; }
+        .data-table td { padding: 9px 10px; border-bottom: 1px solid var(--border); }
         .data-table tr:last-child td { border-bottom: none; }
         .data-table select, .data-table input[type=text] {
-          padding: 5px 8px; background: #0f0f1a; border: 1px solid #2d2d4e; border-radius: 6px;
-          color: #e0e0f0; font-size: 12px; outline: none;
+          padding: 5px 8px; background: var(--bg); border: 1px solid var(--border); border-radius: 6px;
+          color: var(--text); font-size: 12px; outline: none;
         }
         .row-actions { text-align: right; white-space: nowrap; }
         .row-actions .btn { margin-left: 6px; }
         .folder-head td { cursor: pointer; user-select: none; }
-        .folder-head:hover td { color: #6aa9ff; }
+        .folder-head:hover td { color: var(--text); }
         .fold-arrow { display: inline-block; width: 14px; }
         .form-row { display: flex; gap: 10px; flex-wrap: wrap; align-items: flex-end; }
         .form-field { display: flex; flex-direction: column; gap: 5px; }
-        .form-field label { font-size: 12px; color: #6060a0; }
+        .form-field label { font-size: 12px; color: var(--muted); }
         .form-field input, .form-field select {
-          padding: 8px 12px; background: #0f0f1a; border: 1px solid #2d2d4e;
-          border-radius: 7px; color: #e0e0f0; font-size: 13px; outline: none;
+          padding: 8px 12px; background: var(--bg); border: 1px solid var(--border);
+          border-radius: 7px; color: var(--text); font-size: 13px; outline: none;
           transition: border-color 0.2s;
         }
-        .form-field input:focus, .form-field select:focus { border-color: #4a90d9; }
+        .form-field input:focus, .form-field select:focus { border-color: var(--accent); }
         .users-list { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
         .user-chip {
           display: flex; align-items: center; gap: 6px; padding: 4px 10px;
-          background: #0f0f1a; border: 1px solid #2d2d4e; border-radius: 20px; font-size: 13px;
+          background: var(--bg); border: 1px solid var(--border); border-radius: 20px; font-size: 13px;
         }
         .upload-zone {
-          border: 2px dashed #2d2d4e; border-radius: 8px; padding: 20px;
-          text-align: center; cursor: pointer; transition: border-color 0.2s; color: #6060a0; font-size: 13px;
+          border: 2px dashed var(--border); border-radius: 8px; padding: 20px;
+          text-align: center; cursor: pointer; transition: border-color 0.2s; color: var(--muted); font-size: 13px;
         }
-        .upload-zone:hover, .upload-zone.drag { border-color: #4a90d9; color: #9090b0; }
+        .upload-zone:hover, .upload-zone.drag { border-color: var(--accent); color: var(--text); }
         .msg { font-size: 13px; margin-top: 8px; min-height: 16px; }
-        .msg-ok { color: #34d399; }
-        .msg-err { color: #f87171; }
-        .empty-state { text-align: center; padding: 48px; color: #4040a0; }
-        .you { font-size: 11px; color: #6060a0; }
+        .msg-ok { color: var(--brand); }
+        .msg-err { color: var(--danger); }
+        .empty-state { text-align: center; padding: 48px; color: var(--faint); }
+        .you { font-size: 11px; color: var(--muted); }
       </style>
       <div class="lobby">
         <div class="lobby-header">
           <div class="lobby-title">
             <svg width="28" height="28" viewBox="0 0 64 64" fill="none">
-              <rect width="64" height="64" rx="8" fill="#1a1a2e"/>
-              <polygon points="32,8 56,48 8,48" stroke="#4a90d9" stroke-width="3" fill="none"/>
-              <circle cx="32" cy="32" r="6" fill="#4a90d9"/>
+              <rect width="64" height="64" rx="8" fill="#1E211C"/>
+              <polygon points="32,8 56,48 8,48" stroke="#9A7656" stroke-width="3" fill="none"/>
+              <circle cx="32" cy="32" r="6" fill="#9A7656"/>
             </svg>
             RHW Simple VTT
           </div>
@@ -148,7 +148,7 @@ export function renderVtt(
             <button class="admin-tab active" data-page="tables">🗺 Maps &amp; Tables</button>
             <button class="admin-tab" data-page="users">👥 Users</button>
             <button class="admin-tab" data-page="assets">📦 Assets</button>
-            <span id="version-info" style="margin-left:auto;align-self:center;font-size:11px;color:#6060a0"></span>
+            <span id="version-info" style="margin-left:auto;align-self:center;font-size:11px;color:var(--muted)"></span>
           </div>
           <div id="admin-page"></div>` : ''}
 
@@ -501,12 +501,12 @@ export function renderVtt(
         const key = `${kind}:${folder}`
         const open = expandedFolders.has(key)
         rows.push(`<tr class="folder-head" data-fold="${esc(key)}">
-          <td colspan="4" style="color:#4a90d9;font-weight:600;border-bottom:1px solid #2d2d4e"><span class="fold-arrow">${open ? '▾' : '▸'}</span>📁 ${folder === '' ? 'Root' : esc(folder)} (${groups.get(folder)!.length})</td>
+          <td colspan="4" style="color:var(--brand);font-weight:600;border-bottom:1px solid var(--border)"><span class="fold-arrow">${open ? '▾' : '▸'}</span>📁 ${folder === '' ? 'Root' : esc(folder)} (${groups.get(folder)!.length})</td>
         </tr>`)
         for (const a of groups.get(folder)!) {
           rows.push(`
             <tr class="folder-row" data-group="${esc(key)}" ${open ? '' : 'hidden'}>
-              <td>${kind === 'image' ? `<img src="${esc(a.path)}" alt="" style="width:20px;height:20px;border-radius:4px;object-fit:cover;vertical-align:middle;margin-right:8px">` : '<span style="color:#4a90d9;margin-right:8px">♪</span>'}${esc(a.name)}</td>
+              <td>${kind === 'image' ? `<img src="${esc(a.path)}" alt="" style="width:20px;height:20px;border-radius:4px;object-fit:cover;vertical-align:middle;margin-right:8px">` : '<span style="color:var(--accent);margin-right:8px">♪</span>'}${esc(a.name)}</td>
               <td>${formatSize(a.size)}</td>
               <td>${folderSelect(a)}</td>
               <td class="row-actions"><button class="btn btn-danger btn-sm" data-del-asset="${esc(a.id)}">Delete</button></td>
