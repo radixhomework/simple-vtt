@@ -17,8 +17,14 @@ account (`admin` / `admin` by default) and change the password right away.
 ## 2. Configuration
 
 All deployment configuration lives in the **`.env`** file next to
-`docker-compose.yml` (values fall back to sane defaults if the file is
-missing):
+`docker-compose.yml`. The file is not versioned — start from the committed
+template and adjust:
+
+```bash
+cp .env.example .env
+```
+
+Values fall back to sane defaults if the file is missing:
 
 | Variable         | Default                     | Purpose                                |
 |------------------|-----------------------------|----------------------------------------|

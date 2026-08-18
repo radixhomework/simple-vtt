@@ -10,6 +10,9 @@
 ## Docker data
 data/
 
+## Local configuration (template lives in .env.example)
+.env
+
 ## OS
 .DS_Store
 Thumbs.db
