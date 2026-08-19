@@ -241,7 +241,8 @@ export function renderMap(
           <button class="header-btn" id="snap-btn">Snap ✓</button>
           <button class="header-btn" id="grid-btn">Grid ✓</button>
           ${isAdmin ? `<button class="header-btn" id="fog-toggle-btn">Fog ✓</button>
-          <button class="header-btn" id="share-measure-btn" title="Share measurements with players">Share ✗</button>` : ''}
+          <button class="header-btn" id="share-measure-btn" title="Share measurements with players">Share ✗</button>
+          <button class="header-btn" id="focus-btn" title="Focus every display on your current view (one time)">🎯 Focus</button>` : ''}
         </div>
         <div class="game-header-right">
           ${isAdmin ? `<button class="header-btn" id="add-token-btn">+ Token</button>
@@ -403,7 +404,7 @@ export function renderMap(
   // Exactly one floor bitmap is ever cached.
   function loadMap() {
     const p = state.table.map_image_path ?? ''
-    if (p) clearMapImageCache(p)
+    clearMapImageCache(p) // release every bitmap except the target floor's
     if (!p || p === state.mapImagePath) return
     state.mapImagePath = p
     preloadMapImage(p, img => {
@@ -623,11 +624,10 @@ export function renderMap(
         floor_id: (root.querySelector('#te-floor') as HTMLSelectElement)?.value ?? token.floor_id,
       }
       await api.updateToken(state.table.id, token.id, updated)
-      if (updated.floor_id !== state.floor?.id) {
-        // Moved to another floor by the editor: it leaves our view
-        state.tokens = state.tokens.filter(t => t.id !== token.id)
-        state.selectedId = null
-        renderTokenEditor()
+      if (updated.floor_id && updated.floor_id !== state.floor?.id) {
+        // Moved to another floor by the editor: our display follows it
+        switchFloor(updated.floor_id)
+        return
       } else {
         const idx = state.tokens.findIndex(t => t.id === token.id)
         if (idx !== -1) state.tokens[idx] = updated
@@ -655,6 +655,8 @@ export function renderMap(
   // bitmap) and tell the server, which confirms with a fresh table_state.
 
   function applyFloor(floor: FloorLite) {
+    // Stash the old floor's explored memory, then drop it: each level keeps
+    // its own sight history, nothing is transposed across the switch.
     if (state.floor) stashExploredMask(state.floor.id, state.exploredCanvas)
     state.floor = floor as Floor
     state.table = { ...state.table, ...floorFields(floor as Floor) }
@@ -665,6 +667,7 @@ export function renderMap(
     state.selectedId = null
     state.mapImage = null
     state.mapImagePath = '' // force the new floor's bitmap to load
+    state.exploredCanvas = null
     recomputeWalls()
     loadMap()
     refreshSidebar()
@@ -725,6 +728,7 @@ export function renderMap(
           if (oldFloorId) stashExploredMask(oldFloorId, state.exploredCanvas)
           state.mapImage = null
           state.mapImagePath = ''
+          state.exploredCanvas = null
         }
         if (p.settings) state.settings = { ...DEFAULT_SETTINGS, ...p.settings }
         if (!initialStateLoaded) {
@@ -824,6 +828,15 @@ export function renderMap(
       case 'music_state': {
         state.music = msg.payload as MusicStatePayload
         applyMusicState()
+        break
+      }
+      case 'camera_focus': {
+        // One-time admin focus: adopt the admin's floor, camera and zoom
+        const p = msg.payload as { x: number; y: number; zoom: number; floor_id?: string }
+        if (p.floor_id && p.floor_id !== state.floor?.id) switchFloor(p.floor_id)
+        state.camera = { x: p.x, y: p.y, zoom: p.zoom }
+        render()
+        showNotif('The admin focused your view')
         break
       }
       case 'chat': {
@@ -1127,6 +1140,17 @@ export function renderMap(
     render()
   })
 
+  // Focus: one-time snap of every display to the admin's view (floor,
+  // camera, zoom). Not a continuous follow — clients stay free afterwards.
+  const focusBtn = root.querySelector('#focus-btn') as HTMLButtonElement
+  focusBtn?.addEventListener('click', () => {
+    socket.send('camera_focus', {
+      x: state.camera.x, y: state.camera.y, zoom: state.camera.zoom,
+      floor_id: state.floor?.id,
+    })
+    showNotif('Your view has been sent to everyone')
+  })
+
   // Share measurements with players (admin)
   const shareBtn = root.querySelector('#share-measure-btn') as HTMLButtonElement
   shareBtn?.addEventListener('click', () => {
@@ -1324,13 +1348,12 @@ export function renderMap(
     state.dragging = false
     const token = state.tokens.find(t => t.id === state.selectedId)
     if (!token) return
-    // The drag already blocks walls incrementally; this is only a safety
-    // net for races (e.g. a door closed mid-drag by another client).
-    const blocked = pathCrossesWall(
-      state.dragStartX, state.dragStartY,
-      token.x, token.y,
-      state.walls,
-    ) || pointOnWall(token.x, token.y, state.walls)
+    // The drag already blocks walls incrementally along the path actually
+    // taken, so the legal way around a corner must NOT be rejected here —
+    // a straight-line start→end check would falsely flag L-shaped moves.
+    // Only the resting point is re-validated (race: a door closed under
+    // the token mid-drag).
+    const blocked = pointOnWall(token.x, token.y, state.walls)
     if (blocked) {
       // Revert locally and tell every other client to snap back too
       token.x = state.dragStartX
@@ -1340,6 +1363,7 @@ export function renderMap(
       render()
     } else {
       // Dropping the token on a stair marker sends it to the linked floor
+      // and the mover's display follows it there
       const stair = pickStair(token.x, token.y, state.stairs, state.table.grid_size ?? 70)
       if (stair) {
         const target = state.floors.find(f => f.id === stair.to_floor)
@@ -1347,11 +1371,8 @@ export function renderMap(
           token_id: token.id, x: token.x, y: token.y,
           to_floor: stair.to_floor, to_x: stair.to_x, to_y: stair.to_y,
         })
-        state.tokens = state.tokens.filter(t => t.id !== token.id)
-        if (state.selectedId === token.id) { state.selectedId = null; renderTokenEditor() }
-        refreshSidebar()
         showNotif(`${token.name || 'Token'} → ${target ? floorLabel(target) : 'another floor'}`)
-        render()
+        switchFloor(stair.to_floor)
         return
       }
       socket.send('token_move', { token_id: token.id, x: token.x, y: token.y })

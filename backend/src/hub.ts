@@ -404,6 +404,19 @@ function handleMessage(client: Client, raw: string) {
       break
     }
 
+    case 'camera_focus': {
+      // Admin one-time focus: snap every other client's display (floor,
+      // camera, zoom) to the admin's current view. Not a continuous follow.
+      if (client.role !== 'admin') return
+      const { x, y, zoom, floor_id } = payload as { x: number; y: number; zoom: number; floor_id?: string }
+      if (typeof x !== 'number' || typeof y !== 'number' || typeof zoom !== 'number') return
+      const data = JSON.stringify({ type: 'camera_focus', payload: { x, y, zoom, floor_id } })
+      tables.get(client.tableId)?.forEach(c => {
+        if (c !== client && c.ws.readyState === WebSocket.OPEN) c.ws.send(data)
+      })
+      break
+    }
+
     case 'measure_update': {
       // Admin-only: broadcast the admin's measurement to the other clients
       if (client.role !== 'admin') return
