@@ -4,7 +4,7 @@
  * Every user can change their own password from here.
  */
 import { api } from '../api/client'
-import type { User, Table, Asset } from '../types'
+import type { User, Table, Asset, Floor } from '../types'
 
 type AdminPage = 'tables' | 'users' | 'assets'
 
@@ -276,20 +276,26 @@ export function renderVtt(
         ${tables.length === 0 ? '<div class="empty-state">No tables yet.</div>' : `
         <table class="data-table">
           <thead>
-            <tr><th>Name</th><th>Grid</th><th>Tokens</th><th>Portals</th><th>Map image</th><th></th></tr>
+            <tr><th>Name</th><th>Floors</th><th>Tokens</th><th>Portals</th><th>Map image</th><th></th></tr>
           </thead>
           <tbody>
             ${tables.map(t => `
               <tr>
                 <td>${esc(t.name)}</td>
-                <td>${t.grid_size} px/sq</td>
+                <td>${t.floor_count ?? 1}</td>
                 <td>${t.token_count ?? '—'}</td>
                 <td>${t.portal_count ?? '—'}</td>
                 <td>${t.map_image_path ? '✓' : '—'}</td>
                 <td class="row-actions">
                   <button class="btn btn-primary btn-sm" data-mjoin="${t.id}">Join</button>
+                  <button class="btn btn-ghost btn-sm" data-mfloors="${t.id}">Floors</button>
                   <button class="btn btn-ghost btn-sm" data-mren="${t.id}">Rename</button>
                   <button class="btn btn-danger btn-sm" data-mdel="${t.id}">Delete</button>
+                </td>
+              </tr>
+              <tr class="floors-detail" data-floors-for="${t.id}" style="display:none">
+                <td colspan="6" style="background:var(--bg);padding:12px 12px 16px">
+                  <div class="msg" style="margin:0 0 8px">Loading floors…</div>
                 </td>
               </tr>`).join('')}
           </tbody>
@@ -359,6 +365,125 @@ export function renderVtt(
           refresh()
         }
       })
+    })
+
+    page.querySelectorAll('[data-mfloors]').forEach(el => {
+      el.addEventListener('click', async () => {
+        const id = (el as HTMLElement).dataset.mfloors!
+        const detail = page.querySelector(`[data-floors-for="${id}"]`) as HTMLElement | null
+        if (!detail) return
+        if (detail.style.display !== 'none') { detail.style.display = 'none'; return }
+        detail.style.display = ''
+        void renderFloorsDetail(id, detail)
+      })
+    })
+  }
+
+  /** Inline floor manager under a map row: list, rename, image, delete, add. */
+  async function renderFloorsDetail(tableId: string, detail: HTMLElement) {
+    const cell = detail.querySelector('td')!
+    const reload = () => void renderFloorsDetail(tableId, detail)
+
+    let floors: Floor[]
+    try {
+      const t = await api.getTable(tableId)
+      floors = t.floors ?? []
+    } catch (e: any) {
+      cell.innerHTML = `<div class="msg msg-err">Failed to load floors: ${esc(e.message)}</div>`
+      return
+    }
+
+    const floorName = (f: Floor) => f.name || `Floor ${f.level}`
+
+    cell.innerHTML = `
+      <table class="data-table">
+        <thead><tr><th>Level</th><th>Name</th><th>Grid</th><th>Image</th><th></th></tr></thead>
+        <tbody>
+          ${floors.map(f => `
+            <tr>
+              <td>${f.level}</td>
+              <td>${esc(floorName(f))}</td>
+              <td>${f.grid_size} px/sq</td>
+              <td>${f.map_image_path
+                ? `${f.img_width && f.img_height ? `${f.img_width}×${f.img_height}` : '✓'}`
+                : '— <button class="btn btn-ghost btn-sm" data-fimg="${f.id}">Upload image</button>'}</td>
+              <td class="row-actions">
+                <button class="btn btn-ghost btn-sm" data-fren="${f.id}">Rename</button>
+                <button class="btn btn-danger btn-sm" data-fdel="${f.id}" ${floors.length <= 1 ? 'disabled' : ''}>Delete</button>
+              </td>
+            </tr>`).join('')}
+        </tbody>
+      </table>
+      <div class="form-row" style="margin-top:10px">
+        <button class="btn btn-primary btn-sm" data-fadd>+ Add floor</button>
+        <button class="btn btn-ghost btn-sm" data-fimport>Import UVTT as floor</button>
+        <input type="file" data-ffile accept=".uvtt,.zip,.dd2vtt" style="display:none" />
+      </div>
+      <div class="msg" data-fmsg style="margin-top:6px">All floor images must share the same dimensions. Stairs between floors are placed from the map page (🪜 tool).</div>
+    `
+
+    const msg = cell.querySelector('[data-fmsg]') as HTMLElement
+    const say = (text: string, ok = false) => { msg.textContent = text; msg.className = 'msg ' + (ok ? 'msg-ok' : 'msg-err') }
+
+    cell.querySelectorAll('[data-fren]').forEach(el => {
+      el.addEventListener('click', async () => {
+        const id = (el as HTMLElement).dataset.fren!
+        const floor = floors.find(f => f.id === id)
+        const name = prompt('Floor name (empty = "Floor N"):', floor?.name ?? '')?.trim()
+        if (name === null || name === (floor?.name ?? '')) return
+        try { await api.updateFloor(id, { name }); reload() } catch (e: any) { say(e.message) }
+      })
+    })
+
+    cell.querySelectorAll('[data-fdel]').forEach(el => {
+      el.addEventListener('click', async () => {
+        const id = (el as HTMLElement).dataset.fdel!
+        if (!confirm('Delete this floor with its tokens, doors, fog and stairs?')) return
+        try { await api.deleteFloor(id); reload() } catch (e: any) { say(e.message) }
+      })
+    })
+
+    cell.querySelectorAll('[data-fimg]').forEach(el => {
+      el.addEventListener('click', () => {
+        const id = (el as HTMLElement).dataset.fimg!
+        const input = document.createElement('input')
+        input.type = 'file'
+        input.accept = 'image/*'
+        input.addEventListener('change', async () => {
+          const file = input.files?.[0]
+          if (!file) return
+          say('Uploading…')
+          try {
+            // Measure client-side: the server enforces identical dimensions
+            // across all floor images of the table.
+            const bmp = await createImageBitmap(file)
+            const { width, height } = bmp
+            bmp.close()
+            await api.uploadFloorImage(id, file, width, height)
+            say('Floor image updated!', true)
+            reload()
+          } catch (e: any) { say('Upload failed: ' + e.message) }
+        })
+        input.click()
+      })
+    })
+
+    cell.querySelector('[data-fadd]')?.addEventListener('click', async () => {
+      const name = prompt('New floor name (e.g. "Cellar", empty = auto):', '')?.trim() ?? ''
+      try { await api.createFloor(tableId, { name }); reload() } catch (e: any) { say(e.message) }
+    })
+
+    const fileInput = cell.querySelector('[data-ffile]') as HTMLInputElement
+    cell.querySelector('[data-fimport]')?.addEventListener('click', () => fileInput.click())
+    fileInput.addEventListener('change', async () => {
+      const file = fileInput.files?.[0]
+      if (!file) return
+      say('Importing…')
+      try {
+        await api.importFloorUVTT(tableId, file)
+        say('Floor imported!', true)
+        reload()
+      } catch (e: any) { say('Import failed: ' + e.message) }
     })
   }
 
@@ -639,7 +764,7 @@ function tableCardHTML(t: Table, isAdmin: boolean) {
   return `
     <div class="table-card">
       <div class="table-card-name">${esc(t.name)}</div>
-      <div class="table-card-meta">Grid: ${t.grid_size}px/sq</div>
+      <div class="table-card-meta">${t.floor_count && t.floor_count > 1 ? `${t.floor_count} floors` : `Grid: ${t.grid_size ?? 70}px/sq`}</div>
       <div class="table-card-actions">
         <button class="btn btn-primary btn-sm" data-join="${t.id}">Join</button>
         ${isAdmin ? `<button class="btn btn-danger btn-sm" data-del="${t.id}">Delete</button>` : ''}

@@ -10,14 +10,37 @@ export interface User {
 export interface Table {
   id: string
   name: string
-  map_image_path: string
-  grid_size: number
+  /** Legacy pre-floors columns — superseded by Floor, kept for older payloads */
+  map_image_path?: string
+  grid_size?: number
   uvt_metadata?: string
-  map_offset_x: number
-  map_offset_y: number
+  map_offset_x?: number
+  map_offset_y?: number
+  /** getTable() embeds the floor list */
+  floors?: Floor[]
   /** listTables() only */
   token_count?: number
   portal_count?: number
+  floor_count?: number
+}
+
+/** Floor list entry (metadata only — no map data, so it stays lightweight). */
+export interface FloorLite {
+  id: string
+  table_id: string
+  level: number
+  name: string
+}
+
+/** Full floor row — sent only for the viewer's active floor. */
+export interface Floor extends FloorLite {
+  map_image_path: string
+  grid_size: number
+  uvt_metadata: string
+  map_offset_x: number
+  map_offset_y: number
+  img_width: number
+  img_height: number
 }
 
 export interface Token {
@@ -34,6 +57,21 @@ export interface Token {
   owner: string
   /** Admin-only: hidden tokens (and their sight) are invisible to players */
   hidden: boolean
+  /** Floor the token is on */
+  floor_id: string
+}
+
+/** Stairs: one-way link from a point on one floor to a point on another. */
+export interface Stairs {
+  id: string
+  table_id: string
+  from_floor: string
+  from_x: number
+  from_y: number
+  to_floor: string
+  to_x: number
+  to_y: number
+  radius: number
 }
 
 export interface FogPoint {
@@ -42,6 +80,7 @@ export interface FogPoint {
   x: number
   y: number
   radius: number
+  floor_id?: string
 }
 
 export interface Camera {
@@ -50,7 +89,7 @@ export interface Camera {
   zoom: number
 }
 
-export type ToolType = 'select' | 'line' | 'circle' | 'square' | 'cone' | 'fog-erase' | 'fog-reveal'
+export type ToolType = 'select' | 'line' | 'circle' | 'square' | 'cone' | 'fog-erase' | 'fog-reveal' | 'stairs'
 
 export interface WSMessage<T = unknown> {
   type: string
@@ -61,6 +100,10 @@ export interface TokenMovePayload {
   token_id: string
   x: number
   y: number
+  /** Cross-floor move (stairs) */
+  to_floor?: string
+  to_x?: number
+  to_y?: number
 }
 
 export interface TokenUpdatePayload {
@@ -84,13 +127,18 @@ export interface Portal {
   x2: number
   y2: number
   closed: boolean
+  floor_id: string
 }
 
 export interface TableStatePayload {
-  table: Table
+  table: { id: string; name: string }
+  /** All floors (metadata only) + the active floor with its map data */
+  floors: FloorLite[]
+  floor: Floor | null
   tokens: Token[]
   fog: FogPoint[]
   portals: Portal[]
+  stairs: Stairs[]
   settings: AppSettings
 }
 

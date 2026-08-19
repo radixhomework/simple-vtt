@@ -19,6 +19,8 @@ interface Client {
   username: string
   role: string
   tableId: string
+  /** Floor whose data this client currently views (null = not yet resolved). */
+  activeFloorId: string | null
 }
 
 // tableId → set of clients
@@ -185,14 +187,29 @@ function newId(): string {
 
 function sendTableState(client: Client) {
   const table = db.prepare(
-    'SELECT id, name, map_image_path, grid_size, uvt_metadata, map_offset_x, map_offset_y FROM tables WHERE id=?'
-  ).get(client.tableId) as Record<string, unknown> | undefined
+    'SELECT id, name FROM tables WHERE id=?'
+  ).get(client.tableId) as { id: string; name: string } | undefined
 
   if (!table) return
 
+  // Floor list (metadata only) + the client's active floor. Defaults to the
+  // lowest level on first contact or when the viewed floor disappeared.
+  const floors = db.prepare(
+    'SELECT id, table_id, level, name FROM floors WHERE table_id=? ORDER BY level, rowid'
+  ).all(client.tableId) as Array<{ id: string; table_id: string; level: number; name: string }>
+  const floorId = floors.some(f => f.id === client.activeFloorId) ? client.activeFloorId! : floors[0]?.id ?? null
+  client.activeFloorId = floorId
+  const floor = floorId
+    ? db.prepare(
+        'SELECT id, table_id, level, name, map_image_path, grid_size, uvt_metadata, map_offset_x, map_offset_y, img_width, img_height FROM floors WHERE id=?'
+      ).get(floorId)
+    : null
+
+  // Everything positional is scoped to the viewer's active floor — clients
+  // never receive other levels' tokens, fog or doors.
   const tokenRows = db.prepare(
-    'SELECT id, table_id, name, x, y, icon_path, has_vision, vision_radius, size, color, owner, hidden FROM tokens WHERE table_id=?'
-  ).all(client.tableId) as Array<Record<string, unknown>>
+    'SELECT id, table_id, name, x, y, icon_path, has_vision, vision_radius, size, color, owner, hidden, floor_id FROM tokens WHERE table_id=? AND floor_id=?'
+  ).all(client.tableId, floorId) as Array<Record<string, unknown>>
 
   // Hidden tokens (and their sight) are invisible to players; admins keep
   // the full picture.
@@ -201,22 +218,30 @@ function sendTableState(client: Client) {
     : tokenRows.filter(t => t.hidden !== 1).map(normalizeToken)
 
   const fog = db.prepare(
-    'SELECT id, table_id, x, y, radius FROM fog_points WHERE table_id=?'
-  ).all(client.tableId)
+    'SELECT id, table_id, x, y, radius, floor_id FROM fog_points WHERE table_id=? AND floor_id=?'
+  ).all(client.tableId, floorId)
 
   const settings = loadSettings()
 
-  const portalRows = db.prepare('SELECT id, table_id, x1, y1, x2, y2, closed FROM portals WHERE table_id=?')
-    .all(client.tableId) as Record<string, unknown>[]
+  const portalRows = db.prepare('SELECT id, table_id, x1, y1, x2, y2, closed, floor_id FROM portals WHERE table_id=? AND floor_id=?')
+    .all(client.tableId, floorId) as Record<string, unknown>[]
   const portals = portalRows.map(p => ({ ...p, closed: p.closed === 1 }))
+
+  // Stairs leaving this floor (their counterparts show on the target floor)
+  const stairs = db.prepare(
+    'SELECT id, table_id, from_floor, from_x, from_y, to_floor, to_x, to_y, radius FROM stairs WHERE table_id=? AND from_floor=?'
+  ).all(client.tableId, floorId)
 
   send(client, {
     type: 'table_state',
     payload: {
       table,
+      floors,
+      floor,
       tokens,
       fog,
       portals,
+      stairs,
       settings,
     },
   })
@@ -238,7 +263,9 @@ function handleMessage(client: Client, raw: string) {
 
   switch (type) {
     case 'token_move': {
-      const { token_id, x, y } = payload as { token_id: string; x: number; y: number }
+      const { token_id, x, y, to_floor, to_x, to_y } = payload as {
+        token_id: string; x: number; y: number; to_floor?: string; to_x?: number; to_y?: number
+      }
       const tokenRow = db.prepare('SELECT owner, hidden FROM tokens WHERE id=? AND table_id=?')
         .get(token_id, client.tableId) as { owner: string; hidden: number } | undefined
       if (client.role !== 'admin') {
@@ -250,6 +277,20 @@ function handleMessage(client: Client, raw: string) {
         if (!tokenRow || (ownOnly && tokenRow.owner !== client.username)) break
       }
       if (!tokenRow) break
+
+      if (to_floor !== undefined) {
+        // Cross-floor move (stairs): the token changes level. A full state
+        // push resyncs every client — it leaves the floors some view and
+        // arrives on another.
+        const floor = db.prepare('SELECT id FROM floors WHERE id=? AND table_id=?')
+          .get(to_floor, client.tableId) as { id: string } | undefined
+        if (!floor) break
+        db.prepare('UPDATE tokens SET x=?, y=?, floor_id=? WHERE id=? AND table_id=?')
+          .run(to_x ?? x, to_y ?? y, to_floor, token_id, client.tableId)
+        tables.get(client.tableId)?.forEach(c => sendTableState(c))
+        break
+      }
+
       db.prepare('UPDATE tokens SET x=?, y=? WHERE id=? AND table_id=?')
         .run(x, y, token_id, client.tableId)
       // Moves of hidden tokens are for admin eyes only
@@ -260,7 +301,7 @@ function handleMessage(client: Client, raw: string) {
     case 'token_update': {
       const t = (payload as { token: Record<string, unknown> }).token
       const existing = db.prepare(
-        'SELECT name, x, y, icon_path, has_vision, vision_radius, size, color, owner, hidden FROM tokens WHERE id=? AND table_id=?'
+        'SELECT name, x, y, icon_path, has_vision, vision_radius, size, color, owner, hidden, floor_id FROM tokens WHERE id=? AND table_id=?'
       ).get(t.id, client.tableId) as Record<string, unknown> | undefined
       if (!existing) break
       // Authorization: admins may edit anything; players only their own
@@ -279,21 +320,34 @@ function handleMessage(client: Client, raw: string) {
         color:         t.color         !== undefined ? t.color         : existing.color,
         owner:         isAdmin && t.owner !== undefined ? t.owner : existing.owner,
         hidden:        isAdmin && t.hidden !== undefined ? t.hidden : existing.hidden,
+        floor_id:      existing.floor_id,
+      }
+      // Floor change (token editor): target floor must belong to the table
+      if (t.floor_id !== undefined && t.floor_id !== existing.floor_id) {
+        const floor = db.prepare('SELECT id FROM floors WHERE id=? AND table_id=?')
+          .get(t.floor_id, client.tableId) as { id: string } | undefined
+        if (floor) m.floor_id = t.floor_id
       }
       const hiddenNow = m.hidden === 1 || m.hidden === true
       const wasHidden = existing.hidden === 1 || existing.hidden === true
+      const floorChanged = m.floor_id !== existing.floor_id
       db.prepare(
-        `UPDATE tokens SET name=?, x=?, y=?, icon_path=?, has_vision=?, vision_radius=?, size=?, color=?, owner=?, hidden=?
+        `UPDATE tokens SET name=?, x=?, y=?, icon_path=?, has_vision=?, vision_radius=?, size=?, color=?, owner=?, hidden=?, floor_id=?
          WHERE id=? AND table_id=?`
-      ).run(m.name, m.x, m.y, m.icon_path, m.has_vision ? 1 : 0, m.vision_radius, m.size, m.color, m.owner, hiddenNow ? 1 : 0, t.id, client.tableId)
+      ).run(m.name, m.x, m.y, m.icon_path, m.has_vision ? 1 : 0, m.vision_radius, m.size, m.color, m.owner, hiddenNow ? 1 : 0, m.floor_id, t.id, client.tableId)
 
-      if (hiddenNow !== wasHidden) {
-        // Visibility changed: push a fresh table_state so players gain/lose
-        // the token (and its sight) immediately.
+      if (hiddenNow !== wasHidden || floorChanged) {
+        // Visibility or floor changed: push a fresh table_state so players
+        // gain/lose the token (and its sight) immediately.
         tables.get(client.tableId)?.forEach(c => sendTableState(c))
       } else {
-        // Updates of hidden tokens are for admin eyes only
-        broadcast(client.tableId, raw, client, hiddenNow)
+        // Updates of hidden tokens are for admin eyes only; clients viewing
+        // another floor never have this token in their state.
+        tables.get(client.tableId)?.forEach(c => {
+          if (c !== client && c.activeFloorId === m.floor_id && (!hiddenNow || c.role === 'admin') && c.ws.readyState === WebSocket.OPEN) {
+            c.ws.send(raw)
+          }
+        })
       }
       break
     }
@@ -308,26 +362,58 @@ function handleMessage(client: Client, raw: string) {
 
     case 'fog_update': {
       if (client.role !== 'admin') return
-      const { action, points } = payload as { action: string; points: Array<Record<string, unknown>> }
+      const { action, points, floor_id } = payload as {
+        action: string; points: Array<Record<string, unknown>>; floor_id?: string
+      }
+      // Fog is per floor: default to the client's viewed floor
+      const floorId = floor_id ?? client.activeFloorId ?? ''
       if (action === 'clear_all') {
         // clear_all optionally carries the surviving points (used by the
         // erase tool: clear + re-add in one atomic step, no client flicker)
-        db.prepare('DELETE FROM fog_points WHERE table_id=?').run(client.tableId)
+        db.prepare('DELETE FROM fog_points WHERE table_id=? AND floor_id=?').run(client.tableId, floorId)
         if (Array.isArray(points) && points.length > 0) {
-          const insert = db.prepare('INSERT INTO fog_points (id, table_id, x, y, radius) VALUES (?,?,?,?,?)')
+          const insert = db.prepare('INSERT INTO fog_points (id, table_id, x, y, radius, floor_id) VALUES (?,?,?,?,?,?)')
           for (const p of points) {
-            insert.run(newId(), client.tableId, p.x, p.y, p.radius ?? 3)
+            insert.run(newId(), client.tableId, p.x, p.y, p.radius ?? 3, floorId)
           }
         }
       } else if (action === 'add' && Array.isArray(points)) {
-        const insert = db.prepare('INSERT INTO fog_points (id, table_id, x, y, radius) VALUES (?,?,?,?,?)')
+        const insert = db.prepare('INSERT INTO fog_points (id, table_id, x, y, radius, floor_id) VALUES (?,?,?,?,?,?)')
         for (const p of points) {
-          insert.run(newId(), client.tableId, p.x, p.y, p.radius ?? 3)
+          insert.run(newId(), client.tableId, p.x, p.y, p.radius ?? 3, floorId)
         }
       }
-      // Exclude the sender: it already applied the change optimistically,
-      // receiving it back would duplicate points in its local state.
-      broadcast(client.tableId, raw, client)
+      // Only viewers of that floor care; others ignore the points (their
+      // state never includes the floor). Exclude the sender: it already
+      // applied the change optimistically.
+      tables.get(client.tableId)?.forEach(c => {
+        if (c !== client && c.activeFloorId === floorId && c.ws.readyState === WebSocket.OPEN) c.ws.send(raw)
+      })
+      break
+    }
+
+    case 'floor_select': {
+      // Viewer switched to another floor of the table
+      const { floor_id } = payload as { floor_id: string }
+      const floor = db.prepare('SELECT id FROM floors WHERE id=? AND table_id=?')
+        .get(floor_id, client.tableId) as { id: string } | undefined
+      if (floor) {
+        client.activeFloorId = floor_id
+        sendTableState(client)
+      }
+      break
+    }
+
+    case 'camera_focus': {
+      // Admin one-time focus: snap every other client's display (floor,
+      // camera, zoom) to the admin's current view. Not a continuous follow.
+      if (client.role !== 'admin') return
+      const { x, y, zoom, floor_id } = payload as { x: number; y: number; zoom: number; floor_id?: string }
+      if (typeof x !== 'number' || typeof y !== 'number' || typeof zoom !== 'number') return
+      const data = JSON.stringify({ type: 'camera_focus', payload: { x, y, zoom, floor_id } })
+      tables.get(client.tableId)?.forEach(c => {
+        if (c !== client && c.ws.readyState === WebSocket.OPEN) c.ws.send(data)
+      })
       break
     }
 
@@ -367,7 +453,7 @@ export function setupWebSocket(wss: WebSocketServer) {
     const tableExists = db.prepare('SELECT id FROM tables WHERE id=?').get(tableId)
     if (!tableExists) { ws.close(1008, 'table not found'); return }
 
-    const client: Client = { ws, username: payload.username, role: payload.role, tableId }
+    const client: Client = { ws, username: payload.username, role: payload.role, tableId, activeFloorId: null }
     register(client)
     sendTableState(client)
     send(client, { type: 'music_state', payload: musicStatePayload(getMusicState(tableId)) })

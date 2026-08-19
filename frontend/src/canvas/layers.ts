@@ -5,7 +5,7 @@
  * areas (destination-out), and a dark layer over never-explored space.
  * Admins see fog at reduced opacity, players fully opaque.
  */
-import type { Camera, Token, FogPoint, MeasureState, Portal } from '../types'
+import type { Camera, Token, FogPoint, MeasureState, Portal, Stairs } from '../types'
 import { worldToScreen } from './camera'
 import { PALETTE } from '../theme'
 import { computeVisibilityPolygon, cullWalls } from './los'
@@ -53,6 +53,67 @@ export function preloadMapImage(path: string, callback: (img: HTMLImageElement) 
     callback(img)
   }
   img.onerror = () => console.warn('[vtt] failed to load map image:', path)
+}
+
+/**
+ * Drop every cached map bitmap except `keepPath`. Multi-level tables must
+ * never hold more than the active floor's image in memory — released
+ * bitmaps are reclaimed by the browser's GC.
+ */
+export function clearMapImageCache(keepPath: string): void {
+  for (const key of [...mapImageCache.keys()]) {
+    if (key !== keepPath) mapImageCache.delete(key)
+  }
+}
+
+/** Stairs marker: a spiral linking this floor to another level. */
+export function drawStairs(
+  ctx: CanvasRenderingContext2D,
+  stairs: Stairs[],
+  floors: Array<{ id: string; level: number; name: string }>,
+  cam: Camera,
+  gridSize: number,
+  isAdmin: boolean,
+) {
+  for (const st of stairs) {
+    const [sx, sy] = worldToScreen(st.from_x, st.from_y, cam)
+    const r = Math.max(6, st.radius * gridSize * cam.zoom * 0.5)
+    ctx.save()
+    // Disc in rose with a spiral glyph
+    ctx.beginPath()
+    ctx.arc(sx, sy, r, 0, Math.PI * 2)
+    ctx.fillStyle = 'rgba(138, 94, 97, 0.35)'
+    ctx.fill()
+    ctx.lineWidth = 2
+    ctx.strokeStyle = PALETTE.rose
+    ctx.stroke()
+    ctx.beginPath()
+    for (let a = 0; a < Math.PI * 4; a += 0.4) {
+      const rr = (r * 0.75) * (a / (Math.PI * 4))
+      const px = sx + Math.cos(a) * rr
+      const py = sy + Math.sin(a) * rr
+      if (a === 0) ctx.moveTo(px, py)
+      else ctx.lineTo(px, py)
+    }
+    ctx.lineWidth = 1.5
+    ctx.stroke()
+    // Target floor label (admins and players both benefit from it)
+    if (cam.zoom > 0.3) {
+      const target = floors.find(f => f.id === st.to_floor)
+      const label = target ? (target.name || `Floor ${target.level}`) : '?'
+      const up = target && target.level > (floors.find(f => f.id === st.from_floor)?.level ?? 0)
+      ctx.font = `bold ${Math.max(10, 11 * cam.zoom)}px system-ui`
+      const w = ctx.measureText(label).width
+      ctx.fillStyle = 'rgba(30,33,28,0.75)'
+      ctx.fillRect(sx - w / 2 - 4, sy + r + 2, w + 8, 16)
+      ctx.fillStyle = PALETTE.parchment
+      ctx.textAlign = 'center'
+      ctx.textBaseline = 'top'
+      ctx.fillText(`${up ? '↑' : '↓'} ${label}`, sx, sy + r + 3)
+    }
+    ctx.restore()
+  }
+  void isAdmin // marker style is identical for both roles for now
 }
 
 export function drawMap(
