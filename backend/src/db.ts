@@ -219,5 +219,6 @@ const seedAll = db.transaction(() => {
   seedSetting.run('snap_default',          'true')
   seedSetting.run('grid_square_size',      '5')
   seedSetting.run('measurement_unit',      'ft')
+  seedSetting.run('max_asset_size_mb',     '50')
 })
 seedAll()

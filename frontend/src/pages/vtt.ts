@@ -603,7 +603,9 @@ export function renderVtt(
   const expandedFolders = new Set<string>()
 
   async function renderAssetsPage(page: HTMLElement) {
-    const [images, audios] = await Promise.all([api.listAssets('image'), api.listAssets('audio')])
+    const [images, audios, settings] = await Promise.all([
+      api.listAssets('image'), api.listAssets('audio'), api.getSettings(),
+    ])
     const all = [...images, ...audios]
     const folders = [...new Set(all.map(a => a.folder).filter(Boolean))].sort()
 
@@ -644,6 +646,7 @@ export function renderVtt(
     page.innerHTML = `
       <div class="admin-section">
         <h3>Upload Asset</h3>
+        <div style="font-size:12px;color:var(--muted);margin:-8px 0 12px">Max ${settings.max_asset_size_mb} MB per file — configurable in the table Settings panel</div>
         <div class="form-row">
           <div class="form-field">
             <label>Files</label>

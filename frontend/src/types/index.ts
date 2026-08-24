@@ -156,6 +156,8 @@ export interface AppSettings {
   /** Real-world size of one grid square, in measurement_unit */
   grid_square_size: number
   measurement_unit: 'ft' | 'm'
+  /** Maximum accepted size of a single asset upload, in megabytes */
+  max_asset_size_mb: number
 }
 
 export const DEFAULT_SETTINGS: AppSettings = {
@@ -166,6 +168,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   snap_default: true,
   grid_square_size: 5,
   measurement_unit: 'ft',
+  max_asset_size_mb: 50,
 }
 
 export interface MeasureState {

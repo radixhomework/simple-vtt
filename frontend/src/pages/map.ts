@@ -1044,6 +1044,18 @@ export function renderMap(
         </div>
         <span style="font-size:11px;color:var(--muted);">Real-world size of one grid square, used by the measurement tools</span>
       </label>`,
+      `
+      <label style="display:flex;flex-direction:column;gap:4px;cursor:pointer;">
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;">
+          <span style="font-size:13px;color:var(--text);font-weight:500;">Max upload size</span>
+          <div style="display:flex;align-items:center;gap:6px;">
+            <input type="number" id="set-max-asset-size" value="${s.max_asset_size_mb}" min="1" max="500" step="1"
+              style="width:64px;padding:5px 8px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:13px;outline:none;" />
+            <span style="font-size:12px;color:var(--muted);">MB</span>
+          </div>
+        </div>
+        <span style="font-size:11px;color:var(--muted);">Per-file limit for token icons and music uploads (1–500)</span>
+      </label>`,
     ].join('')
 
     settingsBody.querySelectorAll<HTMLInputElement>('input[type=checkbox]').forEach(cb => {
@@ -1070,6 +1082,18 @@ export function renderMap(
         render()
       } catch {
         input.value = String(state.settings.grid_square_size)
+      }
+    })
+
+    settingsBody.querySelector('#set-max-asset-size')?.addEventListener('change', async (e) => {
+      const input = e.target as HTMLInputElement
+      const value = parseFloat(input.value)
+      if (!isFinite(value) || value < 1 || value > 500) { input.value = String(state.settings.max_asset_size_mb); return }
+      try {
+        const updated = await api.patchSettings({ max_asset_size_mb: value })
+        state.settings = { ...state.settings, ...updated }
+      } catch {
+        input.value = String(state.settings.max_asset_size_mb)
       }
     })
 

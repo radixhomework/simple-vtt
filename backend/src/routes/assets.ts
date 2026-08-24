@@ -5,6 +5,7 @@
  * UPLOADS_DIR and are served through /uploads.
  */
 import { Router } from 'express'
+import type { Request, Response, NextFunction } from 'express'
 import multer from 'multer'
 import path from 'path'
 import fs from 'fs'
@@ -13,12 +14,32 @@ import { db } from '../db'
 import { authMiddleware, adminOnly } from '../auth'
 import { musicLibraryChanged } from '../hub'
 import { decodeUploadFilename } from '../filename'
+import { loadSettings } from '../settings'
 
 export const assetsRouter = Router()
 
-const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } })
 const IMAGE_EXT = /\.(png|jpe?g|webp|gif|svg)$/i
 const AUDIO_EXT = /\.(mp3|ogg|oga|wav|m4a|aac|flac|webm|opus)$/i
+
+/**
+ * Asset upload parser with a per-request size limit taken from the admin
+ * setting. Oversized files fail with a clear 413 instead of multer's
+ * default 500.
+ */
+function assetUpload(req: Request, res: Response, next: NextFunction) {
+  const maxMb = loadSettings().max_asset_size_mb
+  multer({
+    storage: multer.memoryStorage(),
+    limits: { fileSize: maxMb * 1024 * 1024 },
+  }).single('file')(req, res, (err?: unknown) => {
+    if (!err) { next(); return }
+    if (typeof err === 'object' && err !== null && (err as { code?: string }).code === 'LIMIT_FILE_SIZE') {
+      res.status(413).json({ error: `file exceeds the ${maxMb} MB asset size limit` })
+      return
+    }
+    res.status(400).json({ error: err instanceof Error ? err.message : 'upload failed' })
+  })
+}
 
 function newId() { return crypto.randomUUID().replace(/-/g, '').slice(0, 16) }
 const uploadsDir = () => process.env.UPLOADS_DIR || path.join(process.cwd(), 'uploads')
@@ -29,7 +50,7 @@ assetsRouter.get('/assets', authMiddleware, (req, res) => {
   res.json(db.prepare('SELECT id, kind, name, path, size, folder FROM assets WHERE kind=? ORDER BY folder, rowid').all(kind))
 })
 
-assetsRouter.post('/assets', authMiddleware, adminOnly, upload.single('file'), (req, res) => {
+assetsRouter.post('/assets', authMiddleware, adminOnly, assetUpload, (req, res) => {
   if (!req.file) { res.status(400).json({ error: 'no file' }); return }
   const kind = req.body.kind
   if (kind !== 'image' && kind !== 'audio') { res.status(400).json({ error: 'kind must be image or audio' }); return }
