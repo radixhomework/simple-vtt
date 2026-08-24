@@ -12,7 +12,7 @@ export const tokensRouter = Router()
 
 function newId() { return crypto.randomUUID().replace(/-/g, '').slice(0, 16) }
 
-const TOKEN_COLS = 'id, table_id, name, x, y, icon_path, has_vision, vision_radius, size, color, owner, hidden'
+const TOKEN_COLS = 'id, table_id, name, x, y, icon_path, has_vision, vision_radius, size, color, owner, hidden, floor_id'
 
 function normalizeToken(row: Record<string, unknown>) {
   return {
@@ -34,9 +34,15 @@ tokensRouter.get('/tables/:id/tokens', authMiddleware, (req, res) => {
 
 tokensRouter.post('/tables/:id/tokens', authMiddleware, adminOnly, (req, res) => {
   const { name = '', x = 0, y = 0, icon_path = '', has_vision = false, vision_radius = 6, size = 1, color = '#4a90d9', owner = '', hidden = false } = req.body
+  // Tokens live on a floor of the table (default: lowest level)
+  const floor = (req.body.floor_id
+    ? db.prepare('SELECT id FROM floors WHERE id=? AND table_id=?').get(req.body.floor_id, req.params.id)
+    : db.prepare('SELECT id FROM floors WHERE table_id=? ORDER BY level, rowid LIMIT 1').get(req.params.id)
+  ) as { id: string } | undefined
+  if (!floor) { res.status(404).json({ error: 'floor not found' }); return }
   const id = newId()
-  db.prepare('INSERT INTO tokens (id, table_id, name, x, y, icon_path, has_vision, vision_radius, size, color, owner, hidden) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)')
-    .run(id, req.params.id, name, x, y, icon_path, has_vision ? 1 : 0, vision_radius, size, color, owner, hidden ? 1 : 0)
+  db.prepare('INSERT INTO tokens (id, table_id, name, x, y, icon_path, has_vision, vision_radius, size, color, owner, hidden, floor_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)')
+    .run(id, req.params.id, name, x, y, icon_path, has_vision ? 1 : 0, vision_radius, size, color, owner, hidden ? 1 : 0, floor.id)
   const row = db.prepare(`SELECT ${TOKEN_COLS} FROM tokens WHERE id=?`).get(id) as Record<string, unknown>
   res.status(201).json(normalizeToken(row))
 })
@@ -68,18 +74,27 @@ tokensRouter.put('/tables/:id/tokens/:tokenId', authMiddleware, (req, res) => {
     color:         b.color         !== undefined ? b.color         : existing.color,
     owner:         isAdmin && b.owner !== undefined ? b.owner : existing.owner,
     hidden:        isAdmin && b.hidden !== undefined ? b.hidden : existing.hidden,
+    floor_id:      existing.floor_id,
+  }
+
+  // Floor change: target floor must belong to the same table
+  if (b.floor_id !== undefined && b.floor_id !== existing.floor_id) {
+    const floor = db.prepare('SELECT id FROM floors WHERE id=? AND table_id=?').get(b.floor_id, req.params.id)
+    if (!floor) { res.status(404).json({ error: 'floor not found' }); return }
+    merged.floor_id = b.floor_id
   }
 
   db.prepare(
-    'UPDATE tokens SET name=?, x=?, y=?, icon_path=?, has_vision=?, vision_radius=?, size=?, color=?, owner=?, hidden=? WHERE id=? AND table_id=?'
-  ).run(merged.name, merged.x, merged.y, merged.icon_path, merged.has_vision ? 1 : 0, merged.vision_radius, merged.size, merged.color, merged.owner, merged.hidden ? 1 : 0, req.params.tokenId, req.params.id)
+    'UPDATE tokens SET name=?, x=?, y=?, icon_path=?, has_vision=?, vision_radius=?, size=?, color=?, owner=?, hidden=?, floor_id=? WHERE id=? AND table_id=?'
+  ).run(merged.name, merged.x, merged.y, merged.icon_path, merged.has_vision ? 1 : 0, merged.vision_radius, merged.size, merged.color, merged.owner, merged.hidden ? 1 : 0, merged.floor_id, req.params.tokenId, req.params.id)
 
   // Visibility changes must reach players even though the client follows up
   // with a WS token_update (by then the DB is already updated, so the hub's
   // own change detection would see no difference).
   const hiddenBool = (v: unknown) => v === 1 || v === true
   const hiddenChanged = hiddenBool(existing.hidden) !== hiddenBool(merged.hidden)
-  if (hiddenChanged) {
+  const floorChanged = merged.floor_id !== existing.floor_id
+  if (hiddenChanged || floorChanged) {
     pushTableStateToTable(req.params.id)
   }
 
@@ -96,17 +111,24 @@ tokensRouter.delete('/tables/:id/tokens/:tokenId', authMiddleware, adminOnly, (r
 
 // ── Fog points ────────────────────────────────────────────────────────────────
 tokensRouter.get('/tables/:id/fog', authMiddleware, (req, res) => {
-  res.json(db.prepare('SELECT id, table_id, x, y, radius FROM fog_points WHERE table_id=?').all(req.params.id))
+  const floor = typeof req.query.floor_id === 'string' ? req.query.floor_id : null
+  res.json(floor
+    ? db.prepare('SELECT id, table_id, x, y, radius, floor_id FROM fog_points WHERE table_id=? AND floor_id=?').all(req.params.id, floor)
+    : db.prepare('SELECT id, table_id, x, y, radius, floor_id FROM fog_points WHERE table_id=?').all(req.params.id))
 })
 
 tokensRouter.post('/tables/:id/fog', authMiddleware, adminOnly, (req, res) => {
-  const { x, y, radius = 3 } = req.body
+  const { x, y, radius = 3, floor_id } = req.body
   const id = newId()
-  db.prepare('INSERT INTO fog_points (id, table_id, x, y, radius) VALUES (?,?,?,?,?)').run(id, req.params.id, x, y, radius)
-  res.status(201).json({ id, table_id: req.params.id, x, y, radius })
+  db.prepare('INSERT INTO fog_points (id, table_id, x, y, radius, floor_id) VALUES (?,?,?,?,?,?)')
+    .run(id, req.params.id, x, y, radius, floor_id ?? '')
+  res.status(201).json({ id, table_id: req.params.id, x, y, radius, floor_id: floor_id ?? '' })
 })
 
 tokensRouter.delete('/tables/:id/fog', authMiddleware, adminOnly, (req, res) => {
-  db.prepare('DELETE FROM fog_points WHERE table_id=?').run(req.params.id)
+  // ?floor_id= scopes the clear to one level; without it, all floors
+  const floor = typeof req.query.floor_id === 'string' ? req.query.floor_id : null
+  if (floor) db.prepare('DELETE FROM fog_points WHERE table_id=? AND floor_id=?').run(req.params.id, floor)
+  else db.prepare('DELETE FROM fog_points WHERE table_id=?').run(req.params.id)
   res.sendStatus(204)
 })

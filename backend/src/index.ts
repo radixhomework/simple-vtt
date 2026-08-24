@@ -15,12 +15,17 @@ import { settingsRouter } from './routes/settings'
 import { portalsRouter } from './routes/portals'
 import { assetsRouter } from './routes/assets'
 import { setupWebSocket } from './hub'
+import { apiLimiter } from './ratelimit'
 
 // db is initialised on import (runs migrations)
 import './db'
 
 const app = express()
 const server = http.createServer(app)
+
+// Behind the Apache reverse proxy, client IPs arrive in X-Forwarded-For
+// (one hop) — needed for meaningful rate-limit keys
+app.set('trust proxy', 1)
 
 // CORS
 app.use((req, res, next) => {
@@ -38,7 +43,8 @@ const uploadsDir = process.env.UPLOADS_DIR || path.join(process.cwd(), 'uploads'
 fs.mkdirSync(uploadsDir, { recursive: true })
 app.use('/uploads', express.static(uploadsDir))
 
-// API routes
+// API routes (rate-limited; login applies its own stricter limiter)
+app.use('/api', apiLimiter)
 app.use('/api', authRouter)
 app.use('/api', tablesRouter)
 app.use('/api', tokensRouter)

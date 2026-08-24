@@ -4,9 +4,9 @@
  * Every user can change their own password from here.
  */
 import { api } from '../api/client'
-import type { User, Table, Asset } from '../types'
+import type { User, Table, Asset, Floor } from '../types'
 
-type AdminPage = 'tables' | 'users' | 'assets'
+type AdminPage = 'tables' | 'users' | 'assets' | 'settings'
 
 export function renderVtt(
   root: HTMLElement,
@@ -148,6 +148,7 @@ export function renderVtt(
             <button class="admin-tab active" data-page="tables">🗺 Maps &amp; Tables</button>
             <button class="admin-tab" data-page="users">👥 Users</button>
             <button class="admin-tab" data-page="assets">📦 Assets</button>
+            <button class="admin-tab" data-page="settings">⚙ Settings</button>
             <span id="version-info" style="margin-left:auto;align-self:center;font-size:11px;color:var(--muted)"></span>
           </div>
           <div id="admin-page"></div>` : ''}
@@ -239,6 +240,7 @@ export function renderVtt(
     if (!page) return
     if (adminPage === 'tables') void renderTablesPage(page)
     else if (adminPage === 'users') void renderUsersPage(page)
+    else if (adminPage === 'settings') void renderSettingsConsole(page)
     else void renderAssetsPage(page)
   }
 
@@ -276,20 +278,26 @@ export function renderVtt(
         ${tables.length === 0 ? '<div class="empty-state">No tables yet.</div>' : `
         <table class="data-table">
           <thead>
-            <tr><th>Name</th><th>Grid</th><th>Tokens</th><th>Portals</th><th>Map image</th><th></th></tr>
+            <tr><th>Name</th><th>Floors</th><th>Tokens</th><th>Portals</th><th>Map image</th><th></th></tr>
           </thead>
           <tbody>
             ${tables.map(t => `
               <tr>
                 <td>${esc(t.name)}</td>
-                <td>${t.grid_size} px/sq</td>
+                <td>${t.floor_count ?? 1}</td>
                 <td>${t.token_count ?? '—'}</td>
                 <td>${t.portal_count ?? '—'}</td>
                 <td>${t.map_image_path ? '✓' : '—'}</td>
                 <td class="row-actions">
                   <button class="btn btn-primary btn-sm" data-mjoin="${t.id}">Join</button>
+                  <button class="btn btn-ghost btn-sm" data-mfloors="${t.id}">Floors</button>
                   <button class="btn btn-ghost btn-sm" data-mren="${t.id}">Rename</button>
                   <button class="btn btn-danger btn-sm" data-mdel="${t.id}">Delete</button>
+                </td>
+              </tr>
+              <tr class="floors-detail" data-floors-for="${t.id}" style="display:none">
+                <td colspan="6" style="background:var(--bg);padding:12px 12px 16px">
+                  <div class="msg" style="margin:0 0 8px">Loading floors…</div>
                 </td>
               </tr>`).join('')}
           </tbody>
@@ -359,6 +367,145 @@ export function renderVtt(
           refresh()
         }
       })
+    })
+
+    page.querySelectorAll('[data-mfloors]').forEach(el => {
+      el.addEventListener('click', async () => {
+        const id = (el as HTMLElement).dataset.mfloors!
+        const detail = page.querySelector(`[data-floors-for="${id}"]`) as HTMLElement | null
+        if (!detail) return
+        if (detail.style.display !== 'none') { detail.style.display = 'none'; return }
+        detail.style.display = ''
+        void renderFloorsDetail(id, detail)
+      })
+    })
+  }
+
+  /** Inline floor manager under a map row: list, rename, image, delete, add. */
+  async function renderFloorsDetail(tableId: string, detail: HTMLElement) {
+    const cell = detail.querySelector('td')!
+    const reload = () => void renderFloorsDetail(tableId, detail)
+
+    let floors: Floor[]
+    try {
+      const t = await api.getTable(tableId)
+      floors = t.floors ?? []
+    } catch (e: any) {
+      cell.innerHTML = `<div class="msg msg-err">Failed to load floors: ${esc(e.message)}</div>`
+      return
+    }
+
+    const floorName = (f: Floor) => f.name || `Floor ${f.level}`
+
+    cell.innerHTML = `
+      <table class="data-table">
+        <thead><tr><th>Level</th><th>Name</th><th>Grid</th><th>Image</th><th></th></tr></thead>
+        <tbody>
+          ${floors.map((f, i) => `
+            <tr>
+              <td>${f.level}</td>
+              <td>${esc(floorName(f))}</td>
+              <td>${f.grid_size} px/sq</td>
+              <td>${f.map_image_path
+                ? `${f.img_width && f.img_height ? `${f.img_width}×${f.img_height}` : '✓'}`
+                : '— <button class="btn btn-ghost btn-sm" data-fimg="${f.id}">Upload image</button>'}</td>
+              <td class="row-actions">
+                <button class="btn btn-ghost btn-sm" data-fup="${f.id}" title="Move up" ${i === 0 ? 'disabled' : ''}>↑</button>
+                <button class="btn btn-ghost btn-sm" data-fdown="${f.id}" title="Move down" ${i === floors.length - 1 ? 'disabled' : ''}>↓</button>
+                <button class="btn btn-ghost btn-sm" data-fren="${f.id}">Rename</button>
+                <button class="btn btn-danger btn-sm" data-fdel="${f.id}" ${floors.length <= 1 ? 'disabled' : ''}>Delete</button>
+              </td>
+            </tr>`).join('')}
+        </tbody>
+      </table>
+      <div class="form-row" style="margin-top:10px">
+        <button class="btn btn-primary btn-sm" data-fadd>+ Add floor</button>
+        <button class="btn btn-ghost btn-sm" data-fimport>Import UVTT as floor</button>
+        <input type="file" data-ffile accept=".uvtt,.zip,.dd2vtt" style="display:none" />
+      </div>
+      <div class="msg" data-fmsg style="margin-top:6px">All floor images must share the same dimensions. Stairs between floors are placed from the map page (🪜 tool).</div>
+    `
+
+    const msg = cell.querySelector('[data-fmsg]') as HTMLElement
+    const say = (text: string, ok = false) => { msg.textContent = text; msg.className = 'msg ' + (ok ? 'msg-ok' : 'msg-err') }
+
+    cell.querySelectorAll('[data-fren]').forEach(el => {
+      el.addEventListener('click', async () => {
+        const id = (el as HTMLElement).dataset.fren!
+        const floor = floors.find(f => f.id === id)
+        const name = prompt('Floor name (empty = "Floor N"):', floor?.name ?? '')?.trim()
+        if (name === null || name === (floor?.name ?? '')) return
+        try { await api.updateFloor(id, { name }); reload() } catch (e: any) { say(e.message) }
+      })
+    })
+
+    const moveFloor = async (id: string, dir: -1 | 1) => {
+      const idx = floors.findIndex(f => f.id === id)
+      const j = idx + dir
+      if (idx === -1 || j < 0 || j >= floors.length) return
+      const order = floors.map(f => f.id)
+      ;[order[idx], order[j]] = [order[j], order[idx]]
+      try {
+        await api.reorderFloors(tableId, order)
+        reload()
+      } catch (e: any) { say(e.message) }
+    }
+    cell.querySelectorAll('[data-fup]').forEach(el => {
+      el.addEventListener('click', () => moveFloor((el as HTMLElement).dataset.fup!, -1))
+    })
+    cell.querySelectorAll('[data-fdown]').forEach(el => {
+      el.addEventListener('click', () => moveFloor((el as HTMLElement).dataset.fdown!, 1))
+    })
+
+    cell.querySelectorAll('[data-fdel]').forEach(el => {
+      el.addEventListener('click', async () => {
+        const id = (el as HTMLElement).dataset.fdel!
+        if (!confirm('Delete this floor with its tokens, doors, fog and stairs?')) return
+        try { await api.deleteFloor(id); reload() } catch (e: any) { say(e.message) }
+      })
+    })
+
+    cell.querySelectorAll('[data-fimg]').forEach(el => {
+      el.addEventListener('click', () => {
+        const id = (el as HTMLElement).dataset.fimg!
+        const input = document.createElement('input')
+        input.type = 'file'
+        input.accept = 'image/*'
+        input.addEventListener('change', async () => {
+          const file = input.files?.[0]
+          if (!file) return
+          say('Uploading…')
+          try {
+            // Measure client-side: the server enforces identical dimensions
+            // across all floor images of the table.
+            const bmp = await createImageBitmap(file)
+            const { width, height } = bmp
+            bmp.close()
+            await api.uploadFloorImage(id, file, width, height)
+            say('Floor image updated!', true)
+            reload()
+          } catch (e: any) { say('Upload failed: ' + e.message) }
+        })
+        input.click()
+      })
+    })
+
+    cell.querySelector('[data-fadd]')?.addEventListener('click', async () => {
+      const name = prompt('New floor name (e.g. "Cellar", empty = auto):', '')?.trim() ?? ''
+      try { await api.createFloor(tableId, { name }); reload() } catch (e: any) { say(e.message) }
+    })
+
+    const fileInput = cell.querySelector('[data-ffile]') as HTMLInputElement
+    cell.querySelector('[data-fimport]')?.addEventListener('click', () => fileInput.click())
+    fileInput.addEventListener('change', async () => {
+      const file = fileInput.files?.[0]
+      if (!file) return
+      say('Importing…')
+      try {
+        await api.importFloorUVTT(tableId, file)
+        say('Floor imported!', true)
+        reload()
+      } catch (e: any) { say('Import failed: ' + e.message) }
     })
   }
 
@@ -472,13 +619,113 @@ export function renderVtt(
     })
   }
 
+  /** Page 4: global defaults — the single home for table-independent settings. */
+  async function renderSettingsConsole(page: HTMLElement) {
+    const settings = await api.getSettings()
+    page.innerHTML = `
+      <div class="admin-section">
+        <h3>Gameplay</h3>
+        <div style="display:flex;flex-direction:column;gap:18px">
+          ${consoleToggle('chat_enabled', settings.chat_enabled, 'Chat', 'Players can send and receive chat messages')}
+          ${consoleToggle('players_move_own_only', settings.players_move_own_only, 'Players move own tokens only', 'When enabled, players can only drag tokens they own')}
+          ${consoleToggle('snap_default', settings.snap_default, 'Snap to grid (default on)', 'Whether tokens snap to the grid when joining a table')}
+        </div>
+      </div>
+      <div class="admin-section">
+        <h3>Display defaults</h3>
+        <div style="display:flex;flex-direction:column;gap:18px">
+          ${consoleToggle('fog_enabled_default', settings.fog_enabled_default, 'Fog of War (default on)', 'Whether fog is active when joining a table')}
+          ${consoleToggle('grid_visible_default', settings.grid_visible_default, 'Grid (default visible)', 'Whether the grid is shown when joining a table')}
+          <label style="display:flex;flex-direction:column;gap:4px">
+            <div style="display:flex;align-items:center;justify-content:space-between;gap:12px">
+              <span style="font-size:13px;font-weight:500;">Grid square size</span>
+              <div style="display:flex;align-items:center;gap:6px">
+                <input type="number" id="set-square-size" value="${settings.grid_square_size}" min="0.5" step="0.5"
+                  style="width:64px;padding:5px 8px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:13px;outline:none;" />
+                <select id="set-unit"
+                  style="padding:5px 8px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:13px;outline:none;">
+                  <option value="ft" ${settings.measurement_unit === 'ft' ? 'selected' : ''}>ft</option>
+                  <option value="m" ${settings.measurement_unit === 'm' ? 'selected' : ''}>m</option>
+                </select>
+              </div>
+            </div>
+            <span style="font-size:11px;color:var(--muted);">Real-world size of one grid square, used by the measurement tools</span>
+          </label>
+        </div>
+      </div>
+      <div class="admin-section">
+        <h3>Uploads</h3>
+        <label style="display:flex;flex-direction:column;gap:4px">
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:12px">
+            <span style="font-size:13px;font-weight:500;">Max upload size</span>
+            <div style="display:flex;align-items:center;gap:6px">
+              <input type="number" id="set-max-asset-size" value="${settings.max_asset_size_mb}" min="1" max="500" step="1"
+                style="width:64px;padding:5px 8px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:13px;outline:none;" />
+              <span style="font-size:12px;color:var(--muted);">MB</span>
+            </div>
+          </div>
+          <span style="font-size:11px;color:var(--muted);">Per-file limit for token icons and music uploads (1–500)</span>
+        </label>
+      </div>
+      <div class="msg" id="settings-msg" style="margin:0 0 8px"></div>
+    `
+
+    const msg = page.querySelector('#settings-msg') as HTMLElement
+    const say = (text: string, ok: boolean) => { msg.textContent = text; msg.className = 'msg ' + (ok ? 'msg-ok' : 'msg-err') }
+    const reflash = () => { setTimeout(() => { msg.textContent = ''; }, 3000) }
+
+    const patch = async (data: Record<string, unknown>) => {
+      try {
+        await api.patchSettings(data)
+        say('Saved', true)
+        reflash()
+        return true
+      } catch (e: any) {
+        say(e.message, false)
+        reflash()
+        return false
+      }
+    }
+
+    page.querySelectorAll<HTMLInputElement>('input[type=checkbox][data-key]').forEach(cb => {
+      cb.addEventListener('change', async () => {
+        if (!await patch({ [cb.dataset.key!]: cb.checked })) cb.checked = !cb.checked
+      })
+    })
+
+    page.querySelector('#set-square-size')?.addEventListener('change', async (e) => {
+      const input = e.target as HTMLInputElement
+      const value = parseFloat(input.value)
+      if (!isFinite(value) || value <= 0) { input.value = String(settings.grid_square_size); return }
+      if (await patch({ grid_square_size: value })) settings.grid_square_size = value
+      else input.value = String(settings.grid_square_size)
+    })
+
+    page.querySelector('#set-unit')?.addEventListener('change', async (e) => {
+      const select = e.target as HTMLSelectElement
+      const value = select.value === 'm' ? 'm' as const : 'ft' as const
+      if (await patch({ measurement_unit: value })) settings.measurement_unit = value
+      else select.value = settings.measurement_unit
+    })
+
+    page.querySelector('#set-max-asset-size')?.addEventListener('change', async (e) => {
+      const input = e.target as HTMLInputElement
+      const value = parseFloat(input.value)
+      if (!isFinite(value) || value < 1 || value > 500) { input.value = String(settings.max_asset_size_mb); return }
+      if (await patch({ max_asset_size_mb: value })) settings.max_asset_size_mb = value
+      else input.value = String(settings.max_asset_size_mb)
+    })
+  }
+
   /** Page 3: shared asset library with folders. */
   // Folders start folded; unfold state is remembered across refreshes of the
   // page (it lives outside renderAssetsPage) but resets when leaving the tab.
   const expandedFolders = new Set<string>()
 
   async function renderAssetsPage(page: HTMLElement) {
-    const [images, audios] = await Promise.all([api.listAssets('image'), api.listAssets('audio')])
+    const [images, audios, settings] = await Promise.all([
+      api.listAssets('image'), api.listAssets('audio'), api.getSettings(),
+    ])
     const all = [...images, ...audios]
     const folders = [...new Set(all.map(a => a.folder).filter(Boolean))].sort()
 
@@ -509,7 +756,10 @@ export function renderVtt(
               <td>${kind === 'image' ? `<img src="${esc(a.path)}" alt="" style="width:20px;height:20px;border-radius:4px;object-fit:cover;vertical-align:middle;margin-right:8px">` : '<span style="color:var(--accent);margin-right:8px">♪</span>'}${esc(a.name)}</td>
               <td>${formatSize(a.size)}</td>
               <td>${folderSelect(a)}</td>
-              <td class="row-actions"><button class="btn btn-danger btn-sm" data-del-asset="${esc(a.id)}">Delete</button></td>
+              <td class="row-actions">
+                <button class="btn btn-ghost btn-sm" data-aren="${esc(a.id)}">Rename</button>
+                <button class="btn btn-danger btn-sm" data-del-asset="${esc(a.id)}">Delete</button>
+              </td>
             </tr>`)
         }
       }
@@ -519,6 +769,7 @@ export function renderVtt(
     page.innerHTML = `
       <div class="admin-section">
         <h3>Upload Asset</h3>
+        <div style="font-size:12px;color:var(--muted);margin:-8px 0 12px">Max ${settings.max_asset_size_mb} MB per file — change it in the ⚙ Settings tab</div>
         <div class="form-row">
           <div class="form-field">
             <label>Files</label>
@@ -611,6 +862,21 @@ export function renderVtt(
       })
     })
 
+    page.querySelectorAll('[data-aren]').forEach(el => {
+      el.addEventListener('click', async () => {
+        const id = (el as HTMLElement).dataset.aren!
+        const asset = all.find(a => a.id === id)
+        const name = prompt('New asset name:', asset?.name ?? '')?.trim()
+        if (!name || name === asset?.name) return
+        try {
+          await api.updateAsset(id, { name })
+          refresh()
+        } catch (e: any) {
+          msg.textContent = e.message; msg.className = 'msg msg-err'
+        }
+      })
+    })
+
     page.querySelectorAll('[data-del-asset]').forEach(el => {
       el.addEventListener('click', async () => {
         const id = (el as HTMLElement).dataset.delAsset!
@@ -628,6 +894,30 @@ export function renderVtt(
   render()
 }
 
+/** Toggle switch row for the admin console settings page. */
+function consoleToggle(key: string, value: boolean, label: string, description: string): string {
+  return `
+    <label style="display:flex;flex-direction:column;gap:4px;cursor:pointer">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:12px">
+        <span style="font-size:13px;font-weight:500;">${esc(label)}</span>
+        <div style="position:relative;width:36px;height:20px;flex-shrink:0">
+          <input type="checkbox" data-key="${esc(key)}" ${value ? 'checked' : ''}
+            style="opacity:0;width:0;height:0;position:absolute" />
+          <span style="
+            position:absolute;inset:0;border-radius:20px;transition:background 0.2s;
+            background:${value ? '#4D5947' : '#B5AB93'};cursor:pointer;display:block;">
+            <span style="
+              position:absolute;top:2px;left:${value ? '18px' : '2px'};
+              width:16px;height:16px;border-radius:50%;background:#fff;
+              transition:left 0.2s;pointer-events:none;display:block;"></span>
+          </span>
+        </div>
+      </div>
+      <span style="font-size:11px;color:var(--muted)">${esc(description)}</span>
+    </label>
+  `
+}
+
 function formatSize(bytes: number): string {
   if (!bytes || bytes <= 0) return '—'
   if (bytes < 1024) return `${bytes} B`
@@ -639,7 +929,7 @@ function tableCardHTML(t: Table, isAdmin: boolean) {
   return `
     <div class="table-card">
       <div class="table-card-name">${esc(t.name)}</div>
-      <div class="table-card-meta">Grid: ${t.grid_size}px/sq</div>
+      <div class="table-card-meta">${t.floor_count && t.floor_count > 1 ? `${t.floor_count} floors` : `Grid: ${t.grid_size ?? 70}px/sq`}</div>
       <div class="table-card-actions">
         <button class="btn btn-primary btn-sm" data-join="${t.id}">Join</button>
         ${isAdmin ? `<button class="btn btn-danger btn-sm" data-del="${t.id}">Delete</button>` : ''}

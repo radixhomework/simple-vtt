@@ -9,8 +9,8 @@
 import { api } from '../api/client'
 import { socket } from '../api/websocket'
 import {
-  drawMap, drawGrid, drawTokens, drawFog, drawPortals, drawMeasure,
-  preloadTokenImage, preloadMapImage, updateExplored,
+  drawMap, drawGrid, drawTokens, drawFog, drawPortals, drawMeasure, drawStairs,
+  preloadTokenImage, preloadMapImage, updateExplored, clearMapImageCache,
 } from '../canvas/layers'
 import { screenToWorld, worldToScreen, snapToGrid, zoomAround } from '../canvas/camera'
 import { parseStaticWalls, portalWalls, pathCrossesWall, pointOnWall } from '../canvas/los'
@@ -18,12 +18,17 @@ import type { WallSegment } from '../canvas/los'
 import type {
   User, Table, Token, FogPoint, Portal, Camera, ToolType, MeasureState, AppSettings,
   TableStatePayload, TokenMovePayload, TokenUpdatePayload, TokenDeletePayload, FogUpdatePayload,
-  MeasureUpdatePayload, MusicStatePayload, Asset,
+  MeasureUpdatePayload, MusicStatePayload, Asset, Floor, FloorLite, Stairs,
 } from '../types'
 import { DEFAULT_SETTINGS } from '../types'
 
 interface GameState {
+  /** Table merged with the active floor's map fields — everything downstream
+   *  (grid_size, offsets, walls) reads from here and stays floor-agnostic. */
   table: Table
+  floors: FloorLite[]
+  floor: Floor | null
+  stairs: Stairs[]
   tokens: Token[]
   fog: FogPoint[]
   portals: Portal[]
@@ -53,6 +58,22 @@ interface GameState {
   panStartY: number
   panCamX: number
   panCamY: number
+}
+
+/** Floor map fields overlaid onto state.table so existing readers keep working. */
+function floorFields(f: Floor | null | undefined): Partial<Table> {
+  if (!f) return {}
+  return {
+    map_image_path: f.map_image_path,
+    grid_size: f.grid_size,
+    uvt_metadata: f.uvt_metadata,
+    map_offset_x: f.map_offset_x,
+    map_offset_y: f.map_offset_y,
+  }
+}
+
+export function floorLabel(f: { level: number; name: string }): string {
+  return f.name ? `#${f.level} ${f.name}` : `Floor ${f.level}`
 }
 
 export function renderMap(
@@ -199,6 +220,9 @@ export function renderMap(
           <div class="header-sep"></div>
           <span class="table-name">${esc(table.name)}</span>
           <div class="header-sep"></div>
+          <select class="header-btn" id="floor-select" title="Active floor"
+                  style="max-width:150px;font-weight:600;display:none"></select>
+          <div class="header-sep" id="floor-sep" style="display:none"></div>
           <div class="toolbar-group" id="tools">
             <button class="tool-btn active" data-tool="select" title="Select/Move (S)">↖</button>
             <button class="tool-btn" data-tool="line" title="Measure Line (L)">╱</button>
@@ -209,20 +233,22 @@ export function renderMap(
             <div class="header-sep"></div>
             <button class="tool-btn" data-tool="fog-reveal" title="Reveal Fog (R)">👁</button>
             <button class="tool-btn" data-tool="fog-erase" title="Erase Revealed (E)">🌑</button>
+            <div class="header-sep"></div>
+            <button class="tool-btn" data-tool="stairs" title="Place stairs to another floor">🪜</button>
             ` : ''}
           </div>
           <div class="header-sep"></div>
           <button class="header-btn" id="snap-btn">Snap ✓</button>
           <button class="header-btn" id="grid-btn">Grid ✓</button>
           ${isAdmin ? `<button class="header-btn" id="fog-toggle-btn">Fog ✓</button>
-          <button class="header-btn" id="share-measure-btn" title="Share measurements with players">Share ✗</button>` : ''}
+          <button class="header-btn" id="share-measure-btn" title="Share measurements with players">Share ✗</button>
+          <button class="header-btn" id="focus-btn" title="Focus every display on your current view (one time)">🎯 Focus</button>` : ''}
         </div>
         <div class="game-header-right">
           ${isAdmin ? `<button class="header-btn" id="add-token-btn">+ Token</button>
           <button class="header-btn" id="clear-fog-btn">Clear Fog</button>` : ''}
           <button class="header-btn" id="music-btn" title="Music player">🎵</button>
           <button class="header-btn" id="sidebar-btn">Tokens ≡</button>
-          ${isAdmin ? `<button class="header-btn" id="settings-btn">⚙ Settings</button>` : ''}
           <button class="header-btn" id="zen-btn" title="Fullscreen — hide menus (Esc to exit)">⛶</button>
           <span style="font-size:12px;color:var(--muted)">${esc(user.username)}</span>
         </div>
@@ -263,14 +289,6 @@ export function renderMap(
           <div id="token-editor"></div>
         </div>
 
-        ${isAdmin ? `
-        <div class="sidebar" id="settings-panel" style="background:var(--surface);">
-          <div class="sidebar-section" style="display:flex;align-items:center;justify-content:space-between;">
-            <span style="font-family:var(--font-title);font-size:15px;font-weight:600;color:var(--text);">Settings</span>
-            <button class="icon-btn" id="settings-close">✕</button>
-          </div>
-          <div id="settings-body" style="padding:14px;display:flex;flex-direction:column;gap:18px;"></div>
-        </div>` : ''}
       </div>
 
       <div class="chat-wrap" id="chat-wrap">
@@ -305,12 +323,16 @@ export function renderMap(
   }
 
   // Game state
+  const initialFloors = (table.floors ?? []) as FloorLite[]
   const state: GameState = {
-    table,
+    table: { ...table, ...floorFields(initialFloors[0] as Floor | undefined) },
+    floors: initialFloors,
+    floor: initialFloors[0] as Floor | null ?? null,
+    stairs: [],
     tokens: [],
     fog: [],
     portals: [],
-    walls: parseStaticWalls(table.uvt_metadata ?? '{}', table.grid_size),
+    walls: parseStaticWalls(table.uvt_metadata ?? '{}', table.grid_size ?? 70),
     settings: { ...DEFAULT_SETTINGS },
     camera: { x: 0, y: 0, zoom: 1 },
     mapImage: null,
@@ -333,23 +355,56 @@ export function renderMap(
   let lastMoveBroadcast = 0
   let lastMeasureBroadcast = 0
 
+  // ── Explored-fog memory, per floor ───────────────────────────────────────────
+  // Only the active floor keeps a full-resolution explored canvas; other
+  // floors hold a 1/8-scale mask (a few hundred KB each) so switching stays
+  // lightweight no matter how many levels a table has.
+  const FOG_MASK_SCALE = 8
+  const exploredMasks = new Map<string, HTMLCanvasElement>()
+
+  function stashExploredMask(floorId: string, explored: OffscreenCanvas | null) {
+    if (!explored || !floorId) return
+    const small = document.createElement('canvas')
+    small.width = Math.max(1, Math.ceil(explored.width / FOG_MASK_SCALE))
+    small.height = Math.max(1, Math.ceil(explored.height / FOG_MASK_SCALE))
+    const sctx = small.getContext('2d')!
+    sctx.imageSmoothingEnabled = true
+    sctx.drawImage(explored, 0, 0, small.width, small.height)
+    exploredMasks.set(floorId, small)
+  }
+
+  function restoreExploredMask(floorId: string, w: number, h: number): OffscreenCanvas {
+    const full = new OffscreenCanvas(w, h)
+    const mask = exploredMasks.get(floorId)
+    if (mask) {
+      const fctx = full.getContext('2d')!
+      fctx.imageSmoothingEnabled = true
+      fctx.drawImage(mask, 0, 0, w, h)
+    }
+    return full
+  }
+
   function recomputeWalls() {
     state.walls = [
-      ...parseStaticWalls(state.table.uvt_metadata ?? '{}', state.table.grid_size),
+      ...parseStaticWalls(state.table.uvt_metadata ?? '{}', state.table.grid_size ?? 70),
       ...portalWalls(state.portals),
     ]
   }
 
-  // Load map image (also re-run when table_state brings a new map path)
+  // Load map image (also re-run when a floor switch brings a new map path).
+  // Exactly one floor bitmap is ever cached.
   function loadMap() {
-    const p = state.table.map_image_path
+    const p = state.table.map_image_path ?? ''
+    clearMapImageCache(p) // release every bitmap except the target floor's
     if (!p || p === state.mapImagePath) return
     state.mapImagePath = p
     preloadMapImage(p, img => {
       if (state.table.map_image_path !== p) return // superseded by a newer map
       state.mapImage = img
       // Explored canvas lives in world space at the map's native resolution
-      state.exploredCanvas = new OffscreenCanvas(img.width, img.height)
+      state.exploredCanvas = state.floor
+        ? restoreExploredMask(state.floor.id, img.width, img.height)
+        : new OffscreenCanvas(img.width, img.height)
       render()
     })
   }
@@ -368,15 +423,16 @@ export function renderMap(
 
       // Main canvas: map + grid + tokens
       mainCtx.clearRect(0, 0, w, h)
-      drawMap(mainCtx, state.mapImage, state.camera, state.table.map_offset_x, state.table.map_offset_y)
+      drawMap(mainCtx, state.mapImage, state.camera, state.table.map_offset_x ?? 0, state.table.map_offset_y ?? 0)
       if (state.gridVisible) {
-        drawGrid(mainCtx, state.camera, state.table.grid_size, w, h)
+        drawGrid(mainCtx, state.camera, state.table.grid_size ?? 70, w, h)
       }
       drawPortals(mainCtx, state.portals, state.camera, isAdmin)
-      drawTokens(mainCtx, visibleTokens, state.camera, state.table.grid_size, state.selectedId, user.username, isAdmin)
+      drawStairs(mainCtx, state.stairs, state.floors, state.camera, state.table.grid_size ?? 70, isAdmin)
+      drawTokens(mainCtx, visibleTokens, state.camera, state.table.grid_size ?? 70, state.selectedId, user.username, isAdmin)
       if (hiddenTokens.length > 0) {
         mainCtx.globalAlpha = 0.5
-        drawTokens(mainCtx, hiddenTokens, state.camera, state.table.grid_size, state.selectedId, user.username, isAdmin)
+        drawTokens(mainCtx, hiddenTokens, state.camera, state.table.grid_size ?? 70, state.selectedId, user.username, isAdmin)
         mainCtx.globalAlpha = 1
       }
 
@@ -388,12 +444,12 @@ export function renderMap(
         // Keep the explored memory up to date so areas that fall out of
         // sight keep showing in greyscale instead of going fully black
         if (state.exploredCanvas) {
-          updateExplored(state.exploredCanvas, sightTokens, state.fog, state.walls, state.table.grid_size)
+          updateExplored(state.exploredCanvas, sightTokens, state.fog, state.walls, state.table.grid_size ?? 70)
         }
         drawFog(
-          fogCtx, sightTokens, state.fog, state.walls, state.camera, state.table.grid_size, isAdmin,
+          fogCtx, sightTokens, state.fog, state.walls, state.camera, state.table.grid_size ?? 70, isAdmin,
           state.exploredCanvas, state.mapImage,
-          state.table.map_offset_x, state.table.map_offset_y,
+          state.table.map_offset_x ?? 0, state.table.map_offset_y ?? 0,
         )
       }
 
@@ -402,9 +458,9 @@ export function renderMap(
       const unitSize = state.settings.grid_square_size
       const unit = state.settings.measurement_unit
       if (state.sharedMeasure) {
-        drawMeasure(uiCtx, state.sharedMeasure, state.camera, state.table.grid_size, unitSize, unit)
+        drawMeasure(uiCtx, state.sharedMeasure, state.camera, state.table.grid_size ?? 70, unitSize, unit)
       }
-      drawMeasure(uiCtx, state.measure, state.camera, state.table.grid_size, unitSize, unit)
+      drawMeasure(uiCtx, state.measure, state.camera, state.table.grid_size ?? 70, unitSize, unit)
     })
   }
   resizeCanvases()
@@ -489,6 +545,11 @@ export function renderMap(
           <div class="field"><label>Color</label><input type="color" class="color-input" id="te-color" value="${token.color}" /></div>
         </div>
         <div class="field"><label>Owner (username)</label><input type="text" id="te-owner" value="${esc(token.owner)}" /></div>
+        <div class="field"><label>Floor</label>
+          <select id="te-floor">
+            ${state.floors.map(f => `<option value="${f.id}" ${token.floor_id === f.id ? 'selected' : ''}>${esc(floorLabel(f))}</option>`).join('')}
+          </select>
+        </div>
         <label class="checkbox-row">
           <input type="checkbox" id="te-vision" ${token.has_vision ? 'checked' : ''} />
           Has Vision
@@ -551,12 +612,19 @@ export function renderMap(
         hidden: (root.querySelector('#te-hidden') as HTMLInputElement).checked,
         vision_radius: parseFloat((root.querySelector('#te-vrad') as HTMLInputElement).value) || 6,
         icon_path: (root.querySelector('#te-icon') as HTMLInputElement).value.trim(),
+        floor_id: (root.querySelector('#te-floor') as HTMLSelectElement)?.value ?? token.floor_id,
       }
       await api.updateToken(state.table.id, token.id, updated)
-      const idx = state.tokens.findIndex(t => t.id === token.id)
-      if (idx !== -1) state.tokens[idx] = updated
-      if (updated.icon_path) preloadTokenImage(updated.icon_path)
-      socket.send('token_update', { token: updated })
+      if (updated.floor_id && updated.floor_id !== state.floor?.id) {
+        // Moved to another floor by the editor: our display follows it
+        switchFloor(updated.floor_id)
+        return
+      } else {
+        const idx = state.tokens.findIndex(t => t.id === token.id)
+        if (idx !== -1) state.tokens[idx] = updated
+        if (updated.icon_path) preloadTokenImage(updated.icon_path)
+        socket.send('token_update', { token: updated })
+      }
       refreshSidebar()
       render()
     })
@@ -573,6 +641,60 @@ export function renderMap(
     })
   }
 
+  // ── Floor switching ──────────────────────────────────────────────────────────
+  // Optimistic: apply locally (clear floor-scoped data, reload the single
+  // bitmap) and tell the server, which confirms with a fresh table_state.
+
+  function applyFloor(floor: FloorLite) {
+    // Stash the old floor's explored memory, then drop it: each level keeps
+    // its own sight history, nothing is transposed across the switch.
+    if (state.floor) stashExploredMask(state.floor.id, state.exploredCanvas)
+    state.floor = floor as Floor
+    state.table = { ...state.table, ...floorFields(floor as Floor) }
+    state.tokens = []
+    state.fog = []
+    state.portals = []
+    state.stairs = []
+    state.selectedId = null
+    state.mapImage = null
+    state.mapImagePath = '' // force the new floor's bitmap to load
+    state.exploredCanvas = null
+    recomputeWalls()
+    loadMap()
+    refreshSidebar()
+    renderTokenEditor()
+    updateFloorSelect()
+    render()
+  }
+
+  function switchFloor(floorId: string) {
+    const target = state.floors.find(f => f.id === floorId)
+    if (!target || target.id === state.floor?.id) return
+    socket.send('floor_select', { floor_id: floorId })
+    applyFloor(target)
+  }
+
+  function updateFloorSelect() {
+    const sel = root.querySelector('#floor-select') as HTMLElement | null
+    const sep = root.querySelector('#floor-sep') as HTMLElement | null
+    if (!sel) return
+    if (state.floors.length < 2) {
+      sel.style.display = 'none'
+      if (sep) sep.style.display = 'none'
+      return
+    }
+    sel.style.display = ''
+    if (sep) sep.style.display = ''
+    sel.innerHTML = state.floors
+      .map(f => `<option value="${f.id}" ${f.id === state.floor?.id ? 'selected' : ''}>${esc(floorLabel(f))}</option>`)
+      .join('')
+  }
+
+  root.querySelector('#floor-select')?.addEventListener('change', (e) => {
+    switchFloor((e.target as HTMLSelectElement).value)
+  })
+  updateFloorSelect()
+
   // WebSocket
   const token = localStorage.getItem('token') ?? ''
   socket.connect(table.id, token)
@@ -582,10 +704,23 @@ export function renderMap(
     switch (msg.type) {
       case 'table_state': {
         const p = msg.payload as TableStatePayload
-        state.table = p.table
+        const oldFloorId = state.floor?.id
+        state.floors = p.floors ?? []
+        state.floor = p.floor
+        state.table = { ...state.table, ...p.table, ...floorFields(p.floor) }
         state.tokens = p.tokens ?? []
         state.fog = p.fog ?? []
         state.portals = p.portals ?? []
+        state.stairs = p.stairs ?? []
+        const floorChanged = !!p.floor && p.floor.id !== oldFloorId
+        if (floorChanged) {
+          // Server-driven floor change (e.g. our viewed floor was deleted):
+          // keep the old floor's explored memory, then load the new level.
+          if (oldFloorId) stashExploredMask(oldFloorId, state.exploredCanvas)
+          state.mapImage = null
+          state.mapImagePath = ''
+          state.exploredCanvas = null
+        }
         if (p.settings) state.settings = { ...DEFAULT_SETTINGS, ...p.settings }
         if (!initialStateLoaded) {
           // Default-on-join settings apply once, when state first arrives.
@@ -598,6 +733,7 @@ export function renderMap(
         }
         recomputeWalls()
         loadMap()
+        updateFloorSelect()
         state.tokens.forEach(t => t.icon_path && preloadTokenImage(t.icon_path))
         applySettings()
         refreshSidebar()
@@ -620,10 +756,6 @@ export function renderMap(
         state.fogEnabled = state.settings.fog_enabled_default
         state.snap = state.settings.snap_default
         applySettings()
-        // Refresh the open settings panel so control states stay in sync live
-        if (root.querySelector('#settings-panel')?.classList.contains('open')) {
-          renderSettingsPanel()
-        }
         break
       }
       case 'token_move': {
@@ -634,6 +766,14 @@ export function renderMap(
       }
       case 'token_update': {
         const p = msg.payload as TokenUpdatePayload
+        if (p.token.floor_id && state.floor && p.token.floor_id !== state.floor.id) {
+          // Token lives on another floor — it can only be a removal for us
+          state.tokens = state.tokens.filter(t => t.id !== p.token.id)
+          if (state.selectedId === p.token.id) { state.selectedId = null; renderTokenEditor() }
+          refreshSidebar()
+          render()
+          break
+        }
         const idx = state.tokens.findIndex(t => t.id === p.token.id)
         if (idx !== -1) {
           state.tokens[idx] = p.token
@@ -665,7 +805,9 @@ export function renderMap(
         break
       }
       case 'measure_update': {
-        const p = msg.payload as MeasureUpdatePayload
+        const p = msg.payload as MeasureUpdatePayload & { floor_id?: string }
+        // Shared measurements belong to the floor they were drawn on
+        if (p.floor_id && state.floor && p.floor_id !== state.floor.id) break
         state.sharedMeasure = p.measure
         render()
         break
@@ -673,6 +815,15 @@ export function renderMap(
       case 'music_state': {
         state.music = msg.payload as MusicStatePayload
         applyMusicState()
+        break
+      }
+      case 'camera_focus': {
+        // One-time admin focus: adopt the admin's floor, camera and zoom
+        const p = msg.payload as { x: number; y: number; zoom: number; floor_id?: string }
+        if (p.floor_id && p.floor_id !== state.floor?.id) switchFloor(p.floor_id)
+        state.camera = { x: p.x, y: p.y, zoom: p.zoom }
+        render()
+        showNotif('The admin focused your view')
         break
       }
       case 'chat': {
@@ -781,7 +932,6 @@ export function renderMap(
 
   root.querySelector('#music-btn')?.addEventListener('click', () => {
     root.querySelector('#sidebar')?.classList.remove('open')
-    root.querySelector('#settings-panel')?.classList.remove('open')
     root.querySelector('#music-panel')?.classList.toggle('open')
   })
   root.querySelector('#music-close')?.addEventListener('click', () => {
@@ -806,7 +956,6 @@ export function renderMap(
   })
 
   root.querySelector('#sidebar-btn')!.addEventListener('click', () => {
-    root.querySelector('#settings-panel')?.classList.remove('open')
     root.querySelector('#sidebar')!.classList.toggle('open')
   })
 
@@ -817,7 +966,6 @@ export function renderMap(
 
   function closeAllPanels() {
     root.querySelector('#sidebar')?.classList.remove('open')
-    root.querySelector('#settings-panel')?.classList.remove('open')
     root.querySelector('#music-panel')?.classList.remove('open')
   }
 
@@ -850,88 +998,6 @@ export function renderMap(
     }
   }
   document.addEventListener('fullscreenchange', onFullscreenChange)
-
-  // Settings panel (admin only)
-  const settingsPanel = root.querySelector('#settings-panel') as HTMLElement | null
-  const settingsBody = root.querySelector('#settings-body') as HTMLElement | null
-
-  function renderSettingsPanel() {
-    if (!isAdmin || !settingsBody) return
-    const s = state.settings
-    settingsBody.innerHTML = [
-      settingToggle('chat_enabled',          s.chat_enabled,          'Chat',               'Players can send and receive chat messages'),
-      settingToggle('players_move_own_only', s.players_move_own_only, 'Players move own tokens only', 'When enabled, players can only drag tokens they own'),
-      settingToggle('fog_enabled_default',   s.fog_enabled_default,   'Fog of War (default on)', 'Whether fog is active when joining a table'),
-      settingToggle('grid_visible_default',  s.grid_visible_default,  'Grid (default visible)',     'Whether the grid is shown when joining a table'),
-      settingToggle('snap_default',          s.snap_default,          'Snap to grid (default on)', 'Whether tokens snap to the grid when joining a table'),
-      `
-      <label style="display:flex;flex-direction:column;gap:4px;cursor:pointer;">
-        <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;">
-          <span style="font-size:13px;color:var(--text);font-weight:500;">Grid square size</span>
-          <div style="display:flex;align-items:center;gap:6px;">
-            <input type="number" id="set-square-size" value="${s.grid_square_size}" min="0.5" step="0.5"
-              style="width:64px;padding:5px 8px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:13px;outline:none;" />
-            <select id="set-unit"
-              style="padding:5px 8px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:13px;outline:none;">
-              <option value="ft" ${s.measurement_unit === 'ft' ? 'selected' : ''}>ft</option>
-              <option value="m" ${s.measurement_unit === 'm' ? 'selected' : ''}>m</option>
-            </select>
-          </div>
-        </div>
-        <span style="font-size:11px;color:var(--muted);">Real-world size of one grid square, used by the measurement tools</span>
-      </label>`,
-    ].join('')
-
-    settingsBody.querySelectorAll<HTMLInputElement>('input[type=checkbox]').forEach(cb => {
-      cb.addEventListener('change', async () => {
-        const key = cb.dataset.key as keyof typeof state.settings
-        const value = cb.checked
-        try {
-          const updated = await api.patchSettings({ [key]: value })
-          state.settings = { ...state.settings, ...updated }
-          applySettings()
-        } catch {
-          cb.checked = !cb.checked // revert on error
-        }
-      })
-    })
-
-    settingsBody.querySelector('#set-square-size')?.addEventListener('change', async (e) => {
-      const input = e.target as HTMLInputElement
-      const value = parseFloat(input.value)
-      if (!isFinite(value) || value <= 0) { input.value = String(state.settings.grid_square_size); return }
-      try {
-        const updated = await api.patchSettings({ grid_square_size: value })
-        state.settings = { ...state.settings, ...updated }
-        render()
-      } catch {
-        input.value = String(state.settings.grid_square_size)
-      }
-    })
-
-    settingsBody.querySelector('#set-unit')?.addEventListener('change', async (e) => {
-      const select = e.target as HTMLSelectElement
-      const value = select.value === 'm' ? 'm' as const : 'ft' as const
-      try {
-        const updated = await api.patchSettings({ measurement_unit: value })
-        state.settings = { ...state.settings, ...updated }
-        render()
-      } catch {
-        select.value = state.settings.measurement_unit
-      }
-    })
-  }
-
-  if (isAdmin && settingsPanel) {
-    root.querySelector('#settings-btn')!.addEventListener('click', () => {
-      root.querySelector('#sidebar')?.classList.remove('open')
-      settingsPanel.classList.toggle('open')
-      renderSettingsPanel()
-    })
-    root.querySelector('#settings-close')!.addEventListener('click', () => {
-      settingsPanel.classList.remove('open')
-    })
-  }
 
   function applySettings() {
     // Chat visibility only. Grid/Fog/Snap are user view toggles: they take
@@ -976,13 +1042,24 @@ export function renderMap(
     render()
   })
 
+  // Focus: one-time snap of every display to the admin's view (floor,
+  // camera, zoom). Not a continuous follow — clients stay free afterwards.
+  const focusBtn = root.querySelector('#focus-btn') as HTMLButtonElement
+  focusBtn?.addEventListener('click', () => {
+    socket.send('camera_focus', {
+      x: state.camera.x, y: state.camera.y, zoom: state.camera.zoom,
+      floor_id: state.floor?.id,
+    })
+    showNotif('Your view has been sent to everyone')
+  })
+
   // Share measurements with players (admin)
   const shareBtn = root.querySelector('#share-measure-btn') as HTMLButtonElement
   shareBtn?.addEventListener('click', () => {
     state.shareMeasure = !state.shareMeasure
     if (!state.shareMeasure) {
       state.sharedMeasure = null
-      socket.send('measure_update', { measure: null })
+      socket.send('measure_update', { measure: null, floor_id: state.floor?.id })
     }
     updateHeaderToggles()
     render()
@@ -1010,9 +1087,9 @@ export function renderMap(
 
   // Clear fog (admin)
   root.querySelector('#clear-fog-btn')?.addEventListener('click', async () => {
-    if (!confirm('Clear all manually revealed fog?')) return
-    await api.clearFog(table.id)
-    socket.send('fog_update', { action: 'clear_all', points: [] })
+    if (!confirm('Clear all manually revealed fog on this floor?')) return
+    await api.clearFog(table.id, state.floor?.id)
+    socket.send('fog_update', { action: 'clear_all', points: [], floor_id: state.floor?.id })
     state.fog = []
     render()
   })
@@ -1028,6 +1105,7 @@ export function renderMap(
         x: state.camera.x + mainCanvas.width / 2 / state.camera.zoom,
         y: state.camera.y + mainCanvas.height / 2 / state.camera.zoom,
         size: 1, color: randomColor(), has_vision: false, vision_radius: 6,
+        floor_id: state.floor?.id,
       })
       state.tokens.push(newToken)
       state.selectedId = newToken.id
@@ -1060,6 +1138,10 @@ export function renderMap(
     }
 
     if (e.button === 0) {
+      if (state.tool === 'stairs' && isAdmin) {
+        placeStairs(wx, wy)
+        return
+      }
       if (state.tool === 'fog-reveal' && isAdmin) {
         addFogPoint(wx, wy)
         return
@@ -1072,29 +1154,14 @@ export function renderMap(
         // Start measuring
         state.measure = { active: true, tool: state.tool, startX: wx, startY: wy, endX: wx, endY: wy }
         if (isAdmin && state.shareMeasure) {
-          socket.send('measure_update', { measure: { ...state.measure } })
+          socket.send('measure_update', { measure: { ...state.measure }, floor_id: state.floor?.id })
         }
         return
       }
 
-      // Admin: check portal click first (threshold = 30% of a grid cell)
-      if (isAdmin) {
-        const portalHit = pickPortal(wx, wy, state.portals, state.table.grid_size * 0.3)
-        if (portalHit) {
-          api.togglePortal(state.table.id, portalHit.id, !portalHit.closed)
-            .then(updated => {
-              const idx = state.portals.findIndex(p => p.id === updated.id)
-              if (idx !== -1) state.portals[idx] = updated
-              recomputeWalls()
-              render()
-            })
-            .catch(() => showNotif('Failed to toggle portal'))
-          return
-        }
-      }
-
-      // select tool: pick token
-      const hit = pickToken(wx, wy, state.tokens, state.table.grid_size)
+      // Select tool: tokens win over doors/stairs — a token standing on a
+      // door must stay grabbable. Doors are only toggled on empty clicks.
+      const hit = pickToken(wx, wy, state.tokens, state.table.grid_size ?? 70)
       if (hit) {
         const canMove = isAdmin || !state.settings.players_move_own_only || hit.owner === user.username
         if (canMove) {
@@ -1108,6 +1175,36 @@ export function renderMap(
         } else {
           state.selectedId = hit.id
         }
+        refreshSidebar()
+        if (isAdmin) renderTokenEditor()
+      } else if (isAdmin) {
+        // No token under the cursor: admin: stair marker click offers deletion
+        const stairHit = pickStair(wx, wy, state.stairs, state.table.grid_size ?? 70)
+        if (stairHit) {
+          const target = state.floors.find(f => f.id === stairHit.to_floor)
+          if (confirm(`Delete the stairs to ${target ? floorLabel(target) : 'another floor'}?`)) {
+            api.deleteStair(stairHit.id)
+              .then(() => { state.stairs = state.stairs.filter(st => st.id !== stairHit.id); render() })
+              .catch(() => showNotif('Failed to delete stairs'))
+          }
+          return
+        }
+
+        // Portal click (threshold = 30% of a grid cell)
+        const portalHit = pickPortal(wx, wy, state.portals, (state.table.grid_size ?? 70) * 0.3)
+        if (portalHit) {
+          api.togglePortal(state.table.id, portalHit.id, !portalHit.closed)
+            .then(updated => {
+              const idx = state.portals.findIndex(p => p.id === updated.id)
+              if (idx !== -1) state.portals[idx] = updated
+              recomputeWalls()
+              render()
+            })
+            .catch(() => showNotif('Failed to toggle portal'))
+          return
+        }
+
+        state.selectedId = null
         refreshSidebar()
         if (isAdmin) renderTokenEditor()
       } else {
@@ -1125,8 +1222,8 @@ export function renderMap(
   function dragInputTo(screenX: number, screenY: number) {
     if (!state.dragging || !state.selectedId) return
     const [wx, wy] = screenToWorld(screenX - state.dragOffX, screenY - state.dragOffY, state.camera)
-    const snapX = state.snap ? snapToGrid(wx, state.table.grid_size) : wx
-    const snapY = state.snap ? snapToGrid(wy, state.table.grid_size) : wy
+    const snapX = state.snap ? snapToGrid(wx, state.table.grid_size ?? 70) : wx
+    const snapY = state.snap ? snapToGrid(wy, state.table.grid_size ?? 70) : wy
     const token = state.tokens.find(t => t.id === state.selectedId)
     if (token) {
       // Block at walls during the drag: only accept positions whose path
@@ -1153,13 +1250,12 @@ export function renderMap(
     state.dragging = false
     const token = state.tokens.find(t => t.id === state.selectedId)
     if (!token) return
-    // The drag already blocks walls incrementally; this is only a safety
-    // net for races (e.g. a door closed mid-drag by another client).
-    const blocked = pathCrossesWall(
-      state.dragStartX, state.dragStartY,
-      token.x, token.y,
-      state.walls,
-    ) || pointOnWall(token.x, token.y, state.walls)
+    // The drag already blocks walls incrementally along the path actually
+    // taken, so the legal way around a corner must NOT be rejected here —
+    // a straight-line start→end check would falsely flag L-shaped moves.
+    // Only the resting point is re-validated (race: a door closed under
+    // the token mid-drag).
+    const blocked = pointOnWall(token.x, token.y, state.walls)
     if (blocked) {
       // Revert locally and tell every other client to snap back too
       token.x = state.dragStartX
@@ -1168,6 +1264,19 @@ export function renderMap(
       showNotif('Movement blocked by wall')
       render()
     } else {
+      // Dropping the token on a stair marker sends it to the linked floor
+      // and the mover's display follows it there
+      const stair = pickStair(token.x, token.y, state.stairs, state.table.grid_size ?? 70)
+      if (stair) {
+        const target = state.floors.find(f => f.id === stair.to_floor)
+        socket.send('token_move', {
+          token_id: token.id, x: token.x, y: token.y,
+          to_floor: stair.to_floor, to_x: stair.to_x, to_y: stair.to_y,
+        })
+        showNotif(`${token.name || 'Token'} → ${target ? floorLabel(target) : 'another floor'}`)
+        switchFloor(stair.to_floor)
+        return
+      }
       socket.send('token_move', { token_id: token.id, x: token.x, y: token.y })
     }
   }
@@ -1180,7 +1289,7 @@ export function renderMap(
     // screens (broadcast) and on the admin's own screen for consistency
     if (isAdmin && state.shareMeasure) {
       const persisted: MeasureState = { ...state.measure, active: false, persist: true }
-      socket.send('measure_update', { measure: persisted })
+      socket.send('measure_update', { measure: persisted, floor_id: state.floor?.id })
       state.sharedMeasure = persisted
     }
     render()
@@ -1218,17 +1327,18 @@ export function renderMap(
       state.measure.endX = wx; state.measure.endY = wy
       const now = Date.now()
       if (isAdmin && state.shareMeasure && now - lastMeasureBroadcast > 50) {
-        socket.send('measure_update', { measure: { ...state.measure } })
+        socket.send('measure_update', { measure: { ...state.measure }, floor_id: state.floor?.id })
         lastMeasureBroadcast = now
       }
       render()
       return
     }
 
-    // Cursor hint for portal hover (admin only)
+    // Cursor hint for portal hover (admin only) — not where a token would be picked
     if (isAdmin && state.tool === 'select' && !state.dragging && !state.panning) {
       const [wx, wy] = screenToWorld(e.offsetX, e.offsetY, state.camera)
-      const near = pickPortal(wx, wy, state.portals, state.table.grid_size * 0.3)
+      const near = !pickToken(wx, wy, state.tokens, state.table.grid_size ?? 70)
+        && pickPortal(wx, wy, state.portals, (state.table.grid_size ?? 70) * 0.3)
       uiCanvas.style.cursor = near ? 'pointer' : 'crosshair'
     }
   })
@@ -1316,34 +1426,21 @@ export function renderMap(
     const [wx, wy] = screenToWorld(x, y, state.camera)
 
     // Active tools first (same behaviour as a left click)
+    if (state.tool === 'stairs' && isAdmin) { placeStairs(wx, wy); return }
     if (state.tool === 'fog-reveal' && isAdmin) { addFogPoint(wx, wy); return }
     if (state.tool === 'fog-erase' && isAdmin) { removeFogPoint(wx, wy); return }
     if (state.tool !== 'select') {
       state.measure = { active: true, tool: state.tool, startX: wx, startY: wy, endX: wx, endY: wy }
       if (isAdmin && state.shareMeasure) {
-        socket.send('measure_update', { measure: { ...state.measure } })
+        socket.send('measure_update', { measure: { ...state.measure }, floor_id: state.floor?.id })
       }
       touchMode = 'measure'
       return
     }
 
-    // Admin: portal tap toggles the door
-    if (isAdmin) {
-      const portalHit = pickPortal(wx, wy, state.portals, state.table.grid_size * 0.3)
-      if (portalHit) {
-        api.togglePortal(state.table.id, portalHit.id, !portalHit.closed)
-          .then(updated => {
-            const idx = state.portals.findIndex(p => p.id === updated.id)
-            if (idx !== -1) state.portals[idx] = updated
-            recomputeWalls()
-            render()
-          })
-          .catch(() => showNotif('Failed to toggle portal'))
-        return
-      }
-    }
-
-    const hit = pickToken(wx, wy, state.tokens, state.table.grid_size)
+    // Tokens win over doors/stairs — a token standing on a door must stay
+    // grabbable (same priority as the mouse handler).
+    const hit = pickToken(wx, wy, state.tokens, state.table.grid_size ?? 70)
     if (hit) {
       state.selectedId = hit.id
       const canMove = isAdmin || !state.settings.players_move_own_only || hit.owner === user.username
@@ -1363,6 +1460,34 @@ export function renderMap(
       if (isAdmin) renderTokenEditor()
       render()
       return
+    }
+
+    if (isAdmin) {
+      // Stair marker tap offers deletion
+      const stairHit = pickStair(wx, wy, state.stairs, state.table.grid_size ?? 70)
+      if (stairHit) {
+        const target = state.floors.find(f => f.id === stairHit.to_floor)
+        if (confirm(`Delete the stairs to ${target ? floorLabel(target) : 'another floor'}?`)) {
+          api.deleteStair(stairHit.id)
+            .then(() => { state.stairs = state.stairs.filter(st => st.id !== stairHit.id); render() })
+            .catch(() => showNotif('Failed to delete stairs'))
+        }
+        return
+      }
+
+      // Portal tap toggles the door (threshold = 30% of a grid cell)
+      const portalHit = pickPortal(wx, wy, state.portals, (state.table.grid_size ?? 70) * 0.3)
+      if (portalHit) {
+        api.togglePortal(state.table.id, portalHit.id, !portalHit.closed)
+          .then(updated => {
+            const idx = state.portals.findIndex(p => p.id === updated.id)
+            if (idx !== -1) state.portals[idx] = updated
+            recomputeWalls()
+            render()
+          })
+          .catch(() => showNotif('Failed to toggle portal'))
+        return
+      }
     }
 
     // Empty space: one finger pans
@@ -1422,7 +1547,7 @@ export function renderMap(
       state.measure.endX = wx; state.measure.endY = wy
       const now = Date.now()
       if (isAdmin && state.shareMeasure && now - lastMeasureBroadcast > 50) {
-        socket.send('measure_update', { measure: { ...state.measure } })
+        socket.send('measure_update', { measure: { ...state.measure }, floor_id: state.floor?.id })
         lastMeasureBroadcast = now
       }
       render()
@@ -1452,7 +1577,7 @@ export function renderMap(
     if (touchMode === 'pan' && dt < 300 && moved < 10) {
       // Tap on empty space: deselect
       const [wx, wy] = screenToWorld(touchStartX, touchStartY, state.camera)
-      if (!pickToken(wx, wy, state.tokens, state.table.grid_size)) {
+      if (!pickToken(wx, wy, state.tokens, state.table.grid_size ?? 70)) {
         state.selectedId = null
         refreshSidebar()
         if (isAdmin) renderTokenEditor()
@@ -1480,7 +1605,7 @@ export function renderMap(
       if (state.zen) exitZen()
       state.selectedId = null
       state.measure.active = false
-      if (state.shareMeasure) socket.send('measure_update', { measure: null })
+      if (state.shareMeasure) socket.send('measure_update', { measure: null, floor_id: state.floor?.id })
       refreshSidebar(); renderTokenEditor(); render()
     }
     if (e.key === 'Delete' && state.selectedId && isAdmin) {
@@ -1530,18 +1655,40 @@ export function renderMap(
     msgs.scrollTop = msgs.scrollHeight
   }
 
+  // Stairs placement (admin): link the clicked point to a chosen floor
+  async function placeStairs(wx: number, wy: number) {
+    const others = state.floors.filter(f => f.id !== state.floor?.id)
+    if (others.length === 0) { showNotif('Only one floor — add floors to this table first'); return }
+    const labels = others.map(f => floorLabel(f)).join(', ')
+    const answer = prompt(`Link these stairs to which floor? (${labels})`, others.length === 1 ? floorLabel(others[0]) : '')
+    if (!answer) return
+    const q = answer.trim().toLowerCase()
+    const target = others.find(f =>
+      floorLabel(f).toLowerCase() === q || String(f.level) === q || f.name.toLowerCase() === q)
+    if (!target) { showNotif('Unknown floor'); return }
+    try {
+      const st = await api.createStair(state.table.id, {
+        from_floor: state.floor!.id, from_x: wx, from_y: wy,
+        to_floor: target.id, to_x: wx, to_y: wy, radius: 1,
+      })
+      state.stairs.push(st)
+      showNotif(`Stairs to ${floorLabel(target)} placed`)
+      render()
+    } catch (e: any) { showNotif('Failed: ' + e.message) }
+  }
+
   // Fog helpers
   function addFogPoint(wx: number, wy: number) {
-    const point: FogPoint = { id: '', table_id: table.id, x: wx, y: wy, radius: 3 }
-    socket.send('fog_update', { action: 'add', points: [point] })
+    const point: FogPoint = { id: '', table_id: table.id, x: wx, y: wy, radius: 3, floor_id: state.floor?.id }
+    socket.send('fog_update', { action: 'add', points: [point], floor_id: state.floor?.id })
     state.fog.push(point)
     render()
   }
 
   function removeFogPoint(wx: number, wy: number) {
-    state.fog = state.fog.filter(p => Math.hypot(p.x - wx, p.y - wy) > p.radius * state.table.grid_size)
+    state.fog = state.fog.filter(p => Math.hypot(p.x - wx, p.y - wy) > p.radius * (state.table.grid_size ?? 70))
     // One atomic clear+re-add so other clients never see an empty flash
-    socket.send('fog_update', { action: 'clear_all', points: state.fog })
+    socket.send('fog_update', { action: 'clear_all', points: state.fog, floor_id: state.floor?.id })
     render()
   }
 
@@ -1566,6 +1713,14 @@ function pickPortal(wx: number, wy: number, portals: Portal[], threshold: number
   return null
 }
 
+/** Nearest stair marker whose pickup radius contains the point. */
+function pickStair(wx: number, wy: number, stairs: Stairs[], gridSize: number): Stairs | null {
+  for (const st of stairs) {
+    if (Math.hypot(wx - st.from_x, wy - st.from_y) <= Math.max(st.radius, 0.6) * gridSize) return st
+  }
+  return null
+}
+
 function pickToken(wx: number, wy: number, tokens: Token[], gridSize: number): Token | null {
   // iterate in reverse (top token first)
   for (let i = tokens.length - 1; i >= 0; i--) {
@@ -1586,25 +1741,3 @@ function esc(s: string) {
   return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
 }
 
-function settingToggle(key: string, value: boolean, label: string, description: string): string {
-  return `
-    <label style="display:flex;flex-direction:column;gap:4px;cursor:pointer;">
-      <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;">
-        <span style="font-size:13px;color:var(--text);font-weight:500;">${esc(label)}</span>
-        <div style="position:relative;width:36px;height:20px;flex-shrink:0;">
-          <input type="checkbox" data-key="${esc(key)}" ${value ? 'checked' : ''}
-            style="opacity:0;width:0;height:0;position:absolute;" />
-          <span class="toggle-track" style="
-            position:absolute;inset:0;border-radius:20px;transition:background 0.2s;
-            background:${value ? '#4D5947' : '#B5AB93'};cursor:pointer;">
-            <span style="
-              position:absolute;top:2px;left:${value ? '18px' : '2px'};
-              width:16px;height:16px;border-radius:50%;background:#fff;
-              transition:left 0.2s;pointer-events:none;"></span>
-          </span>
-        </div>
-      </div>
-      <span style="font-size:11px;color:var(--muted);">${esc(description)}</span>
-    </label>
-  `
-}

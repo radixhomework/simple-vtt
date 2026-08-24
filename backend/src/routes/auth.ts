@@ -7,6 +7,7 @@ import { Router } from 'express'
 import bcrypt from 'bcryptjs'
 import { db } from '../db'
 import { signToken, authMiddleware, adminOnly } from '../auth'
+import { loginLimiter } from '../ratelimit'
 
 export const authRouter = Router()
 
@@ -22,7 +23,7 @@ function ensureAdmin() {
 }
 ensureAdmin()
 
-authRouter.post('/auth/login', (req, res) => {
+authRouter.post('/auth/login', loginLimiter, (req, res) => {
   const { username, password } = req.body as { username: string; password: string }
   if (!username || !password) { res.status(400).json({ error: 'missing fields' }); return }
 
