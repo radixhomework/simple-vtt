@@ -15,6 +15,7 @@ import AdmZip from 'adm-zip'
 import { db } from '../db'
 import { authMiddleware, adminOnly } from '../auth'
 import { decodeUploadFilename } from '../filename'
+import { pushTableStateToTable } from '../hub'
 
 export const tablesRouter = Router()
 
@@ -320,6 +321,24 @@ tablesRouter.post('/tables/:id/floors/import', authMiddleware, adminOnly, upload
   })()
 
   res.status(201).json(getFloor(floorId))
+})
+
+/** Reorder floors: the given id sequence becomes levels 1..N. */
+tablesRouter.put('/tables/:id/floors/reorder', authMiddleware, adminOnly, (req, res) => {
+  const { floor_ids } = req.body as { floor_ids?: string[] }
+  const floors = floorsOf(req.params.id)
+  if (!Array.isArray(floor_ids) || floor_ids.length !== floors.length
+      || !floors.every(f => floor_ids.includes(f.id)) || new Set(floor_ids).size !== floor_ids.length) {
+    res.status(400).json({ error: 'floor_ids must list every floor of the table exactly once' })
+    return
+  }
+  db.transaction(() => {
+    const update = db.prepare('UPDATE floors SET level=? WHERE id=? AND table_id=?')
+    floor_ids.forEach((id, i) => update.run(i + 1, id, req.params.id))
+  })()
+  // Connected clients see the new order in their floor switcher
+  pushTableStateToTable(req.params.id)
+  res.json(floorsOf(req.params.id))
 })
 
 /** Upload/replace the map image of a floor. Client sends width/height for the dimension check. */

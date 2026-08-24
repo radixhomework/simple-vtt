@@ -249,7 +249,6 @@ export function renderMap(
           <button class="header-btn" id="clear-fog-btn">Clear Fog</button>` : ''}
           <button class="header-btn" id="music-btn" title="Music player">🎵</button>
           <button class="header-btn" id="sidebar-btn">Tokens ≡</button>
-          ${isAdmin ? `<button class="header-btn" id="settings-btn">⚙ Settings</button>` : ''}
           <button class="header-btn" id="zen-btn" title="Fullscreen — hide menus (Esc to exit)">⛶</button>
           <span style="font-size:12px;color:var(--muted)">${esc(user.username)}</span>
         </div>
@@ -290,14 +289,6 @@ export function renderMap(
           <div id="token-editor"></div>
         </div>
 
-        ${isAdmin ? `
-        <div class="sidebar" id="settings-panel" style="background:var(--surface);">
-          <div class="sidebar-section" style="display:flex;align-items:center;justify-content:space-between;">
-            <span style="font-family:var(--font-title);font-size:15px;font-weight:600;color:var(--text);">Settings</span>
-            <button class="icon-btn" id="settings-close">✕</button>
-          </div>
-          <div id="settings-body" style="padding:14px;display:flex;flex-direction:column;gap:18px;"></div>
-        </div>` : ''}
       </div>
 
       <div class="chat-wrap" id="chat-wrap">
@@ -765,10 +756,6 @@ export function renderMap(
         state.fogEnabled = state.settings.fog_enabled_default
         state.snap = state.settings.snap_default
         applySettings()
-        // Refresh the open settings panel so control states stay in sync live
-        if (root.querySelector('#settings-panel')?.classList.contains('open')) {
-          renderSettingsPanel()
-        }
         break
       }
       case 'token_move': {
@@ -945,7 +932,6 @@ export function renderMap(
 
   root.querySelector('#music-btn')?.addEventListener('click', () => {
     root.querySelector('#sidebar')?.classList.remove('open')
-    root.querySelector('#settings-panel')?.classList.remove('open')
     root.querySelector('#music-panel')?.classList.toggle('open')
   })
   root.querySelector('#music-close')?.addEventListener('click', () => {
@@ -970,7 +956,6 @@ export function renderMap(
   })
 
   root.querySelector('#sidebar-btn')!.addEventListener('click', () => {
-    root.querySelector('#settings-panel')?.classList.remove('open')
     root.querySelector('#sidebar')!.classList.toggle('open')
   })
 
@@ -981,7 +966,6 @@ export function renderMap(
 
   function closeAllPanels() {
     root.querySelector('#sidebar')?.classList.remove('open')
-    root.querySelector('#settings-panel')?.classList.remove('open')
     root.querySelector('#music-panel')?.classList.remove('open')
   }
 
@@ -1014,112 +998,6 @@ export function renderMap(
     }
   }
   document.addEventListener('fullscreenchange', onFullscreenChange)
-
-  // Settings panel (admin only)
-  const settingsPanel = root.querySelector('#settings-panel') as HTMLElement | null
-  const settingsBody = root.querySelector('#settings-body') as HTMLElement | null
-
-  function renderSettingsPanel() {
-    if (!isAdmin || !settingsBody) return
-    const s = state.settings
-    settingsBody.innerHTML = [
-      settingToggle('chat_enabled',          s.chat_enabled,          'Chat',               'Players can send and receive chat messages'),
-      settingToggle('players_move_own_only', s.players_move_own_only, 'Players move own tokens only', 'When enabled, players can only drag tokens they own'),
-      settingToggle('fog_enabled_default',   s.fog_enabled_default,   'Fog of War (default on)', 'Whether fog is active when joining a table'),
-      settingToggle('grid_visible_default',  s.grid_visible_default,  'Grid (default visible)',     'Whether the grid is shown when joining a table'),
-      settingToggle('snap_default',          s.snap_default,          'Snap to grid (default on)', 'Whether tokens snap to the grid when joining a table'),
-      `
-      <label style="display:flex;flex-direction:column;gap:4px;cursor:pointer;">
-        <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;">
-          <span style="font-size:13px;color:var(--text);font-weight:500;">Grid square size</span>
-          <div style="display:flex;align-items:center;gap:6px;">
-            <input type="number" id="set-square-size" value="${s.grid_square_size}" min="0.5" step="0.5"
-              style="width:64px;padding:5px 8px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:13px;outline:none;" />
-            <select id="set-unit"
-              style="padding:5px 8px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:13px;outline:none;">
-              <option value="ft" ${s.measurement_unit === 'ft' ? 'selected' : ''}>ft</option>
-              <option value="m" ${s.measurement_unit === 'm' ? 'selected' : ''}>m</option>
-            </select>
-          </div>
-        </div>
-        <span style="font-size:11px;color:var(--muted);">Real-world size of one grid square, used by the measurement tools</span>
-      </label>`,
-      `
-      <label style="display:flex;flex-direction:column;gap:4px;cursor:pointer;">
-        <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;">
-          <span style="font-size:13px;color:var(--text);font-weight:500;">Max upload size</span>
-          <div style="display:flex;align-items:center;gap:6px;">
-            <input type="number" id="set-max-asset-size" value="${s.max_asset_size_mb}" min="1" max="500" step="1"
-              style="width:64px;padding:5px 8px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:13px;outline:none;" />
-            <span style="font-size:12px;color:var(--muted);">MB</span>
-          </div>
-        </div>
-        <span style="font-size:11px;color:var(--muted);">Per-file limit for token icons and music uploads (1–500)</span>
-      </label>`,
-    ].join('')
-
-    settingsBody.querySelectorAll<HTMLInputElement>('input[type=checkbox]').forEach(cb => {
-      cb.addEventListener('change', async () => {
-        const key = cb.dataset.key as keyof typeof state.settings
-        const value = cb.checked
-        try {
-          const updated = await api.patchSettings({ [key]: value })
-          state.settings = { ...state.settings, ...updated }
-          applySettings()
-        } catch {
-          cb.checked = !cb.checked // revert on error
-        }
-      })
-    })
-
-    settingsBody.querySelector('#set-square-size')?.addEventListener('change', async (e) => {
-      const input = e.target as HTMLInputElement
-      const value = parseFloat(input.value)
-      if (!isFinite(value) || value <= 0) { input.value = String(state.settings.grid_square_size); return }
-      try {
-        const updated = await api.patchSettings({ grid_square_size: value })
-        state.settings = { ...state.settings, ...updated }
-        render()
-      } catch {
-        input.value = String(state.settings.grid_square_size)
-      }
-    })
-
-    settingsBody.querySelector('#set-max-asset-size')?.addEventListener('change', async (e) => {
-      const input = e.target as HTMLInputElement
-      const value = parseFloat(input.value)
-      if (!isFinite(value) || value < 1 || value > 500) { input.value = String(state.settings.max_asset_size_mb); return }
-      try {
-        const updated = await api.patchSettings({ max_asset_size_mb: value })
-        state.settings = { ...state.settings, ...updated }
-      } catch {
-        input.value = String(state.settings.max_asset_size_mb)
-      }
-    })
-
-    settingsBody.querySelector('#set-unit')?.addEventListener('change', async (e) => {
-      const select = e.target as HTMLSelectElement
-      const value = select.value === 'm' ? 'm' as const : 'ft' as const
-      try {
-        const updated = await api.patchSettings({ measurement_unit: value })
-        state.settings = { ...state.settings, ...updated }
-        render()
-      } catch {
-        select.value = state.settings.measurement_unit
-      }
-    })
-  }
-
-  if (isAdmin && settingsPanel) {
-    root.querySelector('#settings-btn')!.addEventListener('click', () => {
-      root.querySelector('#sidebar')?.classList.remove('open')
-      settingsPanel.classList.toggle('open')
-      renderSettingsPanel()
-    })
-    root.querySelector('#settings-close')!.addEventListener('click', () => {
-      settingsPanel.classList.remove('open')
-    })
-  }
 
   function applySettings() {
     // Chat visibility only. Grid/Fog/Snap are user view toggles: they take
@@ -1863,25 +1741,3 @@ function esc(s: string) {
   return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
 }
 
-function settingToggle(key: string, value: boolean, label: string, description: string): string {
-  return `
-    <label style="display:flex;flex-direction:column;gap:4px;cursor:pointer;">
-      <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;">
-        <span style="font-size:13px;color:var(--text);font-weight:500;">${esc(label)}</span>
-        <div style="position:relative;width:36px;height:20px;flex-shrink:0;">
-          <input type="checkbox" data-key="${esc(key)}" ${value ? 'checked' : ''}
-            style="opacity:0;width:0;height:0;position:absolute;" />
-          <span class="toggle-track" style="
-            position:absolute;inset:0;border-radius:20px;transition:background 0.2s;
-            background:${value ? '#4D5947' : '#B5AB93'};cursor:pointer;">
-            <span style="
-              position:absolute;top:2px;left:${value ? '18px' : '2px'};
-              width:16px;height:16px;border-radius:50%;background:#fff;
-              transition:left 0.2s;pointer-events:none;"></span>
-          </span>
-        </div>
-      </div>
-      <span style="font-size:11px;color:var(--muted);">${esc(description)}</span>
-    </label>
-  `
-}

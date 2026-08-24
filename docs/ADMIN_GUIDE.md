@@ -87,19 +87,18 @@ new one or press `Esc`.
 Same panel as players (transport, queue, volume), plus clicking a track in
 the queue starts it immediately (players can only reorder/transport).
 
-### Settings panel (⚙)
-
-Global defaults applied to everyone, live:
-
-- Chat enabled
-- Players move own tokens only
-- Fog of war on / grid visible / snap to grid (defaults on join)
-- **Grid square size + unit (ft/m)** — used by every measurement tool
-  (e.g. 5 ft or 1.5 m per square)
-
 ### Full screen
 
 **⛶** hides all menus and takes the browser fullscreen; **Esc** exits.
+
+## Admin console — ⚙ Settings tab
+
+All global defaults live here (applied live to every connected browser):
+
+- **Gameplay**: chat enabled, players move own tokens only, snap to grid
+- **Display defaults**: fog of war, grid, plus **grid square size + unit
+  (ft/m)** used by every measurement tool (e.g. 5 ft or 1.5 m per square)
+- **Uploads**: maximum size per asset file (1–500 MB)
 
 ## Security notes
 
@@ -107,4 +106,6 @@ Global defaults applied to everyone, live:
   invalidates all sessions.
 - Hidden tokens are withheld from players at the API level — positions
   cannot be sniffed from devtools.
-- Uploads are limited to 50 MB per asset and 150 MB per map import.
+- Uploads are limited per asset by the admin setting (default 50 MB,
+  see **⚙ Settings** in the admin console) and to 150 MB per map import.
+- The API is rate-limited (300 req/min; 10 login attempts per 15 min per IP).

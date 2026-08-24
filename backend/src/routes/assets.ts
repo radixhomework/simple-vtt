@@ -86,10 +86,36 @@ assetsRouter.post('/assets', authMiddleware, adminOnly, assetUpload, (req, res) 
 
 /** Move an asset to another folder (empty string = root). */
 assetsRouter.put('/assets/:id', authMiddleware, adminOnly, (req, res) => {
-  const folder = String((req.body as { folder?: unknown }).folder ?? '').slice(0, 100)
-  const r = db.prepare('UPDATE assets SET folder=? WHERE id=?').run(folder, req.params.id)
-  if (r.changes === 0) { res.status(404).json({ error: 'not found' }); return }
-  res.json({ id: req.params.id, folder })
+  const row = db.prepare('SELECT id, kind FROM assets WHERE id=?').get(req.params.id) as
+    { id: string; kind: string } | undefined
+  if (!row) { res.status(404).json({ error: 'not found' }); return }
+
+  const body = req.body as { folder?: unknown; name?: unknown }
+  const sets: string[] = []
+  const values: Array<string> = []
+
+  if (body.name !== undefined) {
+    const name = String(body.name).trim().slice(0, 200)
+    if (!name) { res.status(400).json({ error: 'name required' }); return }
+    sets.push('name=?')
+    values.push(name)
+  }
+  if (body.folder !== undefined) {
+    sets.push('folder=?')
+    values.push(String(body.folder).slice(0, 100))
+  }
+  if (sets.length === 0) { res.status(400).json({ error: 'nothing to update' }); return }
+
+  values.push(req.params.id)
+  db.prepare(`UPDATE assets SET ${sets.join(', ')} WHERE id=?`).run(...values)
+
+  // Renamed audio: push a fresh music state so every open music panel
+  // shows the new track name (queues are id-based, nothing else changes)
+  if (body.name !== undefined && row.kind === 'audio') musicLibraryChanged()
+
+  const fresh = db.prepare('SELECT id, kind, name, path, size, folder FROM assets WHERE id=?')
+    .get(req.params.id)
+  res.json(fresh)
 })
 
 assetsRouter.delete('/assets/:id', authMiddleware, adminOnly, (req, res) => {

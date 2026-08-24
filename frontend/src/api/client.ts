@@ -61,6 +61,8 @@ export const api = {
     request<Floor>('POST', `/tables/${tableId}/floors`, data),
   updateFloor: (floorId: string, data: Partial<Floor>) =>
     request<Floor>('PUT', `/floors/${floorId}`, data),
+  reorderFloors: (tableId: string, floorIds: string[]) =>
+    request<Floor[]>('PUT', `/tables/${tableId}/floors/reorder`, { floor_ids: floorIds }),
   deleteFloor: (floorId: string) => request<void>('DELETE', `/floors/${floorId}`),
   async importFloorUVTT(tableId: string, file: File, name?: string): Promise<Floor> {
     const fd = new FormData()
@@ -120,7 +122,7 @@ export const api = {
   // Assets (shared image + audio library, deduplicated server-side)
   listAssets: (kind: 'image' | 'audio') => request<Asset[]>('GET', `/assets?kind=${kind}`),
   deleteAsset: (id: string) => request<void>('DELETE', `/assets/${id}`),
-  updateAsset: (id: string, data: { folder: string }) => request<Asset>('PUT', `/assets/${id}`, data),
+  updateAsset: (id: string, data: { folder?: string; name?: string }) => request<Asset>('PUT', `/assets/${id}`, data),
 
   async uploadAsset(file: File, kind: 'image' | 'audio'): Promise<Asset> {
     const fd = new FormData()
