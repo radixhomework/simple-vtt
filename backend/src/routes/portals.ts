@@ -1,26 +1,73 @@
-/** Portals (doors/windows) per floor — imported from UVTT files or managed manually. Admin can toggle open/closed. */
+/**
+ * Portals — doors and windows, per floor. Admins toggle open/closed and can
+ * reclassify a portal (door ↔ window). Players may toggle them too when the
+ * matching global setting allows it.
+ *
+ * Semantics: a closed door blocks movement AND sight; a closed window blocks
+ * movement but stays transparent. Open portals block neither.
+ */
 import { Router } from 'express'
 import { db } from '../db'
 import { authMiddleware, adminOnly } from '../auth'
 import { broadcastToTable } from '../hub'
+import { loadSettings } from '../settings'
 
 export const portalsRouter = Router()
 
+const PORTAL_COLS = 'id, table_id, x1, y1, x2, y2, closed, floor_id, kind, locked'
+
 function normalize(row: Record<string, unknown>) {
-  return { ...row, closed: row.closed === 1 || row.closed === true }
+  return {
+    ...row,
+    closed: row.closed === 1 || row.closed === true,
+    locked: row.locked === 1 || row.locked === true,
+  }
+}
+
+/** Players may toggle a portal when the admin enabled it for its kind AND
+ *  this particular portal is not individually locked. */
+function playerMayOpen(role: string, kind: string, locked: boolean): boolean {
+  if (role === 'admin') return true
+  if (locked) return false
+  const settings = loadSettings()
+  return kind === 'window' ? settings.players_open_windows : settings.players_open_doors
 }
 
 portalsRouter.get('/tables/:id/portals', authMiddleware, (req, res) => {
-  const rows = db.prepare('SELECT id, table_id, x1, y1, x2, y2, closed, floor_id FROM portals WHERE table_id=?')
+  const rows = db.prepare(`SELECT ${PORTAL_COLS} FROM portals WHERE table_id=?`)
     .all(req.params.id) as Record<string, unknown>[]
   res.json(rows.map(normalize))
 })
 
-portalsRouter.patch('/tables/:id/portals/:portalId', authMiddleware, adminOnly, (req, res) => {
-  const { closed } = req.body as { closed: boolean }
-  db.prepare('UPDATE portals SET closed=? WHERE id=? AND table_id=?')
-    .run(closed ? 1 : 0, req.params.portalId, req.params.id)
-  const row = db.prepare('SELECT id, table_id, x1, y1, x2, y2, closed, floor_id FROM portals WHERE id=?')
+portalsRouter.patch('/tables/:id/portals/:portalId', authMiddleware, (req, res) => {
+  const existing = db.prepare(`SELECT ${PORTAL_COLS} FROM portals WHERE id=? AND table_id=?`)
+    .get(req.params.portalId, req.params.id) as Record<string, unknown> | undefined
+  if (!existing) { res.status(404).json({ error: 'not found' }); return }
+
+  const isAdmin = res.locals.role === 'admin'
+  const kind = String(existing.kind) || 'door'
+
+  const locked = existing.locked === 1 || existing.locked === true
+
+  // Reclassification (door ↔ window) and per-portal locks are admin-only
+  const newKind = req.body.kind
+  if (newKind !== undefined) {
+    if (!isAdmin) { res.status(403).json({ error: 'forbidden' }); return }
+    if (newKind !== 'door' && newKind !== 'window') { res.status(400).json({ error: 'kind must be door or window' }); return }
+    db.prepare('UPDATE portals SET kind=? WHERE id=?').run(newKind, req.params.portalId)
+  }
+  if (req.body.locked !== undefined) {
+    if (!isAdmin) { res.status(403).json({ error: 'forbidden' }); return }
+    db.prepare('UPDATE portals SET locked=? WHERE id=?').run(req.body.locked ? 1 : 0, req.params.portalId)
+  }
+
+  // Open/close: admins always; players when allowed for the kind and not locked
+  if (req.body.closed !== undefined) {
+    if (!playerMayOpen(res.locals.role, kind, locked)) { res.status(403).json({ error: 'forbidden' }); return }
+    db.prepare('UPDATE portals SET closed=? WHERE id=?').run(req.body.closed ? 1 : 0, req.params.portalId)
+  }
+
+  const row = db.prepare(`SELECT ${PORTAL_COLS} FROM portals WHERE id=?`)
     .get(req.params.portalId) as Record<string, unknown>
   const portal = normalize(row)
   broadcastToTable(req.params.id, { type: 'portal_toggle', payload: { portal } })

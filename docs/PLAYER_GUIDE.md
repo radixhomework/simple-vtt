@@ -82,3 +82,9 @@ menus back.
   movement to owned tokens.
 - **No sound** — check the volume slider, then click anywhere on the page
   (browser autoplay policy).
+
+## Doors and windows
+
+Depending on the permissions the admin granted, you may click **doors**
+and **windows** to open and close them yourself. Closed windows let you
+*see* through them, but nobody can walk through a closed window.

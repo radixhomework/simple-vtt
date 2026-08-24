@@ -24,8 +24,9 @@ db.exec(`
   );
 
   CREATE TABLE IF NOT EXISTS tables (
-    id             TEXT PRIMARY KEY,
-    name           TEXT NOT NULL,
+    id               TEXT PRIMARY KEY,
+    name             TEXT NOT NULL,
+    default_floor_id TEXT NOT NULL DEFAULT '',   -- '' = lowest level
     map_image_path TEXT NOT NULL DEFAULT '',   -- legacy: moved to floors
     grid_size      INTEGER NOT NULL DEFAULT 70,
     uvt_metadata   TEXT NOT NULL DEFAULT '{}',
@@ -90,6 +91,8 @@ db.exec(`
     y2       REAL NOT NULL,
     closed   INTEGER NOT NULL DEFAULT 1,
     floor_id TEXT NOT NULL DEFAULT '',
+    kind     TEXT NOT NULL DEFAULT 'door' CHECK (kind IN ('door','window')),
+    locked   INTEGER NOT NULL DEFAULT 0,
     FOREIGN KEY (table_id) REFERENCES tables(id) ON DELETE CASCADE
   );
 
@@ -170,6 +173,25 @@ addFloorId('tokens')
 addFloorId('portals')
 addFloorId('fog_points')
 
+// Migration: portal kinds (doors block sight when closed; windows never do)
+// and per-portal player locks
+const portalCols = db.prepare('PRAGMA table_info(portals)').all() as Array<{ name: string }>
+if (!portalCols.some(c => c.name === 'kind')) {
+  db.exec("ALTER TABLE portals ADD COLUMN kind TEXT NOT NULL DEFAULT 'door'")
+}
+if (!portalCols.some(c => c.name === 'locked')) {
+  db.exec('ALTER TABLE portals ADD COLUMN locked INTEGER NOT NULL DEFAULT 0')
+}
+
+// Migration: per-table default floor (replaces the global default_floor_level)
+{
+  const cols = db.prepare('PRAGMA table_info(tables)').all() as Array<{ name: string }>
+  if (!cols.some(c => c.name === 'default_floor_id')) {
+    db.exec("ALTER TABLE tables ADD COLUMN default_floor_id TEXT NOT NULL DEFAULT ''")
+  }
+  db.prepare("DELETE FROM settings WHERE key='default_floor_level'").run()
+}
+
 // Migration: every pre-floors table gets its map data moved onto floor 1,
 // and its tokens/portals/fog points are attached to that floor. Idempotent.
 const migrateFloors = db.transaction(() => {
@@ -220,5 +242,19 @@ const seedAll = db.transaction(() => {
   seedSetting.run('grid_square_size',      '5')
   seedSetting.run('measurement_unit',      'ft')
   seedSetting.run('max_asset_size_mb',     '50')
+  seedSetting.run('players_open_doors',    'true')
+  seedSetting.run('players_open_windows',  'true')
+  seedSetting.run('default_floor_level',   '1')
 })
 seedAll()
+
+// Migration (one-time, guarded by a marker): door/window permissions
+// default to open for players; flip installs that still carry the old
+// 'false' seed. Later admin choices are never overridden.
+{
+  const marker = db.prepare("SELECT value FROM settings WHERE key='migrated_open_defaults'").get()
+  if (!marker) {
+    db.prepare("UPDATE settings SET value='true' WHERE key IN ('players_open_doors','players_open_windows') AND value='false'").run()
+    db.prepare("INSERT INTO settings (key, value) VALUES ('migrated_open_defaults', 'true')").run()
+  }
+}

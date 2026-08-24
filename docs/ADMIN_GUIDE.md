@@ -87,6 +87,24 @@ new one or press `Esc`.
 Same panel as players (transport, queue, volume), plus clicking a track in
 the queue starts it immediately (players can only reorder/transport).
 
+### Doors and windows
+
+- **Door** (copper): closed blocks movement *and* sight; open blocks neither.
+- **Window** (rose, with glass ticks): closed blocks movement but players
+  still see through it; open blocks neither. Tokens can never cross a closed
+  window even when players may open doors.
+- Click a portal to open/close it (players too, when allowed).
+- **Right-click** a portal for its menu: open/close, convert door ↔ window,
+  and **Lock for players** — a locked portal stays admin-only even when the
+  global permission is on. Locked portals show 🔒 in their label.
+- **Right-click** stairs to change their destination floor or delete them
+  (left-click does nothing on stairs). Stairs markers carry no label in the
+  players' view.
+- UVTT imports mark portals as doors unless the file explicitly declares
+  windows.
+- In the admin console, each floor has a **Default floor** button in the
+  Floors manager — that level is shown when anyone loads the map.
+
 ### Full screen
 
 **⛶** hides all menus and takes the browser fullscreen; **Esc** exits.
@@ -95,9 +113,11 @@ the queue starts it immediately (players can only reorder/transport).
 
 All global defaults live here (applied live to every connected browser):
 
-- **Gameplay**: chat enabled, players move own tokens only, snap to grid
-- **Display defaults**: fog of war, grid, plus **grid square size + unit
-  (ft/m)** used by every measurement tool (e.g. 5 ft or 1.5 m per square)
+- **Gameplay**: chat enabled, players move own tokens only, snap to grid,
+  players can open **doors** and **windows** by themselves (two separate
+  permissions, on by default)
+- **Display defaults**: fog of war, grid, **grid square size + unit (ft/m)**
+  used by every measurement tool (e.g. 5 ft or 1.5 m per square)
 - **Uploads**: maximum size per asset file (1–500 MB)
 
 ## Security notes

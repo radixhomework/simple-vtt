@@ -13,7 +13,7 @@ import {
   preloadTokenImage, preloadMapImage, updateExplored, clearMapImageCache,
 } from '../canvas/layers'
 import { screenToWorld, worldToScreen, snapToGrid, zoomAround } from '../canvas/camera'
-import { parseStaticWalls, portalWalls, pathCrossesWall, pointOnWall } from '../canvas/los'
+import { parseStaticWalls, portalWalls, portalSightWalls, pathCrossesWall, pointOnWall } from '../canvas/los'
 import type { WallSegment } from '../canvas/los'
 import type {
   User, Table, Token, FogPoint, Portal, Camera, ToolType, MeasureState, AppSettings,
@@ -33,6 +33,8 @@ interface GameState {
   fog: FogPoint[]
   portals: Portal[]
   walls: WallSegment[]
+  /** Sight blockers: static walls + closed doors only (windows are transparent) */
+  sightWalls: WallSegment[]
   settings: AppSettings
   camera: Camera
   mapImage: HTMLImageElement | null
@@ -206,6 +208,14 @@ export function renderMap(
       }
       .tool-btn:hover { background: rgba(30,33,28,0.08); }
       .tool-btn.active { background: var(--brand); border-color: var(--brand); color: var(--on-brand); }
+      /* Right-click context menu for doors, windows and stairs */
+      .ctx-menu { position: absolute; z-index: 40; background: var(--surface); border: 1px solid var(--border);
+        border-radius: 8px; box-shadow: 0 4px 16px rgba(30,33,28,0.25); padding: 4px; min-width: 180px; }
+      .ctx-menu button { display: block; width: 100%; text-align: left; padding: 7px 12px; background: none;
+        border: none; border-radius: 6px; cursor: pointer; color: var(--text); font-size: 13px; }
+      .ctx-menu button:hover { background: rgba(30,33,28,0.08); }
+      .ctx-menu .ctx-err { color: var(--danger); }
+
       .tool-btn[title]:hover::after {
         content: attr(title); position: absolute; bottom: -28px; left: 50%; transform: translateX(-50%);
         background: #1E211C; color: #D8D0BD; padding: 3px 7px; border-radius: 4px; font-size: 11px;
@@ -237,9 +247,9 @@ export function renderMap(
             <button class="tool-btn" data-tool="stairs" title="Place stairs to another floor">🪜</button>
             ` : ''}
           </div>
-          <div class="header-sep"></div>
+          ${isAdmin ? `<div class="header-sep"></div>
           <button class="header-btn" id="snap-btn">Snap ✓</button>
-          <button class="header-btn" id="grid-btn">Grid ✓</button>
+          <button class="header-btn" id="grid-btn">Grid ✓</button>` : ''}
           ${isAdmin ? `<button class="header-btn" id="fog-toggle-btn">Fog ✓</button>
           <button class="header-btn" id="share-measure-btn" title="Share measurements with players">Share ✗</button>
           <button class="header-btn" id="focus-btn" title="Focus every display on your current view (one time)">🎯 Focus</button>` : ''}
@@ -333,6 +343,7 @@ export function renderMap(
     fog: [],
     portals: [],
     walls: parseStaticWalls(table.uvt_metadata ?? '{}', table.grid_size ?? 70),
+    sightWalls: [],
     settings: { ...DEFAULT_SETTINGS },
     camera: { x: 0, y: 0, zoom: 1 },
     mapImage: null,
@@ -385,10 +396,11 @@ export function renderMap(
   }
 
   function recomputeWalls() {
-    state.walls = [
-      ...parseStaticWalls(state.table.uvt_metadata ?? '{}', state.table.grid_size ?? 70),
-      ...portalWalls(state.portals),
-    ]
+    const staticWalls = parseStaticWalls(state.table.uvt_metadata ?? '{}', state.table.grid_size ?? 70)
+    // Movement blocks on every closed portal; sight blocks on closed doors
+    // only — a closed window stops movement but not vision.
+    state.walls = [...staticWalls, ...portalWalls(state.portals)]
+    state.sightWalls = [...staticWalls, ...portalSightWalls(state.portals)]
   }
 
   // Load map image (also re-run when a floor switch brings a new map path).
@@ -444,10 +456,10 @@ export function renderMap(
         // Keep the explored memory up to date so areas that fall out of
         // sight keep showing in greyscale instead of going fully black
         if (state.exploredCanvas) {
-          updateExplored(state.exploredCanvas, sightTokens, state.fog, state.walls, state.table.grid_size ?? 70)
+          updateExplored(state.exploredCanvas, sightTokens, state.fog, state.sightWalls, state.table.grid_size ?? 70)
         }
         drawFog(
-          fogCtx, sightTokens, state.fog, state.walls, state.camera, state.table.grid_size ?? 70, isAdmin,
+          fogCtx, sightTokens, state.fog, state.sightWalls, state.camera, state.table.grid_size ?? 70, isAdmin,
           state.exploredCanvas, state.mapImage,
           state.table.map_offset_x ?? 0, state.table.map_offset_y ?? 0,
         )
@@ -1131,7 +1143,9 @@ export function renderMap(
     const [wx, wy] = screenToWorld(e.offsetX, e.offsetY, state.camera)
 
     if (e.button === 1 || (e.button === 2)) {
-      // Middle/right mouse = pan
+      // Middle/right mouse = pan (right-click without dragging = reclassify)
+      rightDownX = e.offsetX
+      rightDownY = e.offsetY
       startPan(e.offsetX, e.offsetY)
       uiCanvas.style.cursor = 'grabbing'
       return
@@ -1177,37 +1191,16 @@ export function renderMap(
         }
         refreshSidebar()
         if (isAdmin) renderTokenEditor()
-      } else if (isAdmin) {
-        // No token under the cursor: admin: stair marker click offers deletion
-        const stairHit = pickStair(wx, wy, state.stairs, state.table.grid_size ?? 70)
-        if (stairHit) {
-          const target = state.floors.find(f => f.id === stairHit.to_floor)
-          if (confirm(`Delete the stairs to ${target ? floorLabel(target) : 'another floor'}?`)) {
-            api.deleteStair(stairHit.id)
-              .then(() => { state.stairs = state.stairs.filter(st => st.id !== stairHit.id); render() })
-              .catch(() => showNotif('Failed to delete stairs'))
-          }
-          return
-        }
-
-        // Portal click (threshold = 30% of a grid cell)
+      } else {
+        // No token under the cursor: portal click (threshold = 30% of a
+        // grid cell) — open/close shortcut for every role, permission-checked
         const portalHit = pickPortal(wx, wy, state.portals, (state.table.grid_size ?? 70) * 0.3)
         if (portalHit) {
-          api.togglePortal(state.table.id, portalHit.id, !portalHit.closed)
-            .then(updated => {
-              const idx = state.portals.findIndex(p => p.id === updated.id)
-              if (idx !== -1) state.portals[idx] = updated
-              recomputeWalls()
-              render()
-            })
-            .catch(() => showNotif('Failed to toggle portal'))
+          if (mayTogglePortal(portalHit)) togglePortal(portalHit)
+          else showNotif(`Only the DM can open this ${portalHit.kind}`)
           return
         }
 
-        state.selectedId = null
-        refreshSidebar()
-        if (isAdmin) renderTokenEditor()
-      } else {
         state.selectedId = null
         refreshSidebar()
         if (isAdmin) renderTokenEditor()
@@ -1360,7 +1353,82 @@ export function renderMap(
     }
   })
 
-  uiCanvas.addEventListener('contextmenu', e => e.preventDefault())
+  // ── Context menu (right-click on doors, windows and stairs) ─────────────────
+  interface CtxItem { label: string; action: () => void; danger?: boolean }
+
+  const ctxMenu = document.createElement('div')
+  ctxMenu.className = 'ctx-menu'
+  ctxMenu.style.display = 'none'
+  wrap.appendChild(ctxMenu)
+
+  function hideCtxMenu() { ctxMenu.style.display = 'none' }
+
+  function showCtxMenu(x: number, y: number, title: string, items: CtxItem[]) {
+    ctxMenu.innerHTML = `<div style="padding:6px 12px 4px;font-family:var(--font-title);font-size:13px;font-weight:600;color:var(--muted)">${esc(title)}</div>`
+      + items.map((it, i) => `<button data-ctx="${i}" class="${it.danger ? 'ctx-err' : ''}">${esc(it.label)}</button>`).join('')
+    ctxMenu.querySelectorAll('[data-ctx]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        hideCtxMenu()
+        items[parseInt((btn as HTMLElement).dataset.ctx!)].action()
+      })
+    })
+    ctxMenu.style.display = ''
+    // Clamp inside the visible area
+    const maxX = wrap.clientWidth - ctxMenu.offsetWidth - 4
+    const maxY = wrap.clientHeight - ctxMenu.offsetHeight - 4
+    ctxMenu.style.left = Math.max(4, Math.min(x, maxX)) + 'px'
+    ctxMenu.style.top = Math.max(4, Math.min(y, maxY)) + 'px'
+  }
+
+  document.addEventListener('click', hideCtxMenu)
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') hideCtxMenu() })
+
+  let rightDownX = 0, rightDownY = 0
+  uiCanvas.addEventListener('contextmenu', (e) => {
+    e.preventDefault()
+    const rect = uiCanvas.getBoundingClientRect()
+    const x = e.clientX - rect.left, y = e.clientY - rect.top
+    if (Math.hypot(x - rightDownX, y - rightDownY) > 6) return // it was a pan
+
+    const [wx, wy] = screenToWorld(x, y, state.camera)
+
+    // Doors and windows: open/close + convert (players: open/close only,
+    // when the admin allows it for the kind)
+    const portalHit = pickPortal(wx, wy, state.portals, (state.table.grid_size ?? 70) * 0.3)
+    if (portalHit) {
+      const kindLabel = portalHit.kind === 'window' ? 'window' : 'door'
+      const items: CtxItem[] = []
+      if (mayTogglePortal(portalHit)) {
+        items.push({ label: portalHit.closed ? 'Open' : 'Close', action: () => togglePortal(portalHit) })
+      }
+      if (isAdmin) {
+        items.push({ label: portalHit.kind === 'window' ? 'Convert to door' : 'Convert to window', action: () => reclassifyPortal(portalHit) })
+        items.push({ label: portalHit.locked ? 'Unlock for players' : 'Lock for players', action: () => {
+          api.setPortalLocked(state.table.id, portalHit.id, !portalHit.locked)
+            .then(updated => {
+              const idx = state.portals.findIndex(p => p.id === updated.id)
+              if (idx !== -1) state.portals[idx] = updated
+              render()
+            })
+            .catch(() => showNotif('Failed to update lock'))
+        } })
+      }
+      if (items.length > 0) showCtxMenu(x, y, kindLabel, items)
+      else showNotif(`Only admins can open this ${kindLabel}`)
+      return
+    }
+
+    // Stairs (admin): change destination or delete — the only way to manage
+    // them, left-click does nothing
+    const stairHit = isAdmin ? pickStair(wx, wy, state.stairs, state.table.grid_size ?? 70) : null
+    if (stairHit) {
+      const target = state.floors.find(f => f.id === stairHit.to_floor)
+      showCtxMenu(x, y, `Stairs → ${target ? floorLabel(target) : '?'}`, [
+        { label: 'Change destination…', action: () => changeStairDestination(stairHit) },
+        { label: 'Delete', action: () => deleteStair(stairHit), danger: true },
+      ])
+    }
+  })
 
   // ── Touch / Apple Pencil support ─────────────────────────────────────────────
   // One finger or pencil: drag tokens (or use the active tool); a tap on a
@@ -1462,30 +1530,13 @@ export function renderMap(
       return
     }
 
-    if (isAdmin) {
-      // Stair marker tap offers deletion
-      const stairHit = pickStair(wx, wy, state.stairs, state.table.grid_size ?? 70)
-      if (stairHit) {
-        const target = state.floors.find(f => f.id === stairHit.to_floor)
-        if (confirm(`Delete the stairs to ${target ? floorLabel(target) : 'another floor'}?`)) {
-          api.deleteStair(stairHit.id)
-            .then(() => { state.stairs = state.stairs.filter(st => st.id !== stairHit.id); render() })
-            .catch(() => showNotif('Failed to delete stairs'))
-        }
-        return
-      }
-
-      // Portal tap toggles the door (threshold = 30% of a grid cell)
+    // Portal tap toggles the door/window — every role, permission-checked
+    // (stairs are managed through the context menu only)
+    {
       const portalHit = pickPortal(wx, wy, state.portals, (state.table.grid_size ?? 70) * 0.3)
       if (portalHit) {
-        api.togglePortal(state.table.id, portalHit.id, !portalHit.closed)
-          .then(updated => {
-            const idx = state.portals.findIndex(p => p.id === updated.id)
-            if (idx !== -1) state.portals[idx] = updated
-            recomputeWalls()
-            render()
-          })
-          .catch(() => showNotif('Failed to toggle portal'))
+        if (mayTogglePortal(portalHit)) togglePortal(portalHit)
+        else showNotif(`Only the DM can open this ${portalHit.kind}`)
         return
       }
     }
@@ -1675,6 +1726,69 @@ export function renderMap(
       showNotif(`Stairs to ${floorLabel(target)} placed`)
       render()
     } catch (e: any) { showNotif('Failed: ' + e.message) }
+  }
+
+  /** May this user toggle this portal? Admins always; players when the
+   *  admin enabled it for the portal's kind. */
+  function mayTogglePortal(portal: Portal): boolean {
+    if (isAdmin) return true
+    if (portal.locked) return false
+    return portal.kind === 'window'
+      ? state.settings.players_open_windows
+      : state.settings.players_open_doors
+  }
+
+  function togglePortal(portal: Portal) {
+    api.togglePortal(state.table.id, portal.id, !portal.closed)
+      .then(updated => {
+        const idx = state.portals.findIndex(p => p.id === updated.id)
+        if (idx !== -1) state.portals[idx] = updated
+        recomputeWalls()
+        render()
+      })
+      .catch(() => showNotif('You cannot open this ' + (portal.kind ?? 'door')))
+  }
+
+  /** Admin: reclassify a portal door ↔ window. */
+  function reclassifyPortal(portal: Portal) {
+    const newKind = portal.kind === 'window' ? 'door' : 'window'
+    api.setPortalKind(state.table.id, portal.id, newKind)
+      .then(updated => {
+        const idx = state.portals.findIndex(p => p.id === updated.id)
+        if (idx !== -1) state.portals[idx] = updated
+        recomputeWalls()
+        render()
+      })
+      .catch(() => showNotif('Failed to reclassify'))
+  }
+
+  /** Admin: delete a stairs marker. */
+  function deleteStair(stair: Stairs) {
+    api.deleteStair(stair.id)
+      .then(() => { state.stairs = state.stairs.filter(st => st.id !== stair.id); render() })
+      .catch(() => showNotif('Failed to delete stairs'))
+  }
+
+  /** Admin: point a stairs marker at another floor. */
+  function changeStairDestination(stair: Stairs) {
+    const others = state.floors.filter(f => f.id !== stair.from_floor)
+    if (others.length === 0) { showNotif('No other floor to link to'); return }
+    const labels = others.map(f => floorLabel(f)).join(', ')
+    const answer = prompt(`Link these stairs to which floor? (${labels})`,
+      others.length === 1 ? floorLabel(others[0]) : floorLabel(others[0]))
+    if (!answer) return
+    const q = answer.trim().toLowerCase()
+    const target = others.find(f =>
+      floorLabel(f).toLowerCase() === q || String(f.level) === q || f.name.toLowerCase() === q)
+    if (!target) { showNotif('Unknown floor'); return }
+    api.updateStair(state.table.id, stair.id, { to_floor: target.id })
+      .then(updated => {
+        const idx = state.stairs.findIndex(st => st.id === updated.id)
+        if (idx !== -1) state.stairs[idx] = updated
+        showNotif(`Stairs now lead to ${floorLabel(target)}`)
+        render()
+      })
+      .catch((e: any) => showNotif('Failed: ' + e.message))
   }
 
   // Fog helpers

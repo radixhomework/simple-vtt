@@ -97,8 +97,8 @@ export function drawStairs(
     }
     ctx.lineWidth = 1.5
     ctx.stroke()
-    // Target floor label (admins and players both benefit from it)
-    if (cam.zoom > 0.3) {
+    // Target floor label — admins only, players just see the spiral
+    if (isAdmin && cam.zoom > 0.3) {
       const target = floors.find(f => f.id === st.to_floor)
       const label = target ? (target.name || `Floor ${target.level}`) : '?'
       const up = target && target.level > (floors.find(f => f.id === st.from_floor)?.level ?? 0)
@@ -113,7 +113,6 @@ export function drawStairs(
     }
     ctx.restore()
   }
-  void isAdmin // marker style is identical for both roles for now
 }
 
 export function drawMap(
@@ -415,6 +414,7 @@ export function drawPortals(
   cam: Camera,
   isAdmin: boolean,
 ) {
+
   if (portals.length === 0) return
   ctx.save()
   ctx.lineCap = 'round'
@@ -424,29 +424,48 @@ export function drawPortals(
     const [sx2, sy2] = worldToScreen(portal.x2, portal.y2, cam)
     const midX = (sx1 + sx2) / 2
     const midY = (sy1 + sy2) / 2
-    const lw = Math.max(2, 4 * cam.zoom)
+    const lw = Math.max(3.5, 6 * cam.zoom)
 
+    const isWindow = portal.kind === 'window'
     if (portal.closed) {
-      // Closed door — thick brown bar
+      // Closed portal — thick bar. Windows are drawn in rose with glass
+      // ticks so admins can tell them from copper doors at a glance.
       ctx.beginPath()
       ctx.moveTo(sx1, sy1)
       ctx.lineTo(sx2, sy2)
-      ctx.strokeStyle = PALETTE.copper
+      ctx.strokeStyle = isWindow ? PALETTE.rose : PALETTE.copper
       ctx.lineWidth = lw
       ctx.setLineDash([])
       ctx.stroke()
-      // Centre knob
-      ctx.beginPath()
-      ctx.arc(midX, midY, lw, 0, Math.PI * 2)
-      ctx.fillStyle = PALETTE.earth
-      ctx.fill()
+      if (isWindow) {
+        // Glass ticks along the frame
+        const ticks = 3
+        ctx.strokeStyle = PALETTE.parchment
+        ctx.lineWidth = Math.max(1, lw * 0.25)
+        for (let t = 1; t <= ticks; t++) {
+          const f = t / (ticks + 1)
+          const nx = -(sy2 - sy1), ny = sx2 - sx1
+          const nl = Math.hypot(nx, ny) || 1
+          const px = sx1 + (sx2 - sx1) * f, py = sy1 + (sy2 - sy1) * f
+          ctx.beginPath()
+          ctx.moveTo(px - nx / nl * lw * 0.5, py - ny / nl * lw * 0.5)
+          ctx.lineTo(px + nx / nl * lw * 0.5, py + ny / nl * lw * 0.5)
+          ctx.stroke()
+        }
+      } else {
+        // Door centre knob
+        ctx.beginPath()
+        ctx.arc(midX, midY, lw, 0, Math.PI * 2)
+        ctx.fillStyle = PALETTE.earth
+        ctx.fill()
+      }
     } else {
-      // Open door — dashed cyan gap
+      // Open portal — dashed gap (moss for doors, rose for windows)
       ctx.beginPath()
       ctx.moveTo(sx1, sy1)
       ctx.lineTo(sx2, sy2)
-      ctx.strokeStyle = 'rgba(120,150,110,0.75)'
-      ctx.lineWidth = Math.max(1.5, 2 * cam.zoom)
+      ctx.strokeStyle = isWindow ? 'rgba(138, 94, 97, 0.75)' : 'rgba(120,150,110,0.75)'
+      ctx.lineWidth = Math.max(2.5, 3 * cam.zoom)
       ctx.setLineDash([5 * cam.zoom, 4 * cam.zoom])
       ctx.stroke()
       ctx.setLineDash([])
@@ -454,11 +473,11 @@ export function drawPortals(
 
     // Admin label when zoomed in enough
     if (isAdmin && cam.zoom > 0.45) {
-      const label = portal.closed ? 'closed' : 'open'
+      const label = `${isWindow ? 'window' : 'door'} ${portal.closed ? '· closed' : '· open'}${portal.locked ? ' · 🔒' : ''}`
       ctx.font = `${Math.max(9, 9 * cam.zoom)}px system-ui`
       ctx.textAlign = 'center'
       ctx.textBaseline = 'bottom'
-      ctx.fillStyle = portal.closed ? PALETTE.copper : PALETTE.moss
+      ctx.fillStyle = portal.closed ? (isWindow ? PALETTE.rose : PALETTE.copper) : PALETTE.moss
       ctx.fillText(label, midX, midY - lw - 2)
     }
   }

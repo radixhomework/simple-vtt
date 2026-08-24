@@ -146,9 +146,23 @@ export function parseStaticWalls(uvtMetadata: string, gridSize: number): WallSeg
 }
 
 /** Convert closed portals to wall segments for LOS. */
+/**
+ * Movement blockers: every closed portal (doors and windows alike — an open
+ * window is passable, a closed one is not).
+ */
 export function portalWalls(portals: Array<{ x1: number; y1: number; x2: number; y2: number; closed: boolean }>): WallSegment[] {
   return portals
     .filter(p => p.closed)
+    .map(p => ({ ax: p.x1, ay: p.y1, bx: p.x2, by: p.y2 }))
+}
+
+/**
+ * Sight blockers: only closed doors. Closed windows stay transparent — a
+ * token sees through glass but cannot walk through it.
+ */
+export function portalSightWalls(portals: Array<{ x1: number; y1: number; x2: number; y2: number; closed: boolean; kind?: 'door' | 'window' }>): WallSegment[] {
+  return portals
+    .filter(p => p.closed && p.kind !== 'window')
     .map(p => ({ ax: p.x1, ay: p.y1, bx: p.x2, by: p.y2 }))
 }
 

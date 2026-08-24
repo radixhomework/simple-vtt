@@ -10,6 +10,8 @@ export interface AppSettingsRecord {
   measurement_unit: 'ft' | 'm'
   /** Maximum accepted size of a single asset upload, in megabytes */
   max_asset_size_mb: number
+  players_open_doors: boolean
+  players_open_windows: boolean
 }
 
 /** Defaults used when a key is missing from the settings table. */
@@ -22,6 +24,8 @@ export const SETTINGS_DEFAULTS: AppSettingsRecord = {
   grid_square_size: 5,
   measurement_unit: 'ft',
   max_asset_size_mb: 50,
+  players_open_doors: true,
+  players_open_windows: true,
 }
 
 export function loadSettings(): AppSettingsRecord {
@@ -39,6 +43,8 @@ export function loadSettings(): AppSettingsRecord {
     max_asset_size_mb: Number.isFinite(maxSize) && maxSize >= 1 && maxSize <= 500
       ? Math.round(maxSize)
       : SETTINGS_DEFAULTS.max_asset_size_mb,
+    players_open_doors: map.players_open_doors !== 'false',
+    players_open_windows: map.players_open_windows !== 'false',
   }
 }
 

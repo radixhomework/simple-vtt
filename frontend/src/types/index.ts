@@ -18,6 +18,8 @@ export interface Table {
   map_offset_y?: number
   /** getTable() embeds the floor list */
   floors?: Floor[]
+  /** Floor shown when loading the map ('' = lowest level) */
+  default_floor_id?: string
   /** listTables() only */
   token_count?: number
   portal_count?: number
@@ -128,6 +130,10 @@ export interface Portal {
   y2: number
   closed: boolean
   floor_id: string
+  /** door: blocks sight when closed; window: always transparent */
+  kind: 'door' | 'window'
+  /** Admin-only: players may never toggle a locked portal */
+  locked: boolean
 }
 
 export interface TableStatePayload {
@@ -158,6 +164,8 @@ export interface AppSettings {
   measurement_unit: 'ft' | 'm'
   /** Maximum accepted size of a single asset upload, in megabytes */
   max_asset_size_mb: number
+  players_open_doors: boolean
+  players_open_windows: boolean
 }
 
 export const DEFAULT_SETTINGS: AppSettings = {
@@ -169,6 +177,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   grid_square_size: 5,
   measurement_unit: 'ft',
   max_asset_size_mb: 50,
+  players_open_doors: true,
+  players_open_windows: true,
 }
 
 export interface MeasureState {

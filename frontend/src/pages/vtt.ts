@@ -79,6 +79,12 @@ export function renderVtt(
         .folder-head td { cursor: pointer; user-select: none; }
         .folder-head:hover td { color: var(--text); }
         .fold-arrow { display: inline-block; width: 14px; }
+        /* Toggle switch visuals follow the hidden checkbox state, so the
+           knob moves live without re-rendering the page */
+        .console-toggle { position: absolute; inset: 0; border-radius: 20px; background: #B5AB93; transition: background 0.2s; cursor: pointer; display: block; }
+        .console-toggle-knob { position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: #fff; transition: left 0.2s; pointer-events: none; display: block; }
+        input:checked + .console-toggle { background: #4D5947; }
+        input:checked + .console-toggle .console-toggle-knob { left: 18px; }
         .form-row { display: flex; gap: 10px; flex-wrap: wrap; align-items: flex-end; }
         .form-field { display: flex; flex-direction: column; gap: 5px; }
         .form-field label { font-size: 12px; color: var(--muted); }
@@ -387,9 +393,11 @@ export function renderVtt(
     const reload = () => void renderFloorsDetail(tableId, detail)
 
     let floors: Floor[]
+    let defaultFloorId: string
     try {
       const t = await api.getTable(tableId)
       floors = t.floors ?? []
+      defaultFloorId = t.default_floor_id ?? ''
     } catch (e: any) {
       cell.innerHTML = `<div class="msg msg-err">Failed to load floors: ${esc(e.message)}</div>`
       return
@@ -410,6 +418,8 @@ export function renderVtt(
                 ? `${f.img_width && f.img_height ? `${f.img_width}×${f.img_height}` : '✓'}`
                 : '— <button class="btn btn-ghost btn-sm" data-fimg="${f.id}">Upload image</button>'}</td>
               <td class="row-actions">
+                <button class="btn btn-primary btn-sm" data-fdefault="${f.id}" title="Show this floor when the map loads"
+                  ${f.id === defaultFloorId ? 'disabled' : ''}>${f.id === defaultFloorId ? '✓ Default floor' : 'Default floor'}</button>
                 <button class="btn btn-ghost btn-sm" data-fup="${f.id}" title="Move up" ${i === 0 ? 'disabled' : ''}>↑</button>
                 <button class="btn btn-ghost btn-sm" data-fdown="${f.id}" title="Move down" ${i === floors.length - 1 ? 'disabled' : ''}>↓</button>
                 <button class="btn btn-ghost btn-sm" data-fren="${f.id}">Rename</button>
@@ -436,6 +446,16 @@ export function renderVtt(
         const name = prompt('Floor name (empty = "Floor N"):', floor?.name ?? '')?.trim()
         if (name === null || name === (floor?.name ?? '')) return
         try { await api.updateFloor(id, { name }); reload() } catch (e: any) { say(e.message) }
+      })
+    })
+
+    cell.querySelectorAll('[data-fdefault]').forEach(el => {
+      el.addEventListener('click', async () => {
+        const id = (el as HTMLElement).dataset.fdefault!
+        try {
+          await api.updateTable(tableId, { default_floor_id: id })
+          reload()
+        } catch (e: any) { say(e.message) }
       })
     })
 
@@ -628,6 +648,8 @@ export function renderVtt(
         <div style="display:flex;flex-direction:column;gap:18px">
           ${consoleToggle('chat_enabled', settings.chat_enabled, 'Chat', 'Players can send and receive chat messages')}
           ${consoleToggle('players_move_own_only', settings.players_move_own_only, 'Players move own tokens only', 'When enabled, players can only drag tokens they own')}
+          ${consoleToggle('players_open_doors', settings.players_open_doors, 'Players can open doors', 'Players may open and close doors by themselves')}
+          ${consoleToggle('players_open_windows', settings.players_open_windows, 'Players can open windows', 'Players may open and close windows by themselves')}
           ${consoleToggle('snap_default', settings.snap_default, 'Snap to grid (default on)', 'Whether tokens snap to the grid when joining a table')}
         </div>
       </div>
@@ -903,14 +925,7 @@ function consoleToggle(key: string, value: boolean, label: string, description: 
         <div style="position:relative;width:36px;height:20px;flex-shrink:0">
           <input type="checkbox" data-key="${esc(key)}" ${value ? 'checked' : ''}
             style="opacity:0;width:0;height:0;position:absolute" />
-          <span style="
-            position:absolute;inset:0;border-radius:20px;transition:background 0.2s;
-            background:${value ? '#4D5947' : '#B5AB93'};cursor:pointer;display:block;">
-            <span style="
-              position:absolute;top:2px;left:${value ? '18px' : '2px'};
-              width:16px;height:16px;border-radius:50%;background:#fff;
-              transition:left 0.2s;pointer-events:none;display:block;"></span>
-          </span>
+          <span class="console-toggle"><span class="console-toggle-knob"></span></span>
         </div>
       </div>
       <span style="font-size:11px;color:var(--muted)">${esc(description)}</span>

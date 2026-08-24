@@ -95,6 +95,8 @@ export const api = {
   createStair: (tableId: string, data: Omit<Stairs, 'id' | 'table_id'>) =>
     request<Stairs>('POST', `/tables/${tableId}/stairs`, data),
   deleteStair: (id: string) => request<void>('DELETE', `/stairs/${id}`),
+  updateStair: (tableId: string, stairId: string, data: { to_floor: string }) =>
+    request<Stairs>('PATCH', `/tables/${tableId}/stairs/${stairId}`, data),
 
   // Tokens
   listTokens: (tableId: string) => request<Token[]>('GET', `/tables/${tableId}/tokens`),
@@ -118,6 +120,10 @@ export const api = {
   listPortals: (tableId: string) => request<Portal[]>('GET', `/tables/${tableId}/portals`),
   togglePortal: (tableId: string, portalId: string, closed: boolean) =>
     request<Portal>('PATCH', `/tables/${tableId}/portals/${portalId}`, { closed }),
+  setPortalKind: (tableId: string, portalId: string, kind: 'door' | 'window') =>
+    request<Portal>('PATCH', `/tables/${tableId}/portals/${portalId}`, { kind }),
+  setPortalLocked: (tableId: string, portalId: string, locked: boolean) =>
+    request<Portal>('PATCH', `/tables/${tableId}/portals/${portalId}`, { locked }),
 
   // Assets (shared image + audio library, deduplicated server-side)
   listAssets: (kind: 'image' | 'audio') => request<Asset[]>('GET', `/assets?kind=${kind}`),

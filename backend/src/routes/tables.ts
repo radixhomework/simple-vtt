@@ -26,7 +26,7 @@ const upload = multer({ storage, limits: { fileSize: 150 * 1024 * 1024 } })
 
 function newId(): string { return crypto.randomUUID().replace(/-/g, '').slice(0, 16) }
 
-const TABLE_COLS = 'id, name'
+const TABLE_COLS = 'id, name, default_floor_id'
 const FLOOR_COLS = 'id, table_id, level, name, map_image_path, grid_size, uvt_metadata, map_offset_x, map_offset_y, img_width, img_height'
 
 interface FloorRow {
@@ -36,7 +36,7 @@ interface FloorRow {
 }
 
 function getTable(id: string) {
-  return db.prepare(`SELECT ${TABLE_COLS} FROM tables WHERE id=?`).get(id) as { id: string; name: string } | undefined
+  return db.prepare(`SELECT ${TABLE_COLS} FROM tables WHERE id=?`).get(id) as { id: string; name: string; default_floor_id: string } | undefined
 }
 
 function getFloor(id: string) {
@@ -101,7 +101,20 @@ tablesRouter.put('/tables/:id', authMiddleware, adminOnly, (req, res) => {
   const existing = getTable(req.params.id)
   if (!existing) { res.status(404).json({ error: 'not found' }); return }
   const name = req.body.name !== undefined ? req.body.name : existing.name
-  db.prepare('UPDATE tables SET name=? WHERE id=?').run(name, req.params.id)
+
+  // Per-map default floor: must be a floor of this table ('' = lowest)
+  let defaultFloorId = existing.default_floor_id ?? ''
+  if (req.body.default_floor_id !== undefined) {
+    const wanted = String(req.body.default_floor_id)
+    if (wanted === '') defaultFloorId = ''
+    else {
+      const floor = db.prepare('SELECT id FROM floors WHERE id=? AND table_id=?').get(wanted, req.params.id)
+      if (!floor) { res.status(404).json({ error: 'floor not found' }); return }
+      defaultFloorId = wanted
+    }
+  }
+
+  db.prepare('UPDATE tables SET name=?, default_floor_id=? WHERE id=?').run(name, defaultFloorId, req.params.id)
   res.json(getTable(req.params.id))
 })
 
@@ -188,17 +201,21 @@ tablesRouter.post('/tables/import', authMiddleware, adminOnly, upload.single('fi
 
     // Extract portals (doors/windows) onto floor 1
     if (Array.isArray(uvttJson.portals)) {
-      const insertPortal = db.prepare('INSERT INTO portals (id, table_id, x1, y1, x2, y2, closed, floor_id) VALUES (?,?,?,?,?,?,?,?)')
+      const insertPortal = db.prepare('INSERT INTO portals (id, table_id, x1, y1, x2, y2, closed, floor_id, kind) VALUES (?,?,?,?,?,?,?,?,?)')
       for (const portal of uvttJson.portals as Array<Record<string, unknown>>) {
         const bounds = portal.bounds as Array<{ x: number; y: number }> | undefined
         if (!bounds || bounds.length < 2) continue
         const p1 = bounds[0], p2 = bounds[bounds.length - 1]
+        // Some exporters mark windows explicitly; unmarked portals are doors
+        const kind = portal.window === true || portal.kind === 'window' || portal.type === 'window'
+          ? 'window' : 'door'
         insertPortal.run(
           newId(), tableId,
           p1.x * gridSize, p1.y * gridSize,
           p2.x * gridSize, p2.y * gridSize,
           portal.closed !== false ? 1 : 0,   // default closed unless explicitly open
           floorId,
+          kind,
         )
       }
     }
@@ -304,17 +321,21 @@ tablesRouter.post('/tables/:id/floors/import', authMiddleware, adminOnly, upload
     ).run(floorId, req.params.id, level, name, imagePath, gridSize, meta, imgW, imgH)
 
     if (Array.isArray(uvttJson.portals)) {
-      const insertPortal = db.prepare('INSERT INTO portals (id, table_id, x1, y1, x2, y2, closed, floor_id) VALUES (?,?,?,?,?,?,?,?)')
+      const insertPortal = db.prepare('INSERT INTO portals (id, table_id, x1, y1, x2, y2, closed, floor_id, kind) VALUES (?,?,?,?,?,?,?,?,?)')
       for (const portal of uvttJson.portals as Array<Record<string, unknown>>) {
         const bounds = portal.bounds as Array<{ x: number; y: number }> | undefined
         if (!bounds || bounds.length < 2) continue
         const p1 = bounds[0], p2 = bounds[bounds.length - 1]
+        // Some exporters mark windows explicitly; unmarked portals are doors
+        const kind = portal.window === true || portal.kind === 'window' || portal.type === 'window'
+          ? 'window' : 'door'
         insertPortal.run(
           newId(), req.params.id,
           p1.x * gridSize, p1.y * gridSize,
           p2.x * gridSize, p2.y * gridSize,
           portal.closed !== false ? 1 : 0,
           floorId,
+          kind,
         )
       }
     }
@@ -407,4 +428,22 @@ tablesRouter.post('/tables/:id/stairs', authMiddleware, adminOnly, (req, res) =>
 tablesRouter.delete('/stairs/:id', authMiddleware, adminOnly, (req, res) => {
   db.prepare('DELETE FROM stairs WHERE id=?').run(req.params.id)
   res.sendStatus(204)
+})
+
+/** Change a stair's destination floor (arrival point keeps its coordinates). */
+tablesRouter.patch('/tables/:id/stairs/:stairId', authMiddleware, adminOnly, (req, res) => {
+  const { to_floor } = req.body as { to_floor: string }
+  const stair = db.prepare('SELECT id, table_id, from_floor, from_x, from_y, to_floor, to_x, to_y, radius FROM stairs WHERE id=? AND table_id=?')
+    .get(req.params.stairId, req.params.id) as Record<string, unknown> | undefined
+  if (!stair) { res.status(404).json({ error: 'not found' }); return }
+  const floors = floorsOf(req.params.id)
+  const target = floors.find(f => f.id === to_floor)
+  if (!target || to_floor === stair.from_floor) {
+    res.status(400).json({ error: 'destination must be a different floor of this table' })
+    return
+  }
+  db.prepare('UPDATE stairs SET to_floor=?, to_x=from_x, to_y=from_y WHERE id=?').run(to_floor, req.params.stairId)
+  const fresh = db.prepare('SELECT id, table_id, from_floor, from_x, from_y, to_floor, to_x, to_y, radius FROM stairs WHERE id=?')
+    .get(req.params.stairId)
+  res.json(fresh)
 })

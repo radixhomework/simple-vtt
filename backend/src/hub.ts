@@ -187,17 +187,19 @@ function newId(): string {
 
 function sendTableState(client: Client) {
   const table = db.prepare(
-    'SELECT id, name FROM tables WHERE id=?'
-  ).get(client.tableId) as { id: string; name: string } | undefined
+    'SELECT id, name, default_floor_id FROM tables WHERE id=?'
+  ).get(client.tableId) as { id: string; name: string; default_floor_id: string } | undefined
 
   if (!table) return
 
-  // Floor list (metadata only) + the client's active floor. Defaults to the
-  // lowest level on first contact or when the viewed floor disappeared.
+  // Floor list (metadata only) + the client's active floor. New connections
+  // (or vanished floors) land on the configured default level, clamped to
+  // the table's floor range.
   const floors = db.prepare(
     'SELECT id, table_id, level, name FROM floors WHERE table_id=? ORDER BY level, rowid'
   ).all(client.tableId) as Array<{ id: string; table_id: string; level: number; name: string }>
-  const floorId = floors.some(f => f.id === client.activeFloorId) ? client.activeFloorId! : floors[0]?.id ?? null
+  const defaultFloor = floors.find(f => f.id === table.default_floor_id) ?? floors[0]
+  const floorId = floors.some(f => f.id === client.activeFloorId) ? client.activeFloorId! : defaultFloor?.id ?? null
   client.activeFloorId = floorId
   const floor = floorId
     ? db.prepare(
@@ -223,7 +225,7 @@ function sendTableState(client: Client) {
 
   const settings = loadSettings()
 
-  const portalRows = db.prepare('SELECT id, table_id, x1, y1, x2, y2, closed, floor_id FROM portals WHERE table_id=? AND floor_id=?')
+  const portalRows = db.prepare('SELECT id, table_id, x1, y1, x2, y2, closed, floor_id, kind, locked FROM portals WHERE table_id=? AND floor_id=?')
     .all(client.tableId, floorId) as Record<string, unknown>[]
   const portals = portalRows.map(p => ({ ...p, closed: p.closed === 1 }))
 
