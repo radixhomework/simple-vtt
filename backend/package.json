@@ -9,7 +9,7 @@
   },
   "dependencies": {
     "@types/express-rate-limit": "^6.0.2",
-    "adm-zip": "^0.5.10",
+    "adm-zip": "^0.6.0",
     "bcryptjs": "^2.4.3",
     "better-sqlite3": "^9.4.3",
     "express": "^4.18.3",
