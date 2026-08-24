@@ -1,5 +1,5 @@
 # ── Stage 1: Build frontend ───────────────────────────────────────────────────
-FROM node:20-alpine AS frontend-builder
+FROM node:22-alpine AS frontend-builder
 WORKDIR /app/frontend
 COPY frontend/package*.json ./
 RUN npm ci
@@ -8,7 +8,7 @@ RUN npm run build
 # vite.config.ts outDir is ../backend/public → lands at /app/backend/public
 
 # ── Stage 2: Build backend ────────────────────────────────────────────────────
-FROM node:20-alpine AS backend-builder
+FROM node:22-alpine AS backend-builder
 # python3/make/g++ are required to compile better-sqlite3 native addon
 RUN apk add --no-cache python3 make g++
 WORKDIR /app/backend
@@ -20,7 +20,7 @@ RUN npm run build
 RUN npm prune --omit=dev
 
 # ── Stage 3: Final image ──────────────────────────────────────────────────────
-FROM node:20-alpine
+FROM node:22-alpine
 WORKDIR /app
 
 # Copy compiled backend + production node_modules (includes native .node files)
