@@ -342,6 +342,21 @@ function punchVision(
 
 // ── Main fog renderer ─────────────────────────────────────────────────────────
 
+// Scratch layer for the never-explored overlay, reused across frames —
+// allocating a full-screen OffscreenCanvas per frame churns mobile GCs.
+let fogScratch: OffscreenCanvas | null = null
+function getFogScratch(w: number, h: number): OffscreenCanvas {
+  if (fogScratch?.width !== w || fogScratch?.height !== h) {
+    fogScratch = new OffscreenCanvas(w, h)
+  }
+  const ctx = fogScratch.getContext('2d')!
+  // Phase 3 leaves globalCompositeOperation at 'destination-out'; a reused
+  // context must be reset or the next fillRect would erase instead of fill.
+  ctx.globalCompositeOperation = 'source-over'
+  ctx.clearRect(0, 0, w, h)
+  return fogScratch
+}
+
 export function drawFog(
   ctx: CanvasRenderingContext2D,
   tokens: Token[],
@@ -384,7 +399,7 @@ export function drawFog(
     // ── Phase 3: black layer for never-explored areas ─────────────────────────
     // Build a black canvas with the explored region cut out, then composite it
     ctx.globalCompositeOperation = 'source-over'
-    const blackLayer = new OffscreenCanvas(w, h)
+    const blackLayer = getFogScratch(w, h)
     const bl = blackLayer.getContext('2d')!
     bl.fillStyle = isAdmin ? 'rgba(30,33,28,0.45)' : PALETTE.ink
     bl.fillRect(0, 0, w, h)
