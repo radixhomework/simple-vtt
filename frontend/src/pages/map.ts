@@ -12,6 +12,7 @@ import {
   drawMap, drawGrid, drawTokens, drawFog, drawPortals, drawMeasure, drawStairs,
   preloadTokenImage, preloadMapImage, updateExplored, clearMapImageCache,
   resetVisionCache, DRAG_QUANTUM,
+  initLosWorker, updateLosWorkerWalls, setLosResultHandler, disposeLosWorker, applyLosResult,
 } from '../canvas/layers'
 import { drawTiledMap, resetTileCache } from '../canvas/tiles'
 import { screenToWorld, worldToScreen, snapToGrid, zoomAround } from '../canvas/camera'
@@ -444,6 +445,7 @@ export function renderMap(
     state.walls = [...staticWalls, ...portalWalls(state.portals)]
     state.sightWalls = [...staticWalls, ...portalSightWalls(state.portals)]
     wallVersion++               // cached LOS polygons are now stale
+    updateLosWorkerWalls(state.sightWalls, wallVersion)
     markExploredDirty()
   }
 
@@ -580,6 +582,17 @@ export function renderMap(
   }
   resizeCanvases()
   new ResizeObserver(resizeCanvases).observe(wrap)
+
+  // LOS worker: heavy polygon computes leave the main thread during drags.
+  // Results repaint; misses keep drawing the previous polygon meanwhile.
+  recomputeWalls() // establishes state.sightWalls + wallVersion 1
+  initLosWorker(state.sightWalls, wallVersion)
+  setLosResultHandler(res => {
+    // storeWorkerPolygon equivalent lives in layers; trigger a repaint here
+    applyLosResult(res.key, res.version, res.poly)
+    markExploredDirty()
+    render()
+  })
 
   // Token list sidebar
   function refreshSidebar() {
@@ -1884,6 +1897,7 @@ export function renderMap(
     state.fogOverview?.close()
     state.fogOverview = null
     resetVisionCache()
+    disposeLosWorker()
   })
 
   // Chat
