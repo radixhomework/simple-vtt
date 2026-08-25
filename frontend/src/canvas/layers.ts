@@ -343,7 +343,7 @@ export function setLosResultHandler(handler: ((r: LosWorkerOutbound) => void) | 
 
 /** Ask the worker for a polygon. False when no worker / stale version. */
 function requestWorkerPolygon(key: string, ox: number, oy: number, radius: number, version: number): boolean {
-  if (!losWorker || version !== workerVersion) return false
+  if (losWorker === null || version !== workerVersion) return false
   const msg: LosWorkerInbound = { type: 'compute', key, version, ox, oy, radius }
   losWorker.postMessage(msg)
   return true
@@ -387,6 +387,44 @@ export function resetVisionCache(): void {
   visionCache.clear()
 }
 
+/** Cached entry usable for this query? (same walls + same radius) */
+function entryMatches(hit: VisionEntry | undefined, wallVersion: number, r: number): boolean {
+  return hit?.wallVersion === wallVersion && hit?.radius === r
+}
+
+/** A polygon computed recently enough to keep using during a drag. */
+function freshEnough(hit: VisionEntry): boolean {
+  return performance.now() - hit.computedAt < DRAG_REUSE_MS
+}
+
+/**
+ * Post the compute to the worker and mark the cache entry as awaited.
+ * `keep` is what the caller should keep drawing until the result lands:
+ * the stale polygon (or stale null), or undefined when there is nothing
+ * yet (nothing to draw this frame). posted=false means no worker took
+ * the job — the caller falls back to a synchronous compute.
+ */
+interface DispatchResult { posted: boolean; keep: Point[] | null | undefined }
+function dispatchToWorker(
+  hit: VisionEntry | undefined,
+  token: Token,
+  wallVersion: number,
+  qx: number,
+  qy: number,
+  r: number,
+): DispatchResult {
+  const key = `${token.id}:${wallVersion}:${qx}:${qy}:${r}`
+  if (!requestWorkerPolygon(key, qx, qy, r, wallVersion)) return { posted: false, keep: undefined }
+  if (hit) {
+    // awaited at this position; the stale polygon keeps drawing until the
+    // result lands, and px/py advanced so we don't re-post every frame
+    hit.px = qx; hit.py = qy
+    return { posted: true, keep: hit.poly }
+  }
+  visionCache.set(token.id, { wallVersion, px: qx, py: qy, radius: r, poly: null, computedAt: 0, pending: true })
+  return { posted: true, keep: undefined }
+}
+
 /** Fetch (or compute) a token's world-space visibility polygon.
  *
  * Returns:
@@ -411,28 +449,17 @@ function visibilityPolygonFor(
   const qy = quantum > 0 ? Math.round(token.y / quantum) * quantum : token.y
 
   const hit = visionCache.get(token.id)
-  if (hit?.wallVersion === wallVersion && hit?.radius === r) {
+  if (hit != null && entryMatches(hit, wallVersion, r)) {
     if (hit.px === qx && hit.py === qy) return hit.poly
     // Dragging: reuse a fresh-enough polygon instead of recomputing now
-    if (quantum > 0 && performance.now() - hit.computedAt < DRAG_REUSE_MS) {
-      return hit.poly
-    }
+    if (quantum > 0 && freshEnough(hit)) return hit.poly
   }
 
   // Interactive (drag) miss with a live worker: never block the frame —
   // post the compute and keep drawing the stale polygon until it lands.
   if (quantum > 0 && isLosWorkerActive()) {
-    const key = `${token.id}:${wallVersion}:${qx}:${qy}:${r}`
-    if (requestWorkerPolygon(key, qx, qy, r, wallVersion)) {
-      // mark the entry as awaited at this position (pending marker: poly
-      // stays stale, px/py advanced so we don't re-post every frame)
-      if (hit) {
-        hit.px = qx; hit.py = qy
-      } else {
-        visionCache.set(token.id, { wallVersion, px: qx, py: qy, radius: r, poly: null, computedAt: 0, pending: true })
-      }
-      return hit ? hit.poly : undefined
-    }
+    const { posted, keep } = dispatchToWorker(hit, token, wallVersion, qx, qy, r)
+    if (posted) return keep
   }
 
   const nearby = cullWalls(walls, qx, qy, r)
@@ -447,7 +474,7 @@ function storeWorkerPolygon(key: string, version: number, poly: Point[] | null):
   const parts = key.split(':')
   const tokenId = parts[0]
   const entry = visionCache.get(tokenId)
-  if (!entry || entry.wallVersion !== version) return
+  if (entry?.wallVersion !== version) return
   entry.poly = poly
   entry.computedAt = performance.now()
   entry.pending = false
