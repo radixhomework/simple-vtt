@@ -334,7 +334,7 @@ function visibilityPolygonFor(
   const qy = quantum > 0 ? Math.round(token.y / quantum) * quantum : token.y
 
   const hit = visionCache.get(token.id)
-  if (hit && hit.wallVersion === wallVersion && hit.radius === r) {
+  if (hit?.wallVersion === wallVersion && hit?.radius === r) {
     if (hit.px === qx && hit.py === qy) return hit.poly
     // Dragging: reuse a fresh-enough polygon instead of recomputing now
     if (quantum > 0 && performance.now() - hit.computedAt < DRAG_REUSE_MS) {
