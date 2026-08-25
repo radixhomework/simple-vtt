@@ -1,9 +1,12 @@
 import { WebSocketServer, WebSocket } from 'ws'
 import { IncomingMessage } from 'http'
+import path from 'path'
+import fs from 'fs'
 import { verifyToken } from './auth'
 import { db } from './db'
 import { loadTableSettings } from './settings'
 import { mapRole } from './mapaccess'
+import { buildTilePyramid } from './tiles'
 
 /**
  * WebSocket hub: rooms per table, message dispatch, and server-authoritative
@@ -13,6 +16,44 @@ import { mapRole } from './mapaccess'
  * tokens they own (subject to the players_move_own_only setting) and use the
  * music transport. Everything else is admin-only and silently ignored.
  */
+
+const uploadsDir = () => process.env.UPLOADS_DIR || path.join(process.cwd(), 'uploads')
+
+/**
+ * Lazy tile backfill for floors imported before tiling existed: build the
+ * pyramid in the background (once — the in-flight set dedupes), then push a
+ * fresh table_state so connected clients switch to tiles. Any failure just
+ * logs; the legacy full-image path keeps working.
+ */
+const pyramidsInProgress = new Set<string>()
+function ensurePyramidAsync(floor: { id: string; map_image_path: string }): void {
+  if (pyramidsInProgress.has(floor.id)) return
+  pyramidsInProgress.add(floor.id)
+  const file = path.join(uploadsDir(), path.basename(floor.map_image_path))
+  fs.readFile(file, (err, buffer) => {
+    if (err) {
+      pyramidsInProgress.delete(floor.id)
+      console.error(`[tiles] backfill read failed for floor ${floor.id}:`, err.message)
+      return
+    }
+    buildTilePyramid(floor.id, buffer)
+      .then(() => {
+        db.prepare('UPDATE floors SET tiles_path=? WHERE id=?').run(`/uploads/tiles/${floor.id}`, floor.id)
+        // Fresh state so connected clients see the new tiles_path (no-op
+        // when nobody is in the room — the next join picks it up anyway)
+        const tableId = (floor as { table_id?: string }).table_id
+        if (tableId) pushTableStateToTable(tableId)
+      })
+      .catch(err2 => console.error(`[tiles] backfill failed for floor ${floor.id}:`, err2))
+      .finally(() => pyramidsInProgress.delete(floor.id))
+  })
+}
+
+/** Floor has usable dimensions (guards tiling on malformed metadata). */
+function img_width_height_ok(floor: { img_width?: unknown; img_height?: unknown }): boolean {
+  return typeof floor.img_width === 'number' && floor.img_width > 0
+    && typeof floor.img_height === 'number' && floor.img_height > 0
+}
 
 /** WebSocket client connected to a table room. */
 interface Client {
@@ -208,9 +249,19 @@ function sendTableState(client: Client) {
   client.activeFloorId = floorId
   const floor = floorId
     ? db.prepare(
-        'SELECT id, table_id, level, name, map_image_path, grid_size, uvt_metadata, map_offset_x, map_offset_y, img_width, img_height FROM floors WHERE id=?'
-      ).get(floorId)
-    : null
+        'SELECT id, table_id, level, name, map_image_path, grid_size, uvt_metadata, map_offset_x, map_offset_y, img_width, img_height, tiles_path FROM floors WHERE id=?'
+      ).get(floorId) as {
+        id: string; table_id: string; map_image_path: string; tiles_path: string
+        img_width: number; img_height: number
+      } | undefined
+    : undefined
+
+  // Lazy tile backfill: a floor with an image but no pyramid yet (imported
+  // before tiling existed) gets one built in the background; the fresh
+  // table_state after completion tells clients to switch to tiles.
+  if (floor && floor.map_image_path && !floor.tiles_path && img_width_height_ok(floor)) {
+    ensurePyramidAsync(floor as { id: string; map_image_path: string })
+  }
 
   // Everything positional is scoped to the viewer's active floor — clients
   // never receive other levels' tokens, fog or doors.

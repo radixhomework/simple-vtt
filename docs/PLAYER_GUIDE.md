@@ -2,6 +2,7 @@
 
 Welcome! This guide covers everything a **player** can do. Your game master
 (admin) controls the maps, fog of war and monsters — you just play.
+(Internals, if you are curious: [`ARCHITECTURE.md`](ARCHITECTURE.md).)
 
 ## Signing in
 

@@ -12,3 +12,5 @@ or tablet (including Apple Pencil support).
   proxy (HTTPS + WebSocket)
 - [Admin (DM) guide](docs/ADMIN_GUIDE.md)
 - [Player guide](docs/PLAYER_GUIDE.md)
+- [Architecture notes](docs/ARCHITECTURE.md) — code layout, builds,
+  rendering pipeline, tile pyramids, data flow
