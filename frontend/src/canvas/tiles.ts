@@ -252,6 +252,13 @@ interface TileView {
   overview: ImageBitmap | null
 }
 
+/** Visible-rect + pyramid-bound bundle for the prefetch helpers. */
+interface ViewportRanges {
+  x0: number; y0: number; x1: number; y1: number
+  maxTx: number; maxTy: number
+  worldL: number; worldT: number; worldR: number; worldB: number
+}
+
 /**
  * Draw one tile, cascading to ancestors when it is not loaded yet.
  *
@@ -384,6 +391,7 @@ export function drawTiledMap(
   const y0 = Math.max(0, Math.floor((worldT - mapOffsetY) / tileWorld))
   const x1 = Math.min(maxTx, Math.floor((worldR - mapOffsetX) / tileWorld))
   const y1 = Math.min(maxTy, Math.floor((worldB - mapOffsetY) / tileWorld))
+  const ranges: ViewportRanges = { x0, y0, x1, y1, maxTx, maxTy, worldL, worldT, worldR, worldB }
 
   let drewAny = false
   for (let ty = y0; ty <= y1; ty++) {
@@ -399,8 +407,8 @@ export function drawTiledMap(
     }
   }
 
-  prefetchRing(base, z, x0, y0, x1, y1, maxTx, maxTy)
-  warmAdjacentLevels(base, z, levels, mapW, mapH, mapOffsetX, mapOffsetY, worldL, worldT, worldR, worldB)
+  prefetchRing(view, z, ranges)
+  warmAdjacentLevels(view, z, ranges)
 
   // Retry pump: when the concurrency cap deferred wanted tiles (they were
   // requested by loadTile but no fetch started — no completion event will
@@ -416,11 +424,11 @@ export function drawTiledMap(
 /** Prefetch ring: one tile beyond the viewport on each side, so panning
  *  doesn't hit blank areas. Clamped to the pyramid bounds — out-of-range
  *  tiles can never exist and would only burn failed requests. */
-function prefetchRing(base: string, z: number, x0: number, y0: number, x1: number, y1: number, maxTx: number, maxTy: number): void {
-  for (let ty = Math.max(0, y0 - 1); ty <= Math.min(maxTy, y1 + 1); ty++) {
-    for (let tx = Math.max(0, x0 - 1); tx <= Math.min(maxTx, x1 + 1); tx++) {
-      if (tx >= x0 && tx <= x1 && ty >= y0 && ty <= y1) continue
-      loadTile(base, { z, x: tx, y: ty })
+function prefetchRing(v: TileView, z: number, r: ViewportRanges): void {
+  for (let ty = Math.max(0, r.y0 - 1); ty <= Math.min(r.maxTy, r.y1 + 1); ty++) {
+    for (let tx = Math.max(0, r.x0 - 1); tx <= Math.min(r.maxTx, r.x1 + 1); tx++) {
+      if (tx >= r.x0 && tx <= r.x1 && ty >= r.y0 && ty <= r.y1) continue
+      loadTile(v.base, { z, x: tx, y: ty })
     }
   }
 }
@@ -431,26 +439,22 @@ function prefetchRing(base: string, z: number, x0: number, y0: number, x1: numbe
  *  viewport can span hundreds of tiles — warming it would thrash the LRU
  *  (evict/refetch churn) for tiles the user may never zoom to. The
  *  ancestor cascade already covers those transitions gracefully. */
-function warmAdjacentLevels(
-  base: string, z: number, levels: number,
-  mapW: number, mapH: number, mapOffsetX: number, mapOffsetY: number,
-  worldL: number, worldT: number, worldR: number, worldB: number,
-): void {
+function warmAdjacentLevels(v: TileView, z: number, r: ViewportRanges): void {
   for (const wz of [z + 1, z - 1]) {
-    if (wz < 0 || wz > levels - 1) continue
-    const wScale = Math.pow(2, wz + 1 - levels)
+    if (wz < 0 || wz > v.levels - 1) continue
+    const wScale = Math.pow(2, wz + 1 - v.levels)
     const wTileWorld = TILE_SIZE / wScale
-    const wMaxTx = tilesPerAxis(mapW, levels, wz) - 1
-    const wMaxTy = tilesPerAxis(mapH, levels, wz) - 1
-    const wx0 = Math.max(0, Math.floor((worldL - mapOffsetX) / wTileWorld))
-    const wy0 = Math.max(0, Math.floor((worldT - mapOffsetY) / wTileWorld))
-    const wx1 = Math.min(wMaxTx, Math.floor((worldR - mapOffsetX) / wTileWorld))
-    const wy1 = Math.min(wMaxTy, Math.floor((worldB - mapOffsetY) / wTileWorld))
+    const wMaxTx = tilesPerAxis(v.mapW, v.levels, wz) - 1
+    const wMaxTy = tilesPerAxis(v.mapH, v.levels, wz) - 1
+    const wx0 = Math.max(0, Math.floor((r.worldL - v.mapOffsetX) / wTileWorld))
+    const wy0 = Math.max(0, Math.floor((r.worldT - v.mapOffsetY) / wTileWorld))
+    const wx1 = Math.min(wMaxTx, Math.floor((r.worldR - v.mapOffsetX) / wTileWorld))
+    const wy1 = Math.min(wMaxTy, Math.floor((r.worldB - v.mapOffsetY) / wTileWorld))
     const wCount = (wx1 - wx0 + 1) * (wy1 - wy0 + 1)
     if (wCount > MAX_WARM_TILES) continue
     for (let ty = wy0; ty <= wy1; ty++) {
       for (let tx = wx0; tx <= wx1; tx++) {
-        loadTile(base, { z: wz, x: tx, y: ty })
+        loadTile(v.base, { z: wz, x: tx, y: ty })
       }
     }
   }
