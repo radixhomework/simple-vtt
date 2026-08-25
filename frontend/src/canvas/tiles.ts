@@ -238,6 +238,20 @@ function loadTile(base: string, k: TileKey): TileEntry {
   return entry
 }
 
+/** Immutable per-draw geometry shared by the cascade (cuts the parameter
+ *  list down to something readable). */
+interface TileView {
+  ctx: CanvasRenderingContext2D
+  base: string
+  cam: Camera
+  mapW: number
+  mapH: number
+  mapOffsetX: number
+  mapOffsetY: number
+  levels: number
+  overview: ImageBitmap | null
+}
+
 /**
  * Draw one tile, cascading to ancestors when it is not loaded yet.
  *
@@ -246,28 +260,21 @@ function loadTile(base: string, k: TileKey): TileEntry {
  * blanks. Edge tiles have truncated cells; the crop is computed in
  * world-space fractions so both the child extent and the parent crop are
  * correct even on truncated pyramids. The cascade bottoms out at the z0
- * overview bitmap (passed by the caller — the fog renderer already
- * requires it), so the viewport always has coverage; level transitions
- * during zoom become a brief blur instead of a black flash.
+ * overview bitmap (carried by the view), so the viewport always has
+ * coverage; level transitions during zoom become a brief blur instead of
+ * a black flash.
  *
  * Returns true when something was drawn (tile, an ancestor, or overview).
  */
 function drawTileCascaded(
-  ctx: CanvasRenderingContext2D,
-  base: string,
+  v: TileView,
   k: TileKey,
   wx: number,           // world-space rect of this tile's cell
   wy: number,
   ww: number,
   wh: number,
-  cam: Camera,
-  mapW: number,
-  mapH: number,
-  mapOffsetX: number,
-  mapOffsetY: number,
-  levels: number,
-  overview: ImageBitmap | null,
 ): boolean {
+  const { ctx, base, cam } = v
   const sx = (wx - cam.x) * cam.zoom
   const sy = (wy - cam.y) * cam.zoom
   const dw = ww * cam.zoom
@@ -285,17 +292,17 @@ function drawTileCascaded(
   // …and cover with the parent's matching region
   if (k.z > 0) {
     const pz = k.z - 1
-    const pScale = Math.pow(2, pz + 1 - levels)
+    const pScale = Math.pow(2, pz + 1 - v.levels)
     const pTileWorld = TILE_SIZE / pScale
     const px = k.x >> 1
     const py = k.y >> 1
     const parent = cache.get(key({ z: pz, x: px, y: py }))
     if (parent?.bitmap) {
       // Parent cell (world space, truncated at the map edge)
-      const pWx = mapOffsetX + px * pTileWorld
-      const pWy = mapOffsetY + py * pTileWorld
-      const pWw = Math.min(pTileWorld, mapW - px * pTileWorld)
-      const pWh = Math.min(pTileWorld, mapH - py * pTileWorld)
+      const pWx = v.mapOffsetX + px * pTileWorld
+      const pWy = v.mapOffsetY + py * pTileWorld
+      const pWw = Math.min(pTileWorld, v.mapW - px * pTileWorld)
+      const pWh = Math.min(pTileWorld, v.mapH - py * pTileWorld)
       // Crop the fraction of the parent that this child covers. Using
       // fractions of the world rect keeps the math exact for truncated
       // cells on either level.
@@ -316,11 +323,12 @@ function drawTileCascaded(
   }
 
   // Last resort: the z0 overview bitmap covers everything
+  const overview = v.overview
   if (overview && k.z !== 0) {
-    const f0x = (wx - mapOffsetX) / mapW
-    const f0y = (wy - mapOffsetY) / mapH
-    const f1x = (wx + ww - mapOffsetX) / mapW
-    const f1y = (wy + wh - mapOffsetY) / mapH
+    const f0x = (wx - v.mapOffsetX) / v.mapW
+    const f0y = (wy - v.mapOffsetY) / v.mapH
+    const f1x = (wx + ww - v.mapOffsetX) / v.mapW
+    const f1y = (wy + wh - v.mapOffsetY) / v.mapH
     ctx.drawImage(
       overview,
       f0x * overview.width, f0y * overview.height,
@@ -356,6 +364,7 @@ export function drawTiledMap(
   onTileLoaded = repaint
   const z = levelForZoom(cam, levels, currentLevel)
   currentLevel = z
+  const view: TileView = { ctx, base, cam, mapW, mapH, mapOffsetX, mapOffsetY, levels, overview: overview ?? null }
   // World-space size of one tile at this level: the level image is
   // 2^(z+1-levels) × native, so one tile covers TILE_SIZE / scale world px.
   const scale = Math.pow(2, z + 1 - levels)
@@ -384,28 +393,49 @@ export function drawTiledMap(
       const wy = mapOffsetY + ty * tileWorld
       const ww = Math.min(tileWorld, mapW - tx * tileWorld)
       const wh = Math.min(tileWorld, mapH - ty * tileWorld)
-      if (drawTileCascaded(ctx, base, { z, x: tx, y: ty }, wx, wy, ww, wh, cam, mapW, mapH, mapOffsetX, mapOffsetY, levels, overview ?? null)) {
+      if (drawTileCascaded(view, { z, x: tx, y: ty }, wx, wy, ww, wh)) {
         drewAny = true
       }
     }
   }
 
-  // Prefetch ring: one tile beyond the viewport on each side, so panning
-  // doesn't hit blank areas. Clamped to the pyramid bounds — out-of-range
-  // tiles can never exist and would only burn failed requests.
+  prefetchRing(base, z, x0, y0, x1, y1, maxTx, maxTy)
+  warmAdjacentLevels(base, z, levels, mapW, mapH, mapOffsetX, mapOffsetY, worldL, worldT, worldR, worldB)
+
+  // Retry pump: when the concurrency cap deferred wanted tiles (they were
+  // requested by loadTile but no fetch started — no completion event will
+  // fire), keep painting frames until the queue drains. Without this, the
+  // single-shot render loop would never pick them up.
+  if (deferredByCap > 0) {
+    deferredByCap = 0
+    requestAnimationFrame(() => onTileLoaded?.())
+  }
+  return drewAny
+}
+
+/** Prefetch ring: one tile beyond the viewport on each side, so panning
+ *  doesn't hit blank areas. Clamped to the pyramid bounds — out-of-range
+ *  tiles can never exist and would only burn failed requests. */
+function prefetchRing(base: string, z: number, x0: number, y0: number, x1: number, y1: number, maxTx: number, maxTy: number): void {
   for (let ty = Math.max(0, y0 - 1); ty <= Math.min(maxTy, y1 + 1); ty++) {
     for (let tx = Math.max(0, x0 - 1); tx <= Math.min(maxTx, x1 + 1); tx++) {
       if (tx >= x0 && tx <= x1 && ty >= y0 && ty <= y1) continue
       loadTile(base, { z, x: tx, y: ty })
     }
   }
+}
 
-  // Adjacent-level warming: prefetch the viewport's tiles at z+1 and z-1
-  // so a slow zoom in either direction finds them already cached. Bounded
-  // by MAX_WARM_TILES per level: at far zoom-out an adjacent level's
-  // viewport can span hundreds of tiles — warming it would thrash the LRU
-  // (evict/refetch churn) for tiles the user may never zoom to. The
-  // ancestor cascade already covers those transitions gracefully.
+/** Adjacent-level warming: prefetch the viewport's tiles at z+1 and z-1
+ *  so a slow zoom in either direction finds them already cached. Bounded
+ *  by MAX_WARM_TILES per level: at far zoom-out an adjacent level's
+ *  viewport can span hundreds of tiles — warming it would thrash the LRU
+ *  (evict/refetch churn) for tiles the user may never zoom to. The
+ *  ancestor cascade already covers those transitions gracefully. */
+function warmAdjacentLevels(
+  base: string, z: number, levels: number,
+  mapW: number, mapH: number, mapOffsetX: number, mapOffsetY: number,
+  worldL: number, worldT: number, worldR: number, worldB: number,
+): void {
   for (const wz of [z + 1, z - 1]) {
     if (wz < 0 || wz > levels - 1) continue
     const wScale = Math.pow(2, wz + 1 - levels)
@@ -424,16 +454,6 @@ export function drawTiledMap(
       }
     }
   }
-
-  // Retry pump: when the concurrency cap deferred wanted tiles (they were
-  // requested by loadTile but no fetch started — no completion event will
-  // fire), keep painting frames until the queue drains. Without this, the
-  // single-shot render loop would never pick them up.
-  if (deferredByCap > 0) {
-    deferredByCap = 0
-    requestAnimationFrame(() => onTileLoaded?.())
-  }
-  return drewAny
 }
 
 /** Tiles wanted but not started due to the concurrency cap this frame. */
