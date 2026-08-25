@@ -95,11 +95,20 @@ export function computeVisibilityPolygon(
   ]
   const allWalls = [...walls, ...bounds]
 
-  // Collect angles toward every endpoint (plus tiny offsets to peek around corners)
+  // Collect angles toward every endpoint (plus tiny offsets to peek around
+  // corners). UVTT polylines share endpoints massively — a vertex where
+  // four wall segments meet would otherwise cast the same three rays four
+  // times — so angles are deduplicated by quantized direction.
   const angles: number[] = []
+  const seen = new Set<number>()
   for (const w of allWalls) {
     for (const [px, py] of [[w.ax, w.ay], [w.bx, w.by]]) {
       const a = Math.atan2(py - oy, px - ox)
+      // Quantize to ~0.0001 rad: enough to merge true duplicates while
+      // keeping the deliberate ±0.00001 corner-peek triplets distinct
+      const q = Math.round(a * 10000)
+      if (seen.has(q)) continue
+      seen.add(q)
       angles.push(a - 0.00001, a, a + 0.00001)
     }
   }

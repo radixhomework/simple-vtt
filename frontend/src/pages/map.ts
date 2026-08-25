@@ -11,6 +11,7 @@ import { socket } from '../api/websocket'
 import {
   drawMap, drawGrid, drawTokens, drawFog, drawPortals, drawMeasure, drawStairs,
   preloadTokenImage, preloadMapImage, updateExplored, clearMapImageCache,
+  resetVisionCache, DRAG_QUANTUM,
 } from '../canvas/layers'
 import { drawTiledMap, resetTileCache } from '../canvas/tiles'
 import { screenToWorld, worldToScreen, snapToGrid, zoomAround } from '../canvas/camera'
@@ -394,6 +395,11 @@ export function renderMap(
    *  to the legacy full image until the floor changes. */
   let tilesUsable = true
 
+  /** Bumped whenever the wall set changes (door/window toggles, reclassify,
+   *  floor switches, table_state resync) — invalidates every cached LOS
+   *  polygon in O(1). */
+  let wallVersion = 0
+
   // ── Explored-fog memory, per floor ───────────────────────────────────────────
   // Only the active floor keeps a full-resolution explored canvas; other
   // floors hold a 1/8-scale mask (a few hundred KB each) so switching stays
@@ -437,6 +443,7 @@ export function renderMap(
     // only — a closed window stops movement but not vision.
     state.walls = [...staticWalls, ...portalWalls(state.portals)]
     state.sightWalls = [...staticWalls, ...portalSightWalls(state.portals)]
+    wallVersion++               // cached LOS polygons are now stale
     markExploredDirty()
   }
 
@@ -542,8 +549,12 @@ export function renderMap(
         // memory is the point of this path).
         const tiled = tilesUsable && !!state.floor?.tiles_path
         const maskScale = tiled ? 0.25 : 1
+        // While dragging, sight follows the pointer in ~4px steps — a fresh
+        // exact polygon is computed on release (finishTokenDrag marks dirty
+        // with quantum 0).
+        const dragging = state.dragging
         if (state.exploredCanvas && exploredDirty) {
-          updateExplored(state.exploredCanvas, sightTokens, state.fog, state.sightWalls, state.table.grid_size ?? 70, maskScale)
+          updateExplored(state.exploredCanvas, sightTokens, state.fog, state.sightWalls, state.table.grid_size ?? 70, maskScale, wallVersion, dragging ? DRAG_QUANTUM : 0)
           exploredDirty = false
         }
         const fogSource = tiled ? state.fogOverview : state.mapImage
@@ -553,6 +564,7 @@ export function renderMap(
           state.table.map_offset_x ?? 0, state.table.map_offset_y ?? 0,
           tiled ? state.floor!.img_width : undefined,
           tiled ? state.floor!.img_height : undefined,
+          wallVersion, dragging ? DRAG_QUANTUM : 0,
         )
       }
 
@@ -1420,6 +1432,7 @@ export function renderMap(
   /** Commit the token drag: wall safety net + final broadcast. */
   function finishTokenDrag() {
     state.dragging = false
+    markExploredDirty()   // exact (unquantized) polygon on the next stamp
     const token = state.tokens.find(t => t.id === state.selectedId)
     if (!token) return
     // The drag already blocks walls incrementally along the path actually
@@ -1870,6 +1883,7 @@ export function renderMap(
     resetTileCache()
     state.fogOverview?.close()
     state.fogOverview = null
+    resetVisionCache()
   })
 
   // Chat
