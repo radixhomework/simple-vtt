@@ -255,22 +255,6 @@ export function renderVtt(
     const tables = await api.listTables()
     page.innerHTML = `
       <div class="admin-section">
-        <h3>Create Table</h3>
-        <div class="form-row">
-          <div class="form-field">
-            <label>Name</label>
-            <input id="new-table-name" placeholder="My Campaign" />
-          </div>
-          <div class="form-field">
-            <label>Grid (px/sq)</label>
-            <input id="new-table-grid" type="number" value="70" style="width:80px" />
-          </div>
-          <button class="btn btn-primary" id="create-table-btn">Create</button>
-        </div>
-        <div class="msg" id="create-table-msg"></div>
-      </div>
-
-      <div class="admin-section">
         <h3>Import Universal VTT (.uvtt / .zip)</h3>
         <div class="upload-zone" id="uvtt-drop">
           Drop a .uvtt or .zip file here, or click to browse
@@ -312,20 +296,6 @@ export function renderVtt(
     `
 
     const refresh = () => { void render() }
-
-    page.querySelector('#create-table-btn')?.addEventListener('click', async () => {
-      const name = (page.querySelector('#new-table-name') as HTMLInputElement).value.trim()
-      const gridSize = parseInt((page.querySelector('#new-table-grid') as HTMLInputElement).value) || 70
-      const msg = page.querySelector('#create-table-msg') as HTMLElement
-      if (!name) { msg.textContent = 'Enter a table name'; msg.className = 'msg msg-err'; return }
-      try {
-        await api.createTable(name, gridSize)
-        msg.textContent = 'Table created!'; msg.className = 'msg msg-ok'
-        setTimeout(refresh, 600)
-      } catch (e: any) {
-        msg.textContent = e.message; msg.className = 'msg msg-err'
-      }
-    })
 
     const dropZone = page.querySelector('#uvtt-drop') as HTMLElement
     const fileInput = page.querySelector('#uvtt-file') as HTMLInputElement
@@ -570,7 +540,7 @@ export function renderVtt(
                 </td>
                 <td class="row-actions">
                   <button class="btn btn-ghost btn-sm" data-reset-pass="${esc(u.username)}">Reset password</button>
-                  <button class="btn btn-danger btn-sm" data-del-user="${esc(u.username)}" ${u.username === user.username ? 'disabled' : ''}>Delete</button>
+                  ${u.username === user.username ? '' : `<button class="btn btn-danger btn-sm" data-del-user="${esc(u.username)}">Delete</button>`}
                 </td>
               </tr>`).join('')}
           </tbody>
@@ -650,14 +620,14 @@ export function renderVtt(
           ${consoleToggle('players_move_own_only', settings.players_move_own_only, 'Players move own tokens only', 'When enabled, players can only drag tokens they own')}
           ${consoleToggle('players_open_doors', settings.players_open_doors, 'Players can open doors', 'Players may open and close doors by themselves')}
           ${consoleToggle('players_open_windows', settings.players_open_windows, 'Players can open windows', 'Players may open and close windows by themselves')}
-          ${consoleToggle('snap_default', settings.snap_default, 'Snap to grid (default on)', 'Whether tokens snap to the grid when joining a table')}
+          ${consoleToggle('snap_default', settings.snap_default, 'Snap to grid', 'Whether tokens snap to the grid when joining a table')}
         </div>
       </div>
       <div class="admin-section">
         <h3>Display defaults</h3>
         <div style="display:flex;flex-direction:column;gap:18px">
-          ${consoleToggle('fog_enabled_default', settings.fog_enabled_default, 'Fog of War (default on)', 'Whether fog is active when joining a table')}
-          ${consoleToggle('grid_visible_default', settings.grid_visible_default, 'Grid (default visible)', 'Whether the grid is shown when joining a table')}
+          ${consoleToggle('fog_enabled_default', settings.fog_enabled_default, 'Fog of War', 'Whether fog is active when joining a table')}
+          ${consoleToggle('grid_visible_default', settings.grid_visible_default, 'Grid', 'Whether the grid is shown when joining a table')}
           <label style="display:flex;flex-direction:column;gap:4px">
             <div style="display:flex;align-items:center;justify-content:space-between;gap:12px">
               <span style="font-size:13px;font-weight:500;">Grid square size</span>
@@ -686,7 +656,7 @@ export function renderVtt(
               <span style="font-size:12px;color:var(--muted);">MB</span>
             </div>
           </div>
-          <span style="font-size:11px;color:var(--muted);">Per-file limit for token icons and music uploads (1–500)</span>
+          <span style="font-size:11px;color:var(--muted);">Per-file limit for token icons and music uploads (1–500 MB) — map images are not concerned</span>
         </label>
       </div>
       <div class="msg" id="settings-msg" style="margin:0 0 8px"></div>
