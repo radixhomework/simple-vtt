@@ -3,7 +3,8 @@
 This guide covers the **admin** role: the admin console, map-side GM tools
 and operational notes. Deployment instructions live in
 [`DEPLOY.md`](../DEPLOY.md); the player's view is described in
-[`PLAYER_GUIDE.md`](PLAYER_GUIDE.md).
+[`PLAYER_GUIDE.md`](PLAYER_GUIDE.md); internals in
+[`ARCHITECTURE.md`](ARCHITECTURE.md).
 
 ## Signing in
 
