@@ -2,7 +2,8 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="theme-color" content="#FDFAF3" />
   <title>RHW Simple VTT</title>
   <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
   <style>
@@ -40,6 +41,11 @@
     }
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     html, body { width: 100%; height: 100%; overflow: hidden; background: var(--bg); color: var(--text); font-family: var(--font-body); }
+    /* Mobile: kill pull-to-refresh / rubber-banding and double-tap zoom on
+       the UI chrome (the canvases already carry touch-action: none) */
+    body { overscroll-behavior: none; -webkit-user-select: none; user-select: none; }
+    body input, body textarea { -webkit-user-select: text; user-select: text; }
+    button { touch-action: manipulation; }
     /* Form controls don't inherit fonts by default */
     button, input, select, textarea { font: inherit; }
     #app { width: 100%; height: 100%; }

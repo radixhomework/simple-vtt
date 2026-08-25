@@ -93,6 +93,9 @@ export function renderMap(
     const was = isAdmin
     isAdmin = role === 'dm'
     if (was !== isAdmin) {
+      // Hidden tokens contribute sight only for admins: the explored memory
+      // must be restamped for the new perspective
+      markExploredDirty()
       refreshSidebar()
       renderTokenEditor()
       updateHeaderToggles()
@@ -111,7 +114,7 @@ export function renderMap(
          screen. Children re-set ltr to render normally. */
       .music-panel {
         position: absolute; left: 0; top: 0; bottom: 0;
-        width: 260px; background: var(--surface); border-right: 1px solid var(--border);
+        width: 260px; max-width: calc(100vw - 24px); background: var(--surface); border-right: 1px solid var(--border);
         display: flex; flex-direction: column; z-index: 20; transform: translateX(-100%);
         transition: transform 0.2s; overflow-y: auto; direction: rtl;
       }
@@ -125,15 +128,15 @@ export function renderMap(
       .music-row.current { background: rgba(154,118,86,0.30); }
       .music-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
       .game-header {
-        display: flex; align-items: center; gap: 10px;
-        padding: 0 12px; height: 44px; background: var(--header);
+        display: flex; align-items: center; gap: 10px; row-gap: 6px;
+        padding: 6px 12px; min-height: 44px; background: var(--header);
         border-bottom: 1px solid var(--border); flex-shrink: 0; z-index: 10;
-        user-select: none;
+        user-select: none; flex-wrap: wrap;
       }
-      .game-header-left { display: flex; align-items: center; gap: 8px; }
-      .game-header-right { display: flex; align-items: center; gap: 8px; margin-left: auto; }
+      .game-header-left { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+      .game-header-right { display: flex; align-items: center; gap: 8px; margin-left: auto; flex-wrap: wrap; }
       .header-btn {
-        padding: 5px 11px; border-radius: 6px; border: 1px solid var(--border);
+        padding: 8px 11px; border-radius: 6px; border: 1px solid var(--border);
         background: transparent; color: var(--text); font-size: 12px; cursor: pointer;
         transition: background 0.15s, border-color 0.15s;
       }
@@ -150,7 +153,7 @@ export function renderMap(
       /* Sidebar */
       .sidebar {
         position: absolute; right: 0; top: 0; bottom: 0;
-        width: 260px; background: var(--surface); border-left: 1px solid var(--border);
+        width: 260px; max-width: calc(100vw - 24px); background: var(--surface); border-left: 1px solid var(--border);
         display: flex; flex-direction: column; z-index: 20; transform: translateX(100%);
         transition: transform 0.2s; overflow-y: auto;
       }
@@ -167,7 +170,7 @@ export function renderMap(
       .token-item.token-hidden { opacity: 0.55; }
       .token-dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
       .token-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-      .icon-btn { background: none; border: none; cursor: pointer; color: var(--muted); font-size: 14px; padding: 2px; border-radius: 4px; }
+      .icon-btn { background: none; border: none; cursor: pointer; color: var(--muted); font-size: 15px; padding: 5px; border-radius: 4px; }
       .icon-btn:hover { color: var(--text); background: rgba(30,33,28,0.08); }
 
       /* Token editor */
@@ -190,7 +193,7 @@ export function renderMap(
       .del-btn:hover { background: var(--danger); color: var(--on-brand); }
 
       /* Chat: dark ink glass so it stays readable over any map */
-      .chat-wrap { position: absolute; bottom: 12px; left: 12px; width: 280px; z-index: 20; }
+      .chat-wrap { position: absolute; bottom: 12px; left: 12px; width: min(280px, calc(100% - 24px)); z-index: 20; }
       .chat-messages {
         background: rgba(30,33,28,0.85); border: 1px solid rgba(216,208,189,0.25); border-radius: 8px;
         padding: 8px; max-height: 160px; overflow-y: auto; margin-bottom: 6px;
@@ -201,9 +204,10 @@ export function renderMap(
       .chat-input-row { display: flex; gap: 6px; }
       .chat-input {
         flex: 1; padding: 6px 10px; background: rgba(30,33,28,0.9); border: 1px solid rgba(216,208,189,0.25);
-        border-radius: 6px; color: #DCD4C1; font-size: 12px; outline: none;
+        border-radius: 6px; color: #DCD4C1; font-size: 16px; outline: none;
+        /* 16px stops iOS Safari from auto-zooming the whole fixed layout on focus */
       }
-      .chat-send { padding: 6px 12px; background: var(--brand); border: none; border-radius: 6px; color: var(--on-brand); cursor: pointer; font-size: 12px; }
+      .chat-send { padding: 6px 12px; background: var(--brand); border: none; border-radius: 6px; color: var(--on-brand); cursor: pointer; font-size: 14px; }
 
       /* Notifications */
       .notif { position: absolute; top: 52px; left: 50%; transform: translateX(-50%);
@@ -212,10 +216,10 @@ export function renderMap(
         opacity: 0; transition: opacity 0.3s; pointer-events: none; }
       .notif.show { opacity: 1; }
 
-      .toolbar-group { display: flex; gap: 4px; align-items: center; }
+      .toolbar-group { display: flex; gap: 4px; align-items: center; flex-wrap: wrap; }
       .tool-btn {
-        width: 30px; height: 30px; border-radius: 6px; border: 1px solid var(--border);
-        background: transparent; color: var(--text); cursor: pointer; font-size: 14px;
+        width: 36px; height: 36px; border-radius: 6px; border: 1px solid var(--border);
+        background: transparent; color: var(--text); cursor: pointer; font-size: 15px;
         display: flex; align-items: center; justify-content: center; transition: background 0.15s;
         position: relative;
       }
@@ -389,6 +393,14 @@ export function renderMap(
   const FOG_MASK_SCALE = 8
   const exploredMasks = new Map<string, HTMLCanvasElement>()
 
+  // Set whenever anything that feeds the explored memory changes (token
+  // positions/sight, fog points, sight walls, floor switch). The render
+  // loop stamps updateExplored only when dirty — recomputing LOS polygons
+  // for every vision token on every frame was the top CPU cost while
+  // panning/zooming, especially on phones.
+  let exploredDirty = true
+  function markExploredDirty() { exploredDirty = true }
+
   function stashExploredMask(floorId: string, explored: OffscreenCanvas | null) {
     if (!explored || !floorId) return
     const small = document.createElement('canvas')
@@ -417,6 +429,7 @@ export function renderMap(
     // only — a closed window stops movement but not vision.
     state.walls = [...staticWalls, ...portalWalls(state.portals)]
     state.sightWalls = [...staticWalls, ...portalSightWalls(state.portals)]
+    markExploredDirty()
   }
 
   // Load map image (also re-run when a floor switch brings a new map path).
@@ -433,6 +446,7 @@ export function renderMap(
       state.exploredCanvas = state.floor
         ? restoreExploredMask(state.floor.id, img.width, img.height)
         : new OffscreenCanvas(img.width, img.height)
+      markExploredDirty()
       render()
     })
   }
@@ -470,9 +484,12 @@ export function renderMap(
       fogCtx.clearRect(0, 0, w, h)
       if (state.fogEnabled) {
         // Keep the explored memory up to date so areas that fall out of
-        // sight keep showing in greyscale instead of going fully black
-        if (state.exploredCanvas) {
+        // sight keep showing in greyscale instead of going fully black.
+        // Stamp only on change (dragging marks dirty per move); the map
+        // itself is world-space, so panning/zooming never invalidates it.
+        if (state.exploredCanvas && exploredDirty) {
           updateExplored(state.exploredCanvas, sightTokens, state.fog, state.sightWalls, state.table.grid_size ?? 70)
+          exploredDirty = false
         }
         drawFog(
           fogCtx, sightTokens, state.fog, state.sightWalls, state.camera, state.table.grid_size ?? 70, isAdmin,
@@ -528,6 +545,7 @@ export function renderMap(
           const idx = state.tokens.findIndex(t => t.id === id)
           if (idx !== -1) state.tokens[idx] = updated
           socket.send('token_update', { token: updated })
+          markExploredDirty()
           if (state.selectedId === id) renderTokenEditor()
         } catch { /* REST failed: server will re-sync via broadcast */ }
         refreshSidebar()
@@ -652,6 +670,7 @@ export function renderMap(
         if (idx !== -1) state.tokens[idx] = updated
         if (updated.icon_path) preloadTokenImage(updated.icon_path)
         socket.send('token_update', { token: updated })
+        markExploredDirty()
       }
       refreshSidebar()
       render()
@@ -663,6 +682,7 @@ export function renderMap(
       socket.send('token_delete', { token_id: token.id })
       state.tokens = state.tokens.filter(t => t.id !== token.id)
       state.selectedId = null
+      markExploredDirty()
       renderTokenEditor()
       refreshSidebar()
       render()
@@ -741,6 +761,7 @@ export function renderMap(
         state.fog = p.fog ?? []
         state.portals = p.portals ?? []
         state.stairs = p.stairs ?? []
+        markExploredDirty()
         const floorChanged = !!p.floor && p.floor.id !== oldFloorId
         if (floorChanged) {
           // Server-driven floor change (e.g. our viewed floor was deleted):
@@ -790,7 +811,7 @@ export function renderMap(
       case 'token_move': {
         const p = msg.payload as TokenMovePayload
         const t = state.tokens.find(t => t.id === p.token_id)
-        if (t) { t.x = p.x; t.y = p.y; render() }
+        if (t) { t.x = p.x; t.y = p.y; markExploredDirty(); render() }
         break
       }
       case 'token_update': {
@@ -799,6 +820,7 @@ export function renderMap(
           // Token lives on another floor — it can only be a removal for us
           state.tokens = state.tokens.filter(t => t.id !== p.token.id)
           if (state.selectedId === p.token.id) { state.selectedId = null; renderTokenEditor() }
+          markExploredDirty()
           refreshSidebar()
           render()
           break
@@ -810,6 +832,7 @@ export function renderMap(
           state.tokens.push(p.token)  // token created while we were connected
         }
         if (p.token.icon_path) preloadTokenImage(p.token.icon_path)
+        markExploredDirty()
         refreshSidebar()
         render()
         break
@@ -818,6 +841,7 @@ export function renderMap(
         const p = msg.payload as TokenDeletePayload
         state.tokens = state.tokens.filter(t => t.id !== p.token_id)
         if (state.selectedId === p.token_id) state.selectedId = null
+        markExploredDirty()
         refreshSidebar()
         render()
         break
@@ -830,6 +854,7 @@ export function renderMap(
         } else if (p.action === 'add') {
           state.fog.push(...p.points)
         }
+        markExploredDirty()
         render()
         break
       }
@@ -1194,6 +1219,7 @@ export function renderMap(
     await api.clearFog(table.id, state.floor?.id)
     socket.send('fog_update', { action: 'clear_all', points: [], floor_id: state.floor?.id })
     state.fog = []
+    markExploredDirty()
     render()
   })
 
@@ -1213,6 +1239,7 @@ export function renderMap(
       state.tokens.push(newToken)
       state.selectedId = newToken.id
       socket.send('token_update', { token: newToken })
+      markExploredDirty()
       refreshSidebar()
       renderTokenEditor()
       if (!root.querySelector('#sidebar')!.classList.contains('open'))
@@ -1318,6 +1345,7 @@ export function renderMap(
           && !pointOnWall(snapX, snapY, state.walls)) {
         token.x = snapX
         token.y = snapY
+        markExploredDirty()
       }
       // Throttle: broadcast live position at ~20 fps so other clients see the drag in real-time
       const now = Date.now()
@@ -1346,6 +1374,7 @@ export function renderMap(
       token.y = state.dragStartY
       socket.send('token_move', { token_id: token.id, x: state.dragStartX, y: state.dragStartY })
       showNotif('Movement blocked by wall')
+      markExploredDirty()
       render()
     } else {
       // Dropping the token on a stair marker sends it to the linked floor
@@ -1553,6 +1582,7 @@ export function renderMap(
         socket.send('token_move', { token_id: token.id, x: token.x, y: token.y })
       }
       state.dragging = false
+      markExploredDirty()
     }
     if (state.measure.active) state.measure.active = false
     state.panning = false
@@ -1598,8 +1628,10 @@ export function renderMap(
     }
 
     // Tokens win over doors/stairs — a token standing on a door must stay
-    // grabbable (same priority as the mouse handler).
-    const hit = pickToken(wx, wy, state.tokens, state.table.grid_size ?? 70)
+    // grabbable (same priority as the mouse handler). Fingers get a wider
+    // grab radius than a mouse cursor (~10 screen px, whatever the zoom).
+    const grabSlop = 10 / state.camera.zoom
+    const hit = pickToken(wx, wy, state.tokens, state.table.grid_size ?? 70, grabSlop)
     if (hit) {
       state.selectedId = hit.id
       const canMove = isAdmin || !state.settings.players_move_own_only || hit.owner === user.username
@@ -1719,7 +1751,7 @@ export function renderMap(
     if (touchMode === 'pan' && dt < 300 && moved < 10) {
       // Tap on empty space: deselect
       const [wx, wy] = screenToWorld(touchStartX, touchStartY, state.camera)
-      if (!pickToken(wx, wy, state.tokens, state.table.grid_size ?? 70)) {
+      if (!pickToken(wx, wy, state.tokens, state.table.grid_size ?? 70, 10 / state.camera.zoom)) {
         state.selectedId = null
         refreshSidebar()
         if (isAdmin) renderTokenEditor()
@@ -1757,6 +1789,7 @@ export function renderMap(
         socket.send('token_delete', { token_id: token.id })
         state.tokens = state.tokens.filter(t => t.id !== token.id)
         state.selectedId = null
+        markExploredDirty()
         refreshSidebar(); renderTokenEditor(); render()
       }
     }
@@ -1887,6 +1920,7 @@ export function renderMap(
     const point: FogPoint = { id: '', table_id: table.id, x: wx, y: wy, radius: 3, floor_id: state.floor?.id }
     socket.send('fog_update', { action: 'add', points: [point], floor_id: state.floor?.id })
     state.fog.push(point)
+    markExploredDirty()
     render()
   }
 
@@ -1894,6 +1928,7 @@ export function renderMap(
     state.fog = state.fog.filter(p => Math.hypot(p.x - wx, p.y - wy) > p.radius * (state.table.grid_size ?? 70))
     // One atomic clear+re-add so other clients never see an empty flash
     socket.send('fog_update', { action: 'clear_all', points: state.fog, floor_id: state.floor?.id })
+    markExploredDirty()
     render()
   }
 
@@ -1926,11 +1961,12 @@ function pickStair(wx: number, wy: number, stairs: Stairs[], gridSize: number): 
   return null
 }
 
-function pickToken(wx: number, wy: number, tokens: Token[], gridSize: number): Token | null {
-  // iterate in reverse (top token first)
+function pickToken(wx: number, wy: number, tokens: Token[], gridSize: number, slop = 0): Token | null {
+  // iterate in reverse (top token first). `slop` widens the hit radius for
+  // touch input — fingers are far less precise than a mouse cursor.
   for (let i = tokens.length - 1; i >= 0; i--) {
     const t = tokens[i]
-    const r = (gridSize * t.size) / 2
+    const r = (gridSize * t.size) / 2 + slop
     if (Math.hypot(wx - t.x, wy - t.y) <= r) return t
   }
   return null

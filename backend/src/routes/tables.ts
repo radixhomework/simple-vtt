@@ -447,7 +447,14 @@ tablesRouter.post('/floors/:id/upload-image', authMiddleware, upload.single('ima
   const ext = path.extname(decodeUploadFilename(req.file.originalname)).toLowerCase() || '.png'
   const dir = uploadsDir()
   fs.mkdirSync(dir, { recursive: true })
-  const filename = `map_${floor.id}${ext}`
+  // Unique filename per upload: browsers cache /uploads immutably, so a
+  // replaced image must live at a fresh URL or clients would keep the old one
+  const filename = `map_${floor.id}_${Date.now().toString(36)}${ext}`
+  // Drop the superseded bitmap (extension may have changed, hence the guard)
+  const prevFile = floor.map_image_path ? path.basename(floor.map_image_path) : ''
+  if (prevFile && prevFile !== filename) {
+    try { fs.unlinkSync(path.join(dir, prevFile)) } catch { /* already gone */ }
+  }
   fs.writeFileSync(path.join(dir, filename), req.file.buffer)
   const imagePath = `/uploads/${filename}`
   db.prepare('UPDATE floors SET map_image_path=?, img_width=?, img_height=? WHERE id=?')

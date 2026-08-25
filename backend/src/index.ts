@@ -7,6 +7,7 @@ import express from 'express'
 import http from 'http'
 import path from 'path'
 import fs from 'fs'
+import compression from 'compression'
 import { WebSocketServer } from 'ws'
 import { authRouter } from './routes/auth'
 import { tablesRouter } from './routes/tables'
@@ -36,12 +37,21 @@ app.use((req, res, next) => {
   next()
 })
 
+// HTTP compression (gzip/brotli via negotiate): the app JS is ~100 KB raw,
+// ~27 KB compressed — a free win on every mobile page load
+app.use(compression())
+
 app.use(express.json({ limit: '10mb' }))
 
-// Static: uploads
+// Static: uploads. Files are content-unique (map_<floorId>.<ext>,
+// asset_<id>.<ext>) and never rewritten in place, so browsers may cache
+// them immutably — avoids re-downloading multi-MB map images on every visit.
 const uploadsDir = process.env.UPLOADS_DIR || path.join(process.cwd(), 'uploads')
 fs.mkdirSync(uploadsDir, { recursive: true })
-app.use('/uploads', express.static(uploadsDir))
+app.use('/uploads', express.static(uploadsDir, {
+  maxAge: '1y',
+  immutable: true,
+}))
 
 // API routes (rate-limited; login applies its own stricter limiter)
 app.use('/api', apiLimiter)
@@ -64,9 +74,19 @@ app.get('/api/version', (_req, res) => {
 // Unknown API paths must return JSON 404, not the SPA fallback below
 app.use('/api', (_req, res) => { res.status(404).json({ error: 'not found' }) })
 
-// Static: built frontend
+// Static: built frontend. Vite emits content-hashed asset filenames, so
+// /assets/* may be cached forever; index.html must always be revalidated
+// so clients pick up new builds.
 const staticDir = process.env.STATIC_DIR || path.join(process.cwd(), 'public')
-app.use(express.static(staticDir))
+app.use(express.static(staticDir, {
+  maxAge: '1y',
+  immutable: true,
+  setHeaders: (res, filePath) => {
+    if (filePath.endsWith('index.html')) {
+      res.setHeader('Cache-Control', 'no-cache')
+    }
+  },
+}))
 
 // SPA fallback
 app.get('*', (_req, res) => {
