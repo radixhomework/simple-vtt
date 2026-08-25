@@ -258,6 +258,7 @@ export function updateExplored(
     // stamp and the fog holes used to run two independent LOS passes over
     // the same tokens.
     const poly = visibilityPolygonFor(token, walls, gridSize, wallVersion, dragQuantum)
+    if (poly === undefined) continue // pending worker compute — stamped when it lands
 
     if (poly && poly.length > 2) {
       ctx.save()
@@ -284,6 +285,70 @@ export function updateExplored(
   }
 }
 
+// ── LOS worker ────────────────────────────────────────────────────────────────
+
+/**
+ * Off-main-thread polygon computes. The worker receives the wall set once
+ * per wall change; compute requests carry only coordinates. While a
+ * compute is in flight the caller keeps whatever it has (stale polygon or
+ * nothing) — drags never block on ray casting.
+ *
+ * Null worker (Safari < 15 / disabled): everything stays synchronous.
+ */
+type LosWorkerInbound = { type: 'walls'; version: number; walls: WallSegment[] }
+  | { type: 'compute'; key: string; version: number; ox: number; oy: number; radius: number }
+interface LosWorkerOutbound { key: string; version: number; poly: Point[] | null }
+
+let losWorker: Worker | null = null
+let workerVersion = -1
+let onLosResult: ((r: LosWorkerOutbound) => void) | null = null
+
+export function isLosWorkerActive(): boolean {
+  return losWorker !== null
+}
+
+/** Create (or recreate) the worker and ship the current wall set. */
+export function initLosWorker(walls: WallSegment[], version: number): void {
+  if (typeof Worker === 'undefined') return
+  disposeLosWorker()
+  try {
+    losWorker = new Worker(new URL('./los.worker.ts', import.meta.url), { type: 'module' })
+  } catch { return } // bundler/runtime without module workers → sync path
+  workerVersion = version
+  losWorker.onmessage = (e: MessageEvent<LosWorkerOutbound>) => {
+    onLosResult?.(e.data)
+  }
+  const msg: LosWorkerInbound = { type: 'walls', version, walls }
+  losWorker.postMessage(msg)
+}
+
+export function disposeLosWorker(): void {
+  losWorker?.terminate()
+  losWorker = null
+  workerVersion = -1
+}
+
+/** Push a new wall set after door toggles / floor switches. */
+export function updateLosWorkerWalls(walls: WallSegment[], version: number): void {
+  if (!losWorker) return
+  workerVersion = version
+  const msg: LosWorkerInbound = { type: 'walls', version, walls }
+  losWorker.postMessage(msg)
+}
+
+/** Register the callback that receives finished polygons. */
+export function setLosResultHandler(handler: ((r: LosWorkerOutbound) => void) | null): void {
+  onLosResult = handler
+}
+
+/** Ask the worker for a polygon. False when no worker / stale version. */
+function requestWorkerPolygon(key: string, ox: number, oy: number, radius: number, version: number): boolean {
+  if (losWorker === null || version !== workerVersion) return false
+  const msg: LosWorkerInbound = { type: 'compute', key, version, ox, oy, radius }
+  losWorker.postMessage(msg)
+  return true
+}
+
 // ── Internal: stamp vision holes with destination-out ─────────────────────────
 
 /**
@@ -303,6 +368,8 @@ interface VisionEntry {
   radius: number
   poly: Point[] | null
   computedAt: number
+  /** True while a worker compute for this entry is in flight. */
+  pending?: boolean
 }
 const visionCache = new Map<string, VisionEntry>()
 
@@ -320,26 +387,97 @@ export function resetVisionCache(): void {
   visionCache.clear()
 }
 
-/** Fetch (or compute) a token's world-space visibility polygon. */
+/** Cached entry usable for this query? (same walls + same radius) */
+function entryMatches(hit: VisionEntry | undefined, wallVersion: number, r: number): boolean {
+  return hit?.wallVersion === wallVersion && hit?.radius === r
+}
+
+/** A polygon computed recently enough to keep using during a drag. */
+function freshEnough(hit: VisionEntry): boolean {
+  return performance.now() - hit.computedAt < DRAG_REUSE_MS
+}
+
+/**
+ * Post the compute to the worker and mark the cache entry as awaited.
+ * `keep` is what the caller should keep drawing until the result lands:
+ * the stale polygon (or stale null), or undefined when there is nothing
+ * yet (nothing to draw this frame). posted=false means no worker took
+ * the job — the caller falls back to a synchronous compute.
+ */
+interface DispatchResult { posted: boolean; keep: Point[] | null | undefined }
+function dispatchToWorker(
+  hit: VisionEntry | undefined,
+  token: Token,
+  wallVersion: number,
+  qx: number,
+  qy: number,
+  r: number,
+): DispatchResult {
+  const key = `${token.id}:${wallVersion}:${qx}:${qy}:${r}`
+  if (!requestWorkerPolygon(key, qx, qy, r, wallVersion)) return { posted: false, keep: undefined }
+  if (hit) {
+    // awaited at this position; the stale polygon keeps drawing until the
+    // result lands, and px/py advanced so we don't re-post every frame
+    hit.px = qx; hit.py = qy
+    return { posted: true, keep: hit.poly }
+  }
+  visionCache.set(token.id, { wallVersion, px: qx, py: qy, radius: r, poly: null, computedAt: 0, pending: true })
+  return { posted: true, keep: undefined }
+}
+
+/** Quantize a token position for interactive (drag) recompute steps. */
+function quantize(v: number, quantum: number): number {
+  return quantum > 0 ? Math.round(v / quantum) * quantum : v
+}
+
+/** Resolve from the cache: exact hit, or a fresh-enough drag reuse.
+ *  undefined = no usable cache answer. */
+function cachedPolygon(
+  hit: VisionEntry | undefined,
+  wallVersion: number,
+  r: number,
+  qx: number,
+  qy: number,
+  quantum: number,
+): Point[] | null | undefined {
+  if (hit == null || !entryMatches(hit, wallVersion, r)) return undefined
+  if (hit.px === qx && hit.py === qy) return hit.poly
+  if (quantum > 0 && freshEnough(hit)) return hit.poly
+  return undefined
+}
+
+/** Fetch (or compute) a token's world-space visibility polygon.
+ *
+ * Returns:
+ *   Point[] — the polygon (cached or just computed)
+ *   null    — no walls near this token (plain radial reveal)
+ *   undefined — compute dispatched to the worker, not ready yet; the
+ *               caller reuses whatever it drew last frame
+ *
+ * Sync computes still happen when there is no worker, or when quantum=0
+ * (join, release, door toggle — rare, non-interactive moments).
+ */
 function visibilityPolygonFor(
   token: Token,
   walls: WallSegment[],
   gridSize: number,
   wallVersion: number,
   quantum = 0,
-): Point[] | null {
+): Point[] | null | undefined {
   const r = token.vision_radius * gridSize
   if (r <= 0) return null
-  const qx = quantum > 0 ? Math.round(token.x / quantum) * quantum : token.x
-  const qy = quantum > 0 ? Math.round(token.y / quantum) * quantum : token.y
+  const qx = quantize(token.x, quantum)
+  const qy = quantize(token.y, quantum)
 
   const hit = visionCache.get(token.id)
-  if (hit?.wallVersion === wallVersion && hit?.radius === r) {
-    if (hit.px === qx && hit.py === qy) return hit.poly
-    // Dragging: reuse a fresh-enough polygon instead of recomputing now
-    if (quantum > 0 && performance.now() - hit.computedAt < DRAG_REUSE_MS) {
-      return hit.poly
-    }
+  const cached = cachedPolygon(hit, wallVersion, r, qx, qy, quantum)
+  if (cached !== undefined) return cached
+
+  // Interactive (drag) miss with a live worker: never block the frame —
+  // post the compute and keep drawing the stale polygon until it lands.
+  if (quantum > 0 && isLosWorkerActive()) {
+    const { posted, keep } = dispatchToWorker(hit, token, wallVersion, qx, qy, r)
+    if (posted) return keep
   }
 
   const nearby = cullWalls(walls, qx, qy, r)
@@ -347,6 +485,22 @@ function visibilityPolygonFor(
   const entry: VisionEntry = { wallVersion, px: qx, py: qy, radius: r, poly, computedAt: performance.now() }
   visionCache.set(token.id, entry)
   return poly
+}
+
+/** Store a worker result into the cache (called from the result handler). */
+function storeWorkerPolygon(key: string, version: number, poly: Point[] | null): void {
+  const parts = key.split(':')
+  const tokenId = parts[0]
+  const entry = visionCache.get(tokenId)
+  if (entry?.wallVersion !== version) return
+  entry.poly = poly
+  entry.computedAt = performance.now()
+  entry.pending = false
+}
+
+/** Public bridge for map.ts: feed a worker result into the cache. */
+export function applyLosResult(key: string, version: number, poly: Point[] | null): void {
+  storeWorkerPolygon(key, version, poly)
 }
 
 function punchVision(
@@ -365,6 +519,7 @@ function punchVision(
     const visionPx = token.vision_radius * gridSize * cam.zoom
 
     const poly = visibilityPolygonFor(token, walls, gridSize, wallVersion, dragQuantum)
+    if (poly === undefined) continue // worker compute in flight — keep last frame's hole
     if (poly && poly.length > 2) {
       // Camera transform of the cached world-space polygon
       ctx.save()
