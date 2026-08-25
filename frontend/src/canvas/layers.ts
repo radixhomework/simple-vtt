@@ -9,7 +9,7 @@ import type { Camera, Token, FogPoint, MeasureState, Portal, Stairs } from '../t
 import { worldToScreen } from './camera'
 import { PALETTE } from '../theme'
 import { computeVisibilityPolygon, cullWalls } from './los'
-import type { WallSegment } from './los'
+import type { WallSegment, Point } from './los'
 
 // Token images cache
 const tokenImageCache = new Map<string, HTMLImageElement>()
@@ -243,6 +243,8 @@ export function updateExplored(
   walls: WallSegment[],
   gridSize: number,
   scale = 1,
+  wallVersion = 0,
+  dragQuantum = 0,
 ) {
   const ctx = exploredCanvas.getContext('2d')!
   ctx.globalCompositeOperation = 'source-over'
@@ -252,22 +254,22 @@ export function updateExplored(
   for (const token of tokens) {
     if (!token.has_vision) continue
     const r = token.vision_radius * gridSize
-    const nearby = cullWalls(walls, token.x, token.y, r)
+    // Shares the world-space cache with the fog renderer — the explored
+    // stamp and the fog holes used to run two independent LOS passes over
+    // the same tokens.
+    const poly = visibilityPolygonFor(token, walls, gridSize, wallVersion, dragQuantum)
 
-    if (nearby.length > 0) {
-      const poly = computeVisibilityPolygon(token.x, token.y, r, nearby)
-      if (poly.length > 2) {
-        ctx.save()
-        ctx.beginPath()
-        ctx.arc(token.x, token.y, r, 0, Math.PI * 2)
-        ctx.clip()
-        ctx.beginPath()
-        ctx.moveTo(poly[0].x, poly[0].y)
-        for (let i = 1; i < poly.length; i++) ctx.lineTo(poly[i].x, poly[i].y)
-        ctx.closePath()
-        ctx.fill()
-        ctx.restore()
-      }
+    if (poly && poly.length > 2) {
+      ctx.save()
+      ctx.beginPath()
+      ctx.arc(token.x, token.y, r, 0, Math.PI * 2)
+      ctx.clip()
+      ctx.beginPath()
+      ctx.moveTo(poly[0].x, poly[0].y)
+      for (let i = 1; i < poly.length; i++) ctx.lineTo(poly[i].x, poly[i].y)
+      ctx.closePath()
+      ctx.fill()
+      ctx.restore()
     } else {
       ctx.beginPath()
       ctx.arc(token.x, token.y, r, 0, Math.PI * 2)
@@ -284,6 +286,69 @@ export function updateExplored(
 
 // ── Internal: stamp vision holes with destination-out ─────────────────────────
 
+/**
+ * World-space visibility cache. A token's polygon only depends on its
+ * position, radius and the wall set — NOT on the camera. Panning/zooming
+ * used to recompute every polygon every frame in screen space (a full
+ * second LOS pass); now polygons are computed once in world space and the
+ * camera merely transforms the cached vertices for drawing.
+ *
+ * Keyed by wallVersion (bumped on door toggles / floor switches) so any
+ * wall change invalidates everything in O(1).
+ */
+interface VisionEntry {
+  wallVersion: number
+  px: number    // quantized position the polygon was computed at
+  py: number
+  radius: number
+  poly: Point[] | null
+  computedAt: number
+}
+const visionCache = new Map<string, VisionEntry>()
+
+/** Quantization during interactive moves: 4 world px ≈ imperceptible fog
+ *  shift, and caps recompute at ~1/4 the rate of raw pointer events. */
+export const DRAG_QUANTUM = 4
+
+/** During a drag, a polygon younger than this is reused even if the token
+ *  left its quantum cell — the sight edge trails the cursor by <50ms
+ *  instead of blocking the frame on pathological wall density. */
+const DRAG_REUSE_MS = 50
+
+/** Clear every cached polygon (floor switch, teardown). */
+export function resetVisionCache(): void {
+  visionCache.clear()
+}
+
+/** Fetch (or compute) a token's world-space visibility polygon. */
+function visibilityPolygonFor(
+  token: Token,
+  walls: WallSegment[],
+  gridSize: number,
+  wallVersion: number,
+  quantum = 0,
+): Point[] | null {
+  const r = token.vision_radius * gridSize
+  if (r <= 0) return null
+  const qx = quantum > 0 ? Math.round(token.x / quantum) * quantum : token.x
+  const qy = quantum > 0 ? Math.round(token.y / quantum) * quantum : token.y
+
+  const hit = visionCache.get(token.id)
+  if (hit?.wallVersion === wallVersion && hit?.radius === r) {
+    if (hit.px === qx && hit.py === qy) return hit.poly
+    // Dragging: reuse a fresh-enough polygon instead of recomputing now
+    if (quantum > 0 && performance.now() - hit.computedAt < DRAG_REUSE_MS) {
+      return hit.poly
+    }
+  }
+
+  const nearby = cullWalls(walls, qx, qy, r)
+  const poly = nearby.length > 0 ? computeVisibilityPolygon(qx, qy, r, nearby) : null
+  const entry: VisionEntry = { wallVersion, px: qx, py: qy, radius: r, poly, computedAt: performance.now() }
+  visionCache.set(token.id, entry)
+  return poly
+}
+
 function punchVision(
   ctx: CanvasRenderingContext2D,
   tokens: Token[],
@@ -291,34 +356,34 @@ function punchVision(
   walls: WallSegment[],
   cam: Camera,
   gridSize: number,
+  wallVersion: number,
+  dragQuantum = 0,
 ) {
-  const screenWalls = walls.map(wl => ({
-    ax: (wl.ax - cam.x) * cam.zoom, ay: (wl.ay - cam.y) * cam.zoom,
-    bx: (wl.bx - cam.x) * cam.zoom, by: (wl.by - cam.y) * cam.zoom,
-  }))
-
   for (const token of tokens) {
     if (!token.has_vision) continue
     const [sx, sy] = worldToScreen(token.x, token.y, cam)
     const visionPx = token.vision_radius * gridSize * cam.zoom
 
-    if (screenWalls.length > 0) {
-      const nearby = cullWalls(screenWalls, sx, sy, visionPx)
-      const poly = computeVisibilityPolygon(sx, sy, visionPx, nearby)
-      if (poly.length > 2) {
-        ctx.save()
-        ctx.beginPath()
-        ctx.arc(sx, sy, visionPx, 0, Math.PI * 2)
-        ctx.clip()
-        ctx.beginPath()
-        ctx.moveTo(poly[0].x, poly[0].y)
-        for (let i = 1; i < poly.length; i++) ctx.lineTo(poly[i].x, poly[i].y)
-        ctx.closePath()
-        ctx.fillStyle = 'rgba(0,0,0,1)'
-        ctx.fill()
-        ctx.restore()
+    const poly = visibilityPolygonFor(token, walls, gridSize, wallVersion, dragQuantum)
+    if (poly && poly.length > 2) {
+      // Camera transform of the cached world-space polygon
+      ctx.save()
+      ctx.beginPath()
+      ctx.arc(sx, sy, visionPx, 0, Math.PI * 2)
+      ctx.clip()
+      ctx.beginPath()
+      let [fx, fy] = worldToScreen(poly[0].x, poly[0].y, cam)
+      ctx.moveTo(fx, fy)
+      for (let i = 1; i < poly.length; i++) {
+        const [lx, ly] = worldToScreen(poly[i].x, poly[i].y, cam)
+        ctx.lineTo(lx, ly)
       }
+      ctx.closePath()
+      ctx.fillStyle = 'rgba(0,0,0,1)'
+      ctx.fill()
+      ctx.restore()
     } else {
+      // No walls nearby (or radius zero): soft radial reveal
       const grad = ctx.createRadialGradient(sx, sy, 0, sx, sy, visionPx)
       grad.addColorStop(0, 'rgba(0,0,0,1)')
       grad.addColorStop(0.7, 'rgba(0,0,0,1)')
@@ -375,6 +440,8 @@ export function drawFog(
   mapOffsetY = 0,
   worldW?: number,
   worldH?: number,
+  wallVersion = 0,
+  dragQuantum = 0,
 ) {
   const w = ctx.canvas.width
   const h = ctx.canvas.height
@@ -406,7 +473,7 @@ export function drawFog(
 
     // ── Phase 2: punch out currently-visible areas (full colour shows through) ─
     ctx.globalCompositeOperation = 'destination-out'
-    punchVision(ctx, tokens, fogPoints, walls, cam, gridSize)
+    punchVision(ctx, tokens, fogPoints, walls, cam, gridSize, wallVersion, dragQuantum)
 
     // ── Phase 3: black layer for never-explored areas ─────────────────────────
     // Build a black canvas with the explored region cut out, then composite it
@@ -429,7 +496,7 @@ export function drawFog(
     ctx.fillRect(0, 0, w, h)
     ctx.globalAlpha = 1
     ctx.globalCompositeOperation = 'destination-out'
-    punchVision(ctx, tokens, fogPoints, walls, cam, gridSize)
+    punchVision(ctx, tokens, fogPoints, walls, cam, gridSize, wallVersion, dragQuantum)
     ctx.globalCompositeOperation = 'source-over'
   }
 
