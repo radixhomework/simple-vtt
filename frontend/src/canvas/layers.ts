@@ -346,7 +346,7 @@ function punchVision(
 // allocating a full-screen OffscreenCanvas per frame churns mobile GCs.
 let fogScratch: OffscreenCanvas | null = null
 function getFogScratch(w: number, h: number): OffscreenCanvas {
-  if (!fogScratch || fogScratch.width !== w || fogScratch.height !== h) {
+  if (fogScratch?.width !== w || fogScratch?.height !== h) {
     fogScratch = new OffscreenCanvas(w, h)
   }
   const ctx = fogScratch.getContext('2d')!
