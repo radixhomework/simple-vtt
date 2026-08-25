@@ -24,9 +24,6 @@ import type { Camera } from '../types'
 export const TILE_SIZE = 256
 export const MAX_ZOOM_LEVELS = 8
 
-/** Tiles held decoded at once — 100 × 256×256×4 ≈ 26 MB worst case. */
-const MAX_TILES = 100
-
 /** Concurrent tile fetches allowed. Everything above waits for the next
  *  frame — a hard ceiling so the browser's request queue can never
  *  saturate (ERR_INSUFFICIENT_RESOURCES). */
@@ -63,8 +60,21 @@ const failedUntil = new Map<string, number>()
 
 function flights(): number { return inflight.size }
 
+/** Tiles held decoded at once — 100 × 256×256×4 ≈ 26 MB worst case.
+ *  This is the floor: the cache auto-grows when a viewport legitimately
+ *  needs more (see resizeFor), because a fixed cap smaller than the
+ *  per-frame demand turns into an evict/refetch loop (each frame evicts
+ *  tiles the viewport still wants; the fetch completions repaint; the
+ *  next frame evicts again — infinite fetches at a stable zoom). */
+const MAX_TILES = 100
+/** Hard ceiling for the dynamic cache size — 8× the floor ≈ 210 MB worst
+ *  case, enough for any 4K viewport with ring + warming. */
+const MAX_TILES_CEILING = 800
+
 class TileCache {
   private map = new Map<string, TileEntry>()
+  /** Current capacity (starts at the floor, grows with demand). */
+  private capacity = MAX_TILES
   /** Access order for LRU eviction (Map preserves insertion order). */
   touch(k: string) {
     const v = this.map.get(k)
@@ -81,12 +91,21 @@ class TileCache {
       this.evict()
     }
   }
+  /** Grow the capacity to fit a per-frame demand. Never shrinks during a
+   *  session (a later small viewport keeps the headroom — tiles are only
+   *  evicted when the new capacity is exceeded, which a smaller viewport
+   *  never triggers by itself). */
+  resizeFor(demand: number): void {
+    const want = Math.min(Math.max(demand, MAX_TILES), MAX_TILES_CEILING)
+    if (want > this.capacity) this.capacity = want
+    this.evict()
+  }
   private evict() {
-    if (this.map.size <= MAX_TILES) return
+    if (this.map.size <= this.capacity) return
     // Evict the oldest entry that is safe to drop: never one with a
     // pending fetch (its result would leak and the tile would refetch).
     for (const k of this.map.keys()) {
-      if (this.map.size <= MAX_TILES) break
+      if (this.map.size <= this.capacity) break
       const entry = this.map.get(k)
       if (entry?.pending) continue
       entry?.bitmap?.close()   // deterministic free of the decoded pixels
@@ -96,6 +115,7 @@ class TileCache {
   clear() {
     for (const v of this.map.values()) v.bitmap?.close()
     this.map.clear()
+    this.capacity = MAX_TILES   // fresh floor for the next floor/view
     // NOTE: do not clear `inflight` here while fetches are running —
     // orphaned promises would re-issue the same URLs as duplicates.
     // loadTile's in-flight map self-cleans as each fetch finishes.
@@ -392,6 +412,14 @@ export function drawTiledMap(
   const x1 = Math.min(maxTx, Math.floor((worldR - mapOffsetX) / tileWorld))
   const y1 = Math.min(maxTy, Math.floor((worldB - mapOffsetY) / tileWorld))
   const ranges: ViewportRanges = { x0, y0, x1, y1, maxTx, maxTy, worldL, worldT, worldR, worldB }
+
+  // Capacity MUST cover this frame's demand (viewport + ring + adjacent
+  // warming). A cap below demand is the infinite evict/refetch loop.
+  const demand =
+    (x1 - x0 + 1) * (y1 - y0 + 1)          // viewport
+    + (x1 - x0 + 3) * (y1 - y0 + 3)        // ring (worst case)
+    + 2 * MAX_WARM_TILES                   // both adjacent levels
+  cache.resizeFor(demand)
 
   let drewAny = false
   for (let ty = y0; ty <= y1; ty++) {
