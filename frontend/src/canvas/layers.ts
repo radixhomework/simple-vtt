@@ -425,6 +425,27 @@ function dispatchToWorker(
   return { posted: true, keep: undefined }
 }
 
+/** Quantize a token position for interactive (drag) recompute steps. */
+function quantize(v: number, quantum: number): number {
+  return quantum > 0 ? Math.round(v / quantum) * quantum : v
+}
+
+/** Resolve from the cache: exact hit, or a fresh-enough drag reuse.
+ *  undefined = no usable cache answer. */
+function cachedPolygon(
+  hit: VisionEntry | undefined,
+  wallVersion: number,
+  r: number,
+  qx: number,
+  qy: number,
+  quantum: number,
+): Point[] | null | undefined {
+  if (hit == null || !entryMatches(hit, wallVersion, r)) return undefined
+  if (hit.px === qx && hit.py === qy) return hit.poly
+  if (quantum > 0 && freshEnough(hit)) return hit.poly
+  return undefined
+}
+
 /** Fetch (or compute) a token's world-space visibility polygon.
  *
  * Returns:
@@ -445,15 +466,12 @@ function visibilityPolygonFor(
 ): Point[] | null | undefined {
   const r = token.vision_radius * gridSize
   if (r <= 0) return null
-  const qx = quantum > 0 ? Math.round(token.x / quantum) * quantum : token.x
-  const qy = quantum > 0 ? Math.round(token.y / quantum) * quantum : token.y
+  const qx = quantize(token.x, quantum)
+  const qy = quantize(token.y, quantum)
 
   const hit = visionCache.get(token.id)
-  if (hit != null && entryMatches(hit, wallVersion, r)) {
-    if (hit.px === qx && hit.py === qy) return hit.poly
-    // Dragging: reuse a fresh-enough polygon instead of recomputing now
-    if (quantum > 0 && freshEnough(hit)) return hit.poly
-  }
+  const cached = cachedPolygon(hit, wallVersion, r, qx, qy, quantum)
+  if (cached !== undefined) return cached
 
   // Interactive (drag) miss with a live worker: never block the frame —
   // post the compute and keep drawing the stale polygon until it lands.
