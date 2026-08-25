@@ -15,7 +15,8 @@ import AdmZip from 'adm-zip'
 import { db } from '../db'
 import { authMiddleware, adminOnly } from '../auth'
 import { decodeUploadFilename } from '../filename'
-import { pushTableStateToTable } from '../hub'
+import { pushTableStateToTable, broadcastToTable } from '../hub'
+import { loadTableSettings, sanitizeTableSettingsPatch } from '../settings'
 
 export const tablesRouter = Router()
 
@@ -126,6 +127,26 @@ tablesRouter.delete('/tables/:id', authMiddleware, adminOnly, (req, res) => {
   db.prepare('DELETE FROM stairs WHERE table_id=?').run(req.params.id)
   db.prepare('DELETE FROM tables WHERE id=?').run(req.params.id)
   res.sendStatus(204)
+})
+
+// ── Per-map settings ──────────────────────────────────────────────────────────
+tablesRouter.get('/tables/:id/settings', authMiddleware, (req, res) => {
+  const table = getTable(req.params.id)
+  if (!table) { res.status(404).json({ error: 'not found' }); return }
+  res.json(loadTableSettings(req.params.id))
+})
+
+tablesRouter.patch('/tables/:id/settings', authMiddleware, adminOnly, (req, res) => {
+  const table = getTable(req.params.id)
+  if (!table) { res.status(404).json({ error: 'not found' }); return }
+  const patches = sanitizeTableSettingsPatch(req.body)
+  if (Object.keys(patches).length === 0) { res.status(400).json({ error: 'nothing to update' }); return }
+  const sets = Object.keys(patches).map(k => `${k}=?`).join(', ')
+  db.prepare(`UPDATE tables SET ${sets} WHERE id=?`).run(...Object.values(patches), req.params.id)
+  const settings = loadTableSettings(req.params.id)
+  // Live sync for everyone viewing this map
+  broadcastToTable(req.params.id, { type: 'settings_update', payload: { settings } })
+  res.json(settings)
 })
 
 // ── Table import (UVTT/zip creates a new table with floor 1) ─────────────────

@@ -153,32 +153,40 @@ export interface ChatPayload {
   message: string
 }
 
+/** Global, installation-wide settings (admin console Settings tab). */
 export interface AppSettings {
-  chat_enabled: boolean
-  players_move_own_only: boolean
-  fog_enabled_default: boolean
-  grid_visible_default: boolean
-  snap_default: boolean
-  /** Real-world size of one grid square, in measurement_unit */
-  grid_square_size: number
-  measurement_unit: 'ft' | 'm'
   /** Maximum accepted size of a single asset upload, in megabytes */
   max_asset_size_mb: number
-  players_open_doors: boolean
-  players_open_windows: boolean
 }
 
 export const DEFAULT_SETTINGS: AppSettings = {
+  max_asset_size_mb: 50,
+}
+
+/** Per-map gameplay and display settings (admin-only edits, live-synced). */
+export interface TableSettings {
+  chat_enabled: boolean
+  players_move_own_only: boolean
+  players_open_doors: boolean
+  players_open_windows: boolean
+  snap_default: boolean
+  fog_enabled_default: boolean
+  grid_visible_default: boolean
+  /** Real-world size of one grid square, in measurement_unit */
+  grid_square_size: number
+  measurement_unit: 'ft' | 'm'
+}
+
+export const DEFAULT_TABLE_SETTINGS: TableSettings = {
   chat_enabled: true,
   players_move_own_only: true,
-  fog_enabled_default: true,
-  grid_visible_default: true,
-  snap_default: true,
-  grid_square_size: 5,
-  measurement_unit: 'ft',
-  max_asset_size_mb: 50,
   players_open_doors: true,
   players_open_windows: true,
+  snap_default: true,
+  fog_enabled_default: true,
+  grid_visible_default: true,
+  grid_square_size: 5,
+  measurement_unit: 'ft',
 }
 
 export interface MeasureState {

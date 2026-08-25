@@ -10,7 +10,7 @@ import { Router } from 'express'
 import { db } from '../db'
 import { authMiddleware, adminOnly } from '../auth'
 import { broadcastToTable } from '../hub'
-import { loadSettings } from '../settings'
+import { loadTableSettings } from '../settings'
 
 export const portalsRouter = Router()
 
@@ -24,12 +24,12 @@ function normalize(row: Record<string, unknown>) {
   }
 }
 
-/** Players may toggle a portal when the admin enabled it for its kind AND
- *  this particular portal is not individually locked. */
-function playerMayOpen(role: string, kind: string, locked: boolean): boolean {
+/** Players may toggle a portal when the map's settings allow it for its
+ *  kind AND this particular portal is not individually locked. */
+function playerMayOpen(role: string, tableId: string, kind: string, locked: boolean): boolean {
   if (role === 'admin') return true
   if (locked) return false
-  const settings = loadSettings()
+  const settings = loadTableSettings(tableId)
   return kind === 'window' ? settings.players_open_windows : settings.players_open_doors
 }
 
@@ -63,7 +63,7 @@ portalsRouter.patch('/tables/:id/portals/:portalId', authMiddleware, (req, res) 
 
   // Open/close: admins always; players when allowed for the kind and not locked
   if (req.body.closed !== undefined) {
-    if (!playerMayOpen(res.locals.role, kind, locked)) { res.status(403).json({ error: 'forbidden' }); return }
+    if (!playerMayOpen(res.locals.role, req.params.id, kind, locked)) { res.status(403).json({ error: 'forbidden' }); return }
     db.prepare('UPDATE portals SET closed=? WHERE id=?').run(req.body.closed ? 1 : 0, req.params.portalId)
   }
 

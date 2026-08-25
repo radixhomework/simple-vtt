@@ -16,11 +16,11 @@ import { screenToWorld, worldToScreen, snapToGrid, zoomAround } from '../canvas/
 import { parseStaticWalls, portalWalls, portalSightWalls, pathCrossesWall, pointOnWall } from '../canvas/los'
 import type { WallSegment } from '../canvas/los'
 import type {
-  User, Table, Token, FogPoint, Portal, Camera, ToolType, MeasureState, AppSettings,
+  User, Table, Token, FogPoint, Portal, Camera, ToolType, MeasureState, TableSettings,
   TableStatePayload, TokenMovePayload, TokenUpdatePayload, TokenDeletePayload, FogUpdatePayload,
   MeasureUpdatePayload, MusicStatePayload, Asset, Floor, FloorLite, Stairs,
 } from '../types'
-import { DEFAULT_SETTINGS } from '../types'
+import { DEFAULT_TABLE_SETTINGS } from '../types'
 
 interface GameState {
   /** Table merged with the active floor's map fields — everything downstream
@@ -35,7 +35,7 @@ interface GameState {
   walls: WallSegment[]
   /** Sight blockers: static walls + closed doors only (windows are transparent) */
   sightWalls: WallSegment[]
-  settings: AppSettings
+  settings: TableSettings
   camera: Camera
   mapImage: HTMLImageElement | null
   mapImagePath: string
@@ -344,7 +344,7 @@ export function renderMap(
     portals: [],
     walls: parseStaticWalls(table.uvt_metadata ?? '{}', table.grid_size ?? 70),
     sightWalls: [],
-    settings: { ...DEFAULT_SETTINGS },
+    settings: { ...DEFAULT_TABLE_SETTINGS },
     camera: { x: 0, y: 0, zoom: 1 },
     mapImage: null,
     mapImagePath: '',
@@ -733,7 +733,7 @@ export function renderMap(
           state.mapImagePath = ''
           state.exploredCanvas = null
         }
-        if (p.settings) state.settings = { ...DEFAULT_SETTINGS, ...p.settings }
+        if (p.settings) state.settings = { ...DEFAULT_TABLE_SETTINGS, ...p.settings }
         if (!initialStateLoaded) {
           // Default-on-join settings apply once, when state first arrives.
           // Later table_state pushes (e.g. token visibility toggles) must
@@ -761,8 +761,8 @@ export function renderMap(
         break
       }
       case 'settings_update': {
-        const p = msg.payload as { settings: AppSettings }
-        state.settings = { ...DEFAULT_SETTINGS, ...p.settings }
+        const p = msg.payload as { settings: TableSettings }
+        state.settings = { ...DEFAULT_TABLE_SETTINGS, ...p.settings }
         // An admin changed the global defaults: apply them live to the view
         state.gridVisible = state.settings.grid_visible_default
         state.fogEnabled = state.settings.fog_enabled_default
@@ -1116,7 +1116,7 @@ export function renderMap(
         name,
         x: state.camera.x + mainCanvas.width / 2 / state.camera.zoom,
         y: state.camera.y + mainCanvas.height / 2 / state.camera.zoom,
-        size: 1, color: randomColor(), has_vision: false, vision_radius: 6,
+        size: 0.75, color: randomColor(), has_vision: false, vision_radius: 6,
         floor_id: state.floor?.id,
       })
       state.tokens.push(newToken)

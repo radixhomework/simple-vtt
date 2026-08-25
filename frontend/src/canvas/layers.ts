@@ -77,7 +77,8 @@ export function drawStairs(
 ) {
   for (const st of stairs) {
     const [sx, sy] = worldToScreen(st.from_x, st.from_y, cam)
-    const r = Math.max(6, st.radius * gridSize * cam.zoom * 0.5)
+    // Visible marker spans 0.75 grid square (pickup radius is separate)
+    const r = Math.max(5, 0.75 * gridSize * cam.zoom * 0.5)
     ctx.save()
     // Disc in rose with a spiral glyph
     ctx.beginPath()

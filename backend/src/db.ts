@@ -192,6 +192,32 @@ if (!portalCols.some(c => c.name === 'locked')) {
   db.prepare("DELETE FROM settings WHERE key='default_floor_level'").run()
 }
 
+// Migration: gameplay/display settings move from global to per-map. Each
+// existing table inherits the current global values so nothing changes
+// behaviour-wise; the global rows are then removed.
+{
+  const global = Object.fromEntries(
+    (db.prepare('SELECT key, value FROM settings').all() as Array<{ key: string; value: string }>).map(r => [r.key, r.value])
+  )
+  const b = (k: string, dflt: boolean) => (global[k] === undefined ? dflt : global[k] !== 'false') ? 1 : 0
+  const colsSpec: Array<[string, string]> = [
+    ['chat_enabled',           `INTEGER NOT NULL DEFAULT ${b('chat_enabled', true)}`],
+    ['players_move_own_only',  `INTEGER NOT NULL DEFAULT ${b('players_move_own_only', true)}`],
+    ['players_open_doors',     `INTEGER NOT NULL DEFAULT ${b('players_open_doors', true)}`],
+    ['players_open_windows',   `INTEGER NOT NULL DEFAULT ${b('players_open_windows', true)}`],
+    ['snap_default',           `INTEGER NOT NULL DEFAULT ${b('snap_default', true)}`],
+    ['fog_enabled_default',    `INTEGER NOT NULL DEFAULT ${b('fog_enabled_default', true)}`],
+    ['grid_visible_default',   `INTEGER NOT NULL DEFAULT ${b('grid_visible_default', true)}`],
+    ['grid_square_size',       `REAL NOT NULL DEFAULT ${Number(global.grid_square_size) > 0 ? Number(global.grid_square_size) : 5}`],
+    ['measurement_unit',       `TEXT NOT NULL DEFAULT '${global.measurement_unit === 'm' ? 'm' : 'ft'}'`],
+  ]
+  const cols = db.prepare('PRAGMA table_info(tables)').all() as Array<{ name: string }>
+  for (const [col, spec] of colsSpec) {
+    if (!cols.some(c => c.name === col)) db.exec(`ALTER TABLE tables ADD COLUMN ${col} ${spec}`)
+  }
+  db.prepare("DELETE FROM settings WHERE key IN ('chat_enabled','players_move_own_only','players_open_doors','players_open_windows','snap_default','fog_enabled_default','grid_visible_default','grid_square_size','measurement_unit')").run()
+}
+
 // Migration: every pre-floors table gets its map data moved onto floor 1,
 // and its tokens/portals/fog points are attached to that floor. Idempotent.
 const migrateFloors = db.transaction(() => {

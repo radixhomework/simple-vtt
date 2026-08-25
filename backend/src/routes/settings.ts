@@ -1,11 +1,11 @@
 /**
- * Global application settings (typed access lives in ../settings). Patching
- * broadcasts a settings_update to every connected client for live UI sync.
+ * Global application settings (typed access lives in ../settings) — the
+ * admin console's Settings tab. Currently only the asset upload limit;
+ * per-map gameplay/display settings live under /tables/:id/settings.
  */
 import { Router } from 'express'
 import { db } from '../db'
 import { authMiddleware, adminOnly } from '../auth'
-import { broadcastToAll } from '../hub'
 import { loadSettings, sanitizeSettingsPatch } from '../settings'
 
 export const settingsRouter = Router()
@@ -25,9 +25,5 @@ settingsRouter.patch('/settings', authMiddleware, adminOnly, (req, res) => {
     })
     tx()
   }
-
-  const settings = loadSettings()
-  // Push to every connected WebSocket client so the UI updates live
-  broadcastToAll({ type: 'settings_update', payload: { settings } })
-  res.json(settings)
+  res.json(loadSettings())
 })

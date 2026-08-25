@@ -33,7 +33,7 @@ tokensRouter.get('/tables/:id/tokens', authMiddleware, (req, res) => {
 })
 
 tokensRouter.post('/tables/:id/tokens', authMiddleware, adminOnly, (req, res) => {
-  const { name = '', x = 0, y = 0, icon_path = '', has_vision = false, vision_radius = 6, size = 1, color = '#4a90d9', owner = '', hidden = false } = req.body
+  const { name = '', x = 0, y = 0, icon_path = '', has_vision = false, vision_radius = 6, size = 0.75, color = '#4a90d9', owner = '', hidden = false } = req.body
   // Tokens live on a floor of the table (default: lowest level)
   const floor = (req.body.floor_id
     ? db.prepare('SELECT id FROM floors WHERE id=? AND table_id=?').get(req.body.floor_id, req.params.id)

@@ -4,7 +4,7 @@
  * Every user can change their own password from here.
  */
 import { api } from '../api/client'
-import type { User, Table, Asset, Floor } from '../types'
+import type { User, Table, Asset, Floor, TableSettings } from '../types'
 
 type AdminPage = 'tables' | 'users' | 'assets' | 'settings'
 
@@ -281,6 +281,7 @@ export function renderVtt(
                 <td class="row-actions">
                   <button class="btn btn-primary btn-sm" data-mjoin="${t.id}">Join</button>
                   <button class="btn btn-ghost btn-sm" data-mfloors="${t.id}">Floors</button>
+                  <button class="btn btn-ghost btn-sm" data-mset="${t.id}">Settings</button>
                   <button class="btn btn-ghost btn-sm" data-mren="${t.id}">Rename</button>
                   <button class="btn btn-danger btn-sm" data-mdel="${t.id}">Delete</button>
                 </td>
@@ -288,6 +289,11 @@ export function renderVtt(
               <tr class="floors-detail" data-floors-for="${t.id}" style="display:none">
                 <td colspan="6" style="background:var(--bg);padding:12px 12px 16px">
                   <div class="msg" style="margin:0 0 8px">Loading floors…</div>
+                </td>
+              </tr>
+              <tr class="mapsettings-detail" data-mapset-for="${t.id}" style="display:none">
+                <td colspan="6" style="background:var(--bg);padding:12px 12px 16px">
+                  <div class="msg" style="margin:0 0 8px">Loading settings…</div>
                 </td>
               </tr>`).join('')}
           </tbody>
@@ -345,6 +351,17 @@ export function renderVtt(
       })
     })
 
+    page.querySelectorAll('[data-mset]').forEach(el => {
+      el.addEventListener('click', async () => {
+        const id = (el as HTMLElement).dataset.mset!
+        const detail = page.querySelector(`[data-mapset-for="${id}"]`) as HTMLElement | null
+        if (!detail) return
+        if (detail.style.display !== 'none') { detail.style.display = 'none'; return }
+        detail.style.display = ''
+        void renderMapSettingsDetail(id, detail)
+      })
+    })
+
     page.querySelectorAll('[data-mfloors]').forEach(el => {
       el.addEventListener('click', async () => {
         const id = (el as HTMLElement).dataset.mfloors!
@@ -354,6 +371,84 @@ export function renderVtt(
         detail.style.display = ''
         void renderFloorsDetail(id, detail)
       })
+    })
+  }
+
+  /** Per-map gameplay/display settings editor under a map row. */
+  async function renderMapSettingsDetail(tableId: string, detail: HTMLElement) {
+    const cell = detail.querySelector('td')!
+    const reload = () => void renderMapSettingsDetail(tableId, detail)
+    let s: TableSettings
+    try {
+      s = await api.getTableSettings(tableId)
+    } catch (e: any) {
+      cell.innerHTML = `<div class="msg msg-err">Failed to load settings: ${esc(e.message)}</div>`
+      return
+    }
+
+    cell.innerHTML = `
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:8px 40px">
+        <div style="display:flex;flex-direction:column;gap:18px">
+          <div style="font-family:var(--font-title);font-weight:600;font-size:14px;color:var(--muted);text-transform:uppercase;letter-spacing:0.05em">Gameplay</div>
+          ${consoleToggle('chat_enabled', s.chat_enabled, 'Chat', 'Players can send and receive chat messages')}
+          ${consoleToggle('players_move_own_only', s.players_move_own_only, 'Players move own tokens only', 'When enabled, players can only drag tokens they own')}
+          ${consoleToggle('players_open_doors', s.players_open_doors, 'Players can open doors', 'Players may open and close doors by themselves')}
+          ${consoleToggle('players_open_windows', s.players_open_windows, 'Players can open windows', 'Players may open and close windows by themselves')}
+          ${consoleToggle('snap_default', s.snap_default, 'Snap to grid', 'Whether tokens snap to the grid when joining this map')}
+        </div>
+        <div style="display:flex;flex-direction:column;gap:18px">
+          <div style="font-family:var(--font-title);font-weight:600;font-size:14px;color:var(--muted);text-transform:uppercase;letter-spacing:0.05em">Display</div>
+          ${consoleToggle('fog_enabled_default', s.fog_enabled_default, 'Fog of War', 'Whether fog is active when joining this map')}
+          ${consoleToggle('grid_visible_default', s.grid_visible_default, 'Grid', 'Whether the grid is shown when joining this map')}
+          <label style="display:flex;flex-direction:column;gap:4px">
+            <div style="display:flex;align-items:center;justify-content:space-between;gap:12px">
+              <span style="font-size:13px;font-weight:500;">Grid square size</span>
+              <div style="display:flex;align-items:center;gap:6px">
+                <input type="number" id="ms-square-size" value="${s.grid_square_size}" min="0.5" step="0.5"
+                  style="width:64px;padding:5px 8px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:13px;outline:none;" />
+                <select id="ms-unit"
+                  style="padding:5px 8px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:13px;outline:none;">
+                  <option value="ft" ${s.measurement_unit === 'ft' ? 'selected' : ''}>ft</option>
+                  <option value="m" ${s.measurement_unit === 'm' ? 'selected' : ''}>m</option>
+                </select>
+              </div>
+            </div>
+            <span style="font-size:11px;color:var(--muted);">Real-world size of one grid square, used by the measurement tools</span>
+          </label>
+        </div>
+      </div>
+      <div class="msg" data-ms-msg style="margin:8px 0 0"></div>
+    `
+
+    const msg = cell.querySelector('[data-ms-msg]') as HTMLElement
+    const say = (text: string, ok: boolean) => {
+      msg.textContent = text
+      msg.className = 'msg ' + (ok ? 'msg-ok' : 'msg-err')
+      setTimeout(() => { msg.textContent = '' }, 2500)
+    }
+    const patch = async (data: Partial<TableSettings>) => {
+      try {
+        s = { ...s, ...await api.patchTableSettings(tableId, data) }
+        return true
+      } catch (e: any) { say(e.message, false); return false }
+    }
+
+    cell.querySelectorAll<HTMLInputElement>('input[type=checkbox][data-key]').forEach(cb => {
+      cb.addEventListener('change', async () => {
+        if (!await patch({ [cb.dataset.key!]: cb.checked })) { cb.checked = !cb.checked; reload() }
+      })
+    })
+    cell.querySelector('#ms-square-size')?.addEventListener('change', async (e) => {
+      const input = e.target as HTMLInputElement
+      const value = parseFloat(input.value)
+      if (!isFinite(value) || value <= 0) { input.value = String(s.grid_square_size); return }
+      if (!await patch({ grid_square_size: value })) input.value = String(s.grid_square_size)
+      else say('Saved', true)
+    })
+    cell.querySelector('#ms-unit')?.addEventListener('change', async (e) => {
+      const select = e.target as HTMLSelectElement
+      if (!await patch({ measurement_unit: select.value === 'm' ? 'm' : 'ft' })) select.value = s.measurement_unit
+      else say('Saved', true)
     })
   }
 
@@ -609,42 +704,11 @@ export function renderVtt(
     })
   }
 
-  /** Page 4: global defaults — the single home for table-independent settings. */
+  /** Global settings page — installation-wide (uploads). Gameplay and
+   *  display defaults live per map, under Maps & Tables → Settings. */
   async function renderSettingsConsole(page: HTMLElement) {
     const settings = await api.getSettings()
     page.innerHTML = `
-      <div class="admin-section">
-        <h3>Gameplay</h3>
-        <div style="display:flex;flex-direction:column;gap:18px">
-          ${consoleToggle('chat_enabled', settings.chat_enabled, 'Chat', 'Players can send and receive chat messages')}
-          ${consoleToggle('players_move_own_only', settings.players_move_own_only, 'Players move own tokens only', 'When enabled, players can only drag tokens they own')}
-          ${consoleToggle('players_open_doors', settings.players_open_doors, 'Players can open doors', 'Players may open and close doors by themselves')}
-          ${consoleToggle('players_open_windows', settings.players_open_windows, 'Players can open windows', 'Players may open and close windows by themselves')}
-          ${consoleToggle('snap_default', settings.snap_default, 'Snap to grid', 'Whether tokens snap to the grid when joining a table')}
-        </div>
-      </div>
-      <div class="admin-section">
-        <h3>Display defaults</h3>
-        <div style="display:flex;flex-direction:column;gap:18px">
-          ${consoleToggle('fog_enabled_default', settings.fog_enabled_default, 'Fog of War', 'Whether fog is active when joining a table')}
-          ${consoleToggle('grid_visible_default', settings.grid_visible_default, 'Grid', 'Whether the grid is shown when joining a table')}
-          <label style="display:flex;flex-direction:column;gap:4px">
-            <div style="display:flex;align-items:center;justify-content:space-between;gap:12px">
-              <span style="font-size:13px;font-weight:500;">Grid square size</span>
-              <div style="display:flex;align-items:center;gap:6px">
-                <input type="number" id="set-square-size" value="${settings.grid_square_size}" min="0.5" step="0.5"
-                  style="width:64px;padding:5px 8px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:13px;outline:none;" />
-                <select id="set-unit"
-                  style="padding:5px 8px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:13px;outline:none;">
-                  <option value="ft" ${settings.measurement_unit === 'ft' ? 'selected' : ''}>ft</option>
-                  <option value="m" ${settings.measurement_unit === 'm' ? 'selected' : ''}>m</option>
-                </select>
-              </div>
-            </div>
-            <span style="font-size:11px;color:var(--muted);">Real-world size of one grid square, used by the measurement tools</span>
-          </label>
-        </div>
-      </div>
       <div class="admin-section">
         <h3>Uploads</h3>
         <label style="display:flex;flex-direction:column;gap:4px">
@@ -663,49 +727,19 @@ export function renderVtt(
     `
 
     const msg = page.querySelector('#settings-msg') as HTMLElement
-    const say = (text: string, ok: boolean) => { msg.textContent = text; msg.className = 'msg ' + (ok ? 'msg-ok' : 'msg-err') }
-    const reflash = () => { setTimeout(() => { msg.textContent = ''; }, 3000) }
-
-    const patch = async (data: Record<string, unknown>) => {
-      try {
-        await api.patchSettings(data)
-        say('Saved', true)
-        reflash()
-        return true
-      } catch (e: any) {
-        say(e.message, false)
-        reflash()
-        return false
-      }
-    }
-
-    page.querySelectorAll<HTMLInputElement>('input[type=checkbox][data-key]').forEach(cb => {
-      cb.addEventListener('change', async () => {
-        if (!await patch({ [cb.dataset.key!]: cb.checked })) cb.checked = !cb.checked
-      })
-    })
-
-    page.querySelector('#set-square-size')?.addEventListener('change', async (e) => {
-      const input = e.target as HTMLInputElement
-      const value = parseFloat(input.value)
-      if (!isFinite(value) || value <= 0) { input.value = String(settings.grid_square_size); return }
-      if (await patch({ grid_square_size: value })) settings.grid_square_size = value
-      else input.value = String(settings.grid_square_size)
-    })
-
-    page.querySelector('#set-unit')?.addEventListener('change', async (e) => {
-      const select = e.target as HTMLSelectElement
-      const value = select.value === 'm' ? 'm' as const : 'ft' as const
-      if (await patch({ measurement_unit: value })) settings.measurement_unit = value
-      else select.value = settings.measurement_unit
-    })
-
     page.querySelector('#set-max-asset-size')?.addEventListener('change', async (e) => {
       const input = e.target as HTMLInputElement
       const value = parseFloat(input.value)
       if (!isFinite(value) || value < 1 || value > 500) { input.value = String(settings.max_asset_size_mb); return }
-      if (await patch({ max_asset_size_mb: value })) settings.max_asset_size_mb = value
-      else input.value = String(settings.max_asset_size_mb)
+      try {
+        const updated = await api.patchSettings({ max_asset_size_mb: value })
+        settings.max_asset_size_mb = updated.max_asset_size_mb
+        msg.textContent = 'Saved'; msg.className = 'msg msg-ok'
+        setTimeout(() => { msg.textContent = '' }, 2000)
+      } catch (e: any) {
+        input.value = String(settings.max_asset_size_mb)
+        msg.textContent = e.message; msg.className = 'msg msg-err'
+      }
     })
   }
 

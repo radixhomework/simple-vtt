@@ -111,14 +111,22 @@ the queue starts it immediately (players can only reorder/transport).
 
 ## Admin console — ⚙ Settings tab
 
-All global defaults live here (applied live to every connected browser):
+Installation-wide settings:
+
+- **Uploads**: maximum size per asset file (1–500 MB, map images are not
+  concerned)
+
+## Admin console — per-map Settings
+
+Every map in **Maps & Tables** has a **Settings** button opening its own
+gameplay and display configuration (applied live to everyone viewing that
+map):
 
 - **Gameplay**: chat enabled, players move own tokens only, snap to grid,
   players can open **doors** and **windows** by themselves (two separate
   permissions, on by default)
-- **Display defaults**: fog of war, grid, **grid square size + unit (ft/m)**
-  used by every measurement tool (e.g. 5 ft or 1.5 m per square)
-- **Uploads**: maximum size per asset file (1–500 MB)
+- **Display**: fog of war, grid, **grid square size + unit (ft/m)** used
+  by every measurement tool (e.g. 5 ft or 1.5 m per square)
 
 ## Security notes
 

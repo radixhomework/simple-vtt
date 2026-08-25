@@ -2,7 +2,7 @@ import { WebSocketServer, WebSocket } from 'ws'
 import { IncomingMessage } from 'http'
 import { verifyToken } from './auth'
 import { db } from './db'
-import { loadSettings } from './settings'
+import { loadTableSettings } from './settings'
 
 /**
  * WebSocket hub: rooms per table, message dispatch, and server-authoritative
@@ -223,7 +223,7 @@ function sendTableState(client: Client) {
     'SELECT id, table_id, x, y, radius, floor_id FROM fog_points WHERE table_id=? AND floor_id=?'
   ).all(client.tableId, floorId)
 
-  const settings = loadSettings()
+  const settings = loadTableSettings(client.tableId)
 
   const portalRows = db.prepare('SELECT id, table_id, x1, y1, x2, y2, closed, floor_id, kind, locked FROM portals WHERE table_id=? AND floor_id=?')
     .all(client.tableId, floorId) as Record<string, unknown>[]
