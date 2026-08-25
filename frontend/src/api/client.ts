@@ -2,7 +2,7 @@
  * Typed REST client. The JWT is read from localStorage on every call;
  * multipart uploads (maps, music, icons) use their own fetch helpers.
  */
-import type { Table, Token, User, FogPoint, AppSettings, TableSettings, Portal, Asset, Floor, Stairs } from '../types'
+import type { Table, Token, User, FogPoint, AppSettings, TableSettings, Portal, Asset, Floor, Stairs, MapMember } from '../types'
 
 const BASE = '/api'
 
@@ -54,6 +54,11 @@ export const api = {
   getTable: (id: string) => request<Table>('GET', `/tables/${id}`),
   updateTable: (id: string, data: Partial<Table>) =>
     request<Table>('PUT', `/tables/${id}`, data),
+  listMembers: (tableId: string) => request<MapMember[]>('GET', `/tables/${tableId}/members`),
+  addMember: (tableId: string, username: string, role: 'dm' | 'player') =>
+    request<MapMember>('POST', `/tables/${tableId}/members`, { username, role }),
+  removeMember: (tableId: string, username: string) =>
+    request<void>('DELETE', `/tables/${tableId}/members/${username}`),
   deleteTable: (id: string) => request<void>('DELETE', `/tables/${id}`),
 
   // Floors (levels) of a table

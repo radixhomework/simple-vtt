@@ -18,12 +18,17 @@ export interface Table {
   map_offset_y?: number
   /** getTable() embeds the floor list */
   floors?: Floor[]
+  /** Caller's role on this map ('dm' | 'player'); listTables() includes it too */
+  my_role?: 'dm' | 'player'
+  /** Creator of the map (its first dm) */
+  owner?: string
   /** Floor shown when loading the map ('' = lowest level) */
   default_floor_id?: string
   /** listTables() only */
   token_count?: number
   portal_count?: number
   floor_count?: number
+  image_count?: number
 }
 
 /** Floor list entry (metadata only — no map data, so it stays lightweight). */
@@ -136,8 +141,16 @@ export interface Portal {
   locked: boolean
 }
 
+/** Someone invited to a map, with their role on it */
+export interface MapMember {
+  username: string
+  role: 'dm' | 'player'
+}
+
 export interface TableStatePayload {
   table: { id: string; name: string }
+  /** This client's role on the map */
+  map_role: 'dm' | 'player'
   /** All floors (metadata only) + the active floor with its map data */
   floors: FloorLite[]
   floor: Floor | null

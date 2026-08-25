@@ -98,6 +98,24 @@ authRouter.post('/users/:username/password', authMiddleware, adminOnly, (req, re
 
 authRouter.delete('/users/:username', authMiddleware, adminOnly, (req, res) => {
   if (req.params.username === res.locals.user) { res.status(400).json({ error: 'cannot delete yourself' }); return }
+
+  // Map cleanup: drop the user's memberships. Maps they owned must not be
+  // orphaned — promote another dm member if any, else the first admin.
+  const owned = db.prepare('SELECT id FROM tables WHERE owner=?').all(req.params.username) as Array<{ id: string }>
+  db.prepare('DELETE FROM map_members WHERE username=?').run(req.params.username)
+  for (const t of owned) {
+    const heir = db.prepare("SELECT username FROM map_members WHERE table_id=? AND role='dm' ORDER BY rowid LIMIT 1").get(t.id) as { username: string } | undefined
+    if (heir) {
+      db.prepare('UPDATE tables SET owner=? WHERE id=?').run(heir.username, t.id)
+    } else {
+      const admin = db.prepare("SELECT username FROM users WHERE role='admin' AND username<>? ORDER BY rowid LIMIT 1").get(req.params.username) as { username: string } | undefined
+      if (admin) {
+        db.prepare('UPDATE tables SET owner=? WHERE id=?').run(admin.username, t.id)
+        db.prepare("INSERT OR IGNORE INTO map_members (table_id, username, role) VALUES (?,?,'dm')").run(t.id, admin.username)
+      }
+    }
+  }
+
   db.prepare('DELETE FROM users WHERE username=?').run(req.params.username)
   res.sendStatus(204)
 })

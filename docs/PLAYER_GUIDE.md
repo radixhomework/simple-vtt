@@ -83,6 +83,13 @@ menus back.
 - **No sound** — check the volume slider, then click anywhere on the page
   (browser autoplay policy).
 
+## Your own maps
+
+Any user can import Universal VTT maps (**Maps & Tables** page). You
+become the map's **dm**: invite other users as players or dms with the
+**👥 Share** button on the map. You only see maps you uploaded or were
+invited to.
+
 ## Doors and windows
 
 Depending on the permissions the admin granted, you may click **doors**

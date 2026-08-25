@@ -24,13 +24,14 @@ export function renderVtt(
         .lobby { display: flex; flex-direction: column; height: 100%; background: var(--bg); color: var(--text); }
         .lobby-header {
           display: flex; align-items: center; justify-content: space-between;
-          padding: 16px 24px; background: var(--surface); border-bottom: 1px solid var(--border);
+          padding: 16px 24px; background: var(--header); border-bottom: 1px solid var(--border);
         }
         .lobby-title { font-family: var(--font-title); font-size: 23px; font-weight: 700; display: flex; align-items: center; gap: 10px; }
         .lobby-user { display: flex; align-items: center; gap: 12px; font-size: 14px; color: var(--muted); }
         .badge { padding: 2px 8px; border-radius: 12px; font-size: 11px; font-weight: 600; text-transform: uppercase; }
         .badge-admin { background: var(--brand); color: var(--on-brand); }
         .badge-player { background: var(--accent); color: var(--on-brand); }
+        .badge-user { background: var(--accent); color: var(--on-brand); }
         /* lobby-body is the full-width scroll container, so the scrollbar
            sits against the window's right border; the content column is
            centered inside it. */
@@ -122,7 +123,7 @@ export function renderVtt(
           </div>
           <div class="lobby-user">
             <span>${esc(user.username)}</span>
-            <span class="badge badge-${user.role}">${user.role}</span>
+            <span class="badge badge-${user.role}">${user.role === 'player' ? 'user' : user.role}</span>
             <button class="btn btn-ghost btn-sm" id="pass-btn" title="Change password">🔑</button>
             <button class="btn btn-ghost btn-sm" id="logout-btn">Sign out</button>
           </div>
@@ -149,25 +150,15 @@ export function renderVtt(
             <div class="msg" id="pass-msg"></div>
           </div>
 
-          ${isAdmin ? `
           <div class="admin-nav" id="admin-nav">
             <button class="admin-tab active" data-page="tables">🗺 Maps &amp; Tables</button>
+            ${isAdmin ? `
             <button class="admin-tab" data-page="users">👥 Users</button>
             <button class="admin-tab" data-page="assets">📦 Assets</button>
             <button class="admin-tab" data-page="settings">⚙ Settings</button>
-            <span id="version-info" style="margin-left:auto;align-self:center;font-size:11px;color:var(--muted)"></span>
+            <span id="version-info" style="margin-left:auto;align-self:center;font-size:11px;color:var(--muted)"></span>` : ''}
           </div>
-          <div id="admin-page"></div>` : ''}
-
-          <div class="section-header">
-            <span class="section-title">Tables</span>
-          </div>
-          <div class="tables-grid" id="tables-grid">
-            ${tables.length === 0
-              ? `<div class="empty-state" style="grid-column:1/-1">No tables yet${isAdmin ? ' — create or import one above' : ''}.</div>`
-              : tables.map(t => tableCardHTML(t, isAdmin)).join('')
-            }
-          </div>
+          <div id="admin-page"></div>
           </div>
         </div>
       </div>
@@ -200,43 +191,25 @@ export function renderVtt(
       }
     })
 
-    // Join table (cards)
-    root.querySelectorAll('#tables-grid [data-join]').forEach(el => {
-      el.addEventListener('click', () => {
-        const id = (el as HTMLElement).dataset.join!
-        const table = tables.find(t => t.id === id)
-        if (table) onJoin(table)
-      })
-    })
-    root.querySelectorAll('#tables-grid [data-del]').forEach(el => {
-      el.addEventListener('click', async (e) => {
-        e.stopPropagation()
-        const id = (el as HTMLElement).dataset.del!
-        if (confirm('Delete this table and all its data?')) {
-          await api.deleteTable(id)
-          render()
-        }
-      })
-    })
-
+    // Version line (admin): frontend (build-time) + backend (API)
     if (isAdmin) {
-      // Version line: frontend (build-time) + backend (API)
       api.getVersion()
         .then(v => {
           const el = root.querySelector('#version-info')
           if (el) el.textContent = `frontend v${__APP_VERSION__} · backend v${v.version}`
         })
         .catch(() => {})
-
-      root.querySelectorAll('[data-page]').forEach(btn => {
-        btn.addEventListener('click', () => {
-          adminPage = (btn as HTMLElement).dataset.page as AdminPage
-          root.querySelectorAll('[data-page]').forEach(b => b.classList.toggle('active', b === btn))
-          renderAdminPage()
-        })
-      })
-      renderAdminPage()
     }
+
+    // Console tabs (users only see Maps & Tables)
+    root.querySelectorAll('[data-page]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        adminPage = (btn as HTMLElement).dataset.page as AdminPage
+        root.querySelectorAll('[data-page]').forEach(b => b.classList.toggle('active', b === btn))
+        renderAdminPage()
+      })
+    })
+    renderAdminPage()
   }
 
   // ── Admin pages ────────────────────────────────────────────────────────────
@@ -256,6 +229,7 @@ export function renderVtt(
     page.innerHTML = `
       <div class="admin-section">
         <h3>Import Universal VTT (.uvtt / .zip)</h3>
+        <div style="font-size:12px;color:var(--muted);margin:-8px 0 12px">Importing a map makes you its DM — invite users from the map's 👥 Share button</div>
         <div class="upload-zone" id="uvtt-drop">
           Drop a .uvtt or .zip file here, or click to browse
           <input type="file" id="uvtt-file" accept=".uvtt,.zip,.dd2vtt" style="display:none" />
@@ -263,29 +237,39 @@ export function renderVtt(
         <div class="msg" id="import-msg"></div>
       </div>
 
-      <div class="admin-section">
-        <h3>Maps (${tables.length})</h3>
-        ${tables.length === 0 ? '<div class="empty-state">No tables yet.</div>' : `
-        <table class="data-table">
+      ${(() => {
+        const dmMaps = tables.filter(t => t.my_role === 'dm')
+        const playerMaps = tables.filter(t => t.my_role !== 'dm')
+        const rows = (list: Table[], manage: boolean) => list.length === 0
+          ? '<div class="empty-state">No maps here yet.</div>'
+          // Player maps show no details (counts would leak hidden tokens);
+          // dm maps get the full inventory
+          : `<table class="data-table">
           <thead>
-            <tr><th>Name</th><th>Floors</th><th>Tokens</th><th>Portals</th><th>Map image</th><th></th></tr>
+            ${manage
+              ? '<tr><th>Name</th><th>Floors</th><th>Tokens</th><th>Portals</th><th>Map image</th><th></th></tr>'
+              : '<tr><th>Name</th><th>DM (owner)</th><th></th></tr>'}
           </thead>
           <tbody>
-            ${tables.map(t => `
+            ${list.map((t) => `
               <tr>
                 <td>${esc(t.name)}</td>
+                ${manage ? `
                 <td>${t.floor_count ?? 1}</td>
                 <td>${t.token_count ?? '—'}</td>
                 <td>${t.portal_count ?? '—'}</td>
-                <td>${t.map_image_path ? '✓' : '—'}</td>
+                <td>${(t.image_count ?? 0) > 0 ? '✓' : '—'}</td>` : `
+                <td>${esc(t.owner ?? '')}</td>`}
                 <td class="row-actions">
                   <button class="btn btn-primary btn-sm" data-mjoin="${t.id}">Join</button>
+                  ${manage ? `
                   <button class="btn btn-ghost btn-sm" data-mfloors="${t.id}">Floors</button>
                   <button class="btn btn-ghost btn-sm" data-mset="${t.id}">Settings</button>
                   <button class="btn btn-ghost btn-sm" data-mren="${t.id}">Rename</button>
-                  <button class="btn btn-danger btn-sm" data-mdel="${t.id}">Delete</button>
+                  <button class="btn btn-danger btn-sm" data-mdel="${t.id}">Delete</button>` : ''}
                 </td>
               </tr>
+              ${manage ? `
               <tr class="floors-detail" data-floors-for="${t.id}" style="display:none">
                 <td colspan="6" style="background:var(--bg);padding:12px 12px 16px">
                   <div class="msg" style="margin:0 0 8px">Loading floors…</div>
@@ -295,10 +279,19 @@ export function renderVtt(
                 <td colspan="6" style="background:var(--bg);padding:12px 12px 16px">
                   <div class="msg" style="margin:0 0 8px">Loading settings…</div>
                 </td>
-              </tr>`).join('')}
+              </tr>` : ''}`).join('')}
           </tbody>
-        </table>`}
+        </table>`
+        return `
+      <div class="admin-section">
+        <h3>Maps you DM (${dmMaps.length})</h3>
+        ${rows(dmMaps, true)}
       </div>
+      <div class="admin-section">
+        <h3>Maps you play on (${playerMaps.length})</h3>
+        ${rows(playerMaps, false)}
+      </div>`
+      })()}
     `
 
     const refresh = () => { void render() }
@@ -417,38 +410,41 @@ export function renderVtt(
           </label>
         </div>
       </div>
+      <button class="btn btn-primary" data-ms-save style="margin-top:12px">Save</button>
       <div class="msg" data-ms-msg style="margin:8px 0 0"></div>
     `
 
+    // Edits accumulate in a local draft; nothing reaches the server until
+    // the Save button is pressed.
     const msg = cell.querySelector('[data-ms-msg]') as HTMLElement
     const say = (text: string, ok: boolean) => {
       msg.textContent = text
       msg.className = 'msg ' + (ok ? 'msg-ok' : 'msg-err')
-      setTimeout(() => { msg.textContent = '' }, 2500)
     }
-    const patch = async (data: Partial<TableSettings>) => {
-      try {
-        s = { ...s, ...await api.patchTableSettings(tableId, data) }
-        return true
-      } catch (e: any) { say(e.message, false); return false }
-    }
+    const draft: TableSettings = { ...s }
 
     cell.querySelectorAll<HTMLInputElement>('input[type=checkbox][data-key]').forEach(cb => {
-      cb.addEventListener('change', async () => {
-        if (!await patch({ [cb.dataset.key!]: cb.checked })) { cb.checked = !cb.checked; reload() }
+      cb.addEventListener('change', () => {
+        (draft as unknown as Record<string, unknown>)[cb.dataset.key!] = cb.checked
       })
     })
-    cell.querySelector('#ms-square-size')?.addEventListener('change', async (e) => {
+    cell.querySelector('#ms-square-size')?.addEventListener('change', (e) => {
       const input = e.target as HTMLInputElement
       const value = parseFloat(input.value)
-      if (!isFinite(value) || value <= 0) { input.value = String(s.grid_square_size); return }
-      if (!await patch({ grid_square_size: value })) input.value = String(s.grid_square_size)
-      else say('Saved', true)
+      if (isFinite(value) && value > 0) draft.grid_square_size = value
     })
-    cell.querySelector('#ms-unit')?.addEventListener('change', async (e) => {
-      const select = e.target as HTMLSelectElement
-      if (!await patch({ measurement_unit: select.value === 'm' ? 'm' : 'ft' })) select.value = s.measurement_unit
-      else say('Saved', true)
+    cell.querySelector('#ms-unit')?.addEventListener('change', (e) => {
+      draft.measurement_unit = (e.target as HTMLSelectElement).value === 'm' ? 'm' : 'ft'
+    })
+
+    cell.querySelector('[data-ms-save]')?.addEventListener('click', async () => {
+      try {
+        s = { ...s, ...await api.patchTableSettings(tableId, draft) }
+        say('Saved', true)
+        setTimeout(() => { msg.textContent = '' }, 2500)
+      } catch (e: any) {
+        say(e.message, false)
+      }
     })
   }
 
@@ -612,7 +608,7 @@ export function renderVtt(
           <div class="form-field">
             <label>Role</label>
             <select id="new-user-role">
-              <option value="player">Player</option>
+              <option value="player">User</option>
               <option value="admin">Admin</option>
             </select>
           </div>
@@ -722,22 +718,25 @@ export function renderVtt(
           </div>
           <span style="font-size:11px;color:var(--muted);">Per-file limit for token icons and music uploads (1–500 MB) — map images are not concerned</span>
         </label>
+        <button class="btn btn-primary" id="set-save" style="margin-top:12px">Save</button>
       </div>
       <div class="msg" id="settings-msg" style="margin:0 0 8px"></div>
     `
 
     const msg = page.querySelector('#settings-msg') as HTMLElement
-    page.querySelector('#set-max-asset-size')?.addEventListener('change', async (e) => {
-      const input = e.target as HTMLInputElement
+    page.querySelector('#set-save')?.addEventListener('click', async () => {
+      const input = page.querySelector('#set-max-asset-size') as HTMLInputElement
       const value = parseFloat(input.value)
-      if (!isFinite(value) || value < 1 || value > 500) { input.value = String(settings.max_asset_size_mb); return }
+      if (!isFinite(value) || value < 1 || value > 500) {
+        msg.textContent = 'Max upload size must be between 1 and 500 MB'
+        msg.className = 'msg msg-err'
+        return
+      }
       try {
         const updated = await api.patchSettings({ max_asset_size_mb: value })
         settings.max_asset_size_mb = updated.max_asset_size_mb
         msg.textContent = 'Saved'; msg.className = 'msg msg-ok'
-        setTimeout(() => { msg.textContent = '' }, 2000)
       } catch (e: any) {
-        input.value = String(settings.max_asset_size_mb)
         msg.textContent = e.message; msg.className = 'msg msg-err'
       }
     })

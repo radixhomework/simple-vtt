@@ -26,6 +26,7 @@ db.exec(`
   CREATE TABLE IF NOT EXISTS tables (
     id               TEXT PRIMARY KEY,
     name             TEXT NOT NULL,
+    owner            TEXT NOT NULL DEFAULT '',   -- creator (first dm)
     default_floor_id TEXT NOT NULL DEFAULT '',   -- '' = lowest level
     map_image_path TEXT NOT NULL DEFAULT '',   -- legacy: moved to floors
     grid_size      INTEGER NOT NULL DEFAULT 70,
@@ -48,6 +49,16 @@ db.exec(`
     map_offset_y   REAL NOT NULL DEFAULT 0,
     img_width      INTEGER NOT NULL DEFAULT 0,
     img_height     INTEGER NOT NULL DEFAULT 0,
+    FOREIGN KEY (table_id) REFERENCES tables(id) ON DELETE CASCADE
+  );
+
+  -- Per-map membership: who may reach a map and as what. Uploaders are
+  -- dm by default; other users (admins included) must be invited.
+  CREATE TABLE IF NOT EXISTS map_members (
+    table_id TEXT NOT NULL,
+    username TEXT NOT NULL,
+    role     TEXT NOT NULL CHECK (role IN ('dm','player')),
+    PRIMARY KEY (table_id, username),
     FOREIGN KEY (table_id) REFERENCES tables(id) ON DELETE CASCADE
   );
 
@@ -216,6 +227,29 @@ if (!portalCols.some(c => c.name === 'locked')) {
     if (!cols.some(c => c.name === col)) db.exec(`ALTER TABLE tables ADD COLUMN ${col} ${spec}`)
   }
   db.prepare("DELETE FROM settings WHERE key IN ('chat_enabled','players_move_own_only','players_open_doors','players_open_windows','snap_default','fog_enabled_default','grid_visible_default','grid_square_size','measurement_unit')").run()
+}
+
+// Migration: per-map access control. Existing tables had no owner; the
+// first admin account becomes their owner and dm so nothing is lost.
+{
+  const cols = db.prepare('PRAGMA table_info(tables)').all() as Array<{ name: string }>
+  if (!cols.some(c => c.name === 'owner')) {
+    db.exec("ALTER TABLE tables ADD COLUMN owner TEXT NOT NULL DEFAULT ''")
+  }
+  const orphanTables = db.prepare(
+    "SELECT id FROM tables WHERE id NOT IN (SELECT DISTINCT table_id FROM map_members)"
+  ).all() as Array<{ id: string }>
+  if (orphanTables.length > 0) {
+    const admin = db.prepare("SELECT username FROM users WHERE role='admin' ORDER BY rowid LIMIT 1").get() as { username: string } | undefined
+    if (admin) {
+      const setOwner = db.prepare('UPDATE tables SET owner=? WHERE id=?')
+      const addMember = db.prepare("INSERT OR IGNORE INTO map_members (table_id, username, role) VALUES (?,?, 'dm')")
+      for (const t of orphanTables) {
+        setOwner.run(admin.username, t.id)
+        addMember.run(t.id, admin.username)
+      }
+    }
+  }
 }
 
 // Migration: every pre-floors table gets its map data moved onto floor 1,

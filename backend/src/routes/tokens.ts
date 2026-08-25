@@ -5,7 +5,8 @@
  */
 import { Router } from 'express'
 import { db } from '../db'
-import { authMiddleware, adminOnly } from '../auth'
+import { authMiddleware } from '../auth'
+import { requireMapDM, isMapDM } from '../mapaccess'
 import { pushTableStateToTable } from '../hub'
 
 export const tokensRouter = Router()
@@ -25,14 +26,15 @@ function normalizeToken(row: Record<string, unknown>) {
 // ── Tokens ────────────────────────────────────────────────────────────────────
 tokensRouter.get('/tables/:id/tokens', authMiddleware, (req, res) => {
   const rows = db.prepare(`SELECT ${TOKEN_COLS} FROM tokens WHERE table_id=?`).all(req.params.id) as Array<Record<string, unknown>>
-  // Hidden tokens are invisible to players — withhold them entirely
-  const visible = res.locals.role === 'admin'
+  // Hidden tokens are invisible to map players — withhold them entirely
+  const visible = isMapDM(res.locals.user, req.params.id, res.locals.role)
     ? rows
     : rows.filter(t => t.hidden !== 1)
   res.json(visible.map(normalizeToken))
 })
 
-tokensRouter.post('/tables/:id/tokens', authMiddleware, adminOnly, (req, res) => {
+tokensRouter.post('/tables/:id/tokens', authMiddleware, (req, res) => {
+  if (!requireMapDM(req, res)) return
   const { name = '', x = 0, y = 0, icon_path = '', has_vision = false, vision_radius = 6, size = 0.75, color = '#4a90d9', owner = '', hidden = false } = req.body
   // Tokens live on a floor of the table (default: lowest level)
   const floor = (req.body.floor_id
@@ -54,9 +56,9 @@ tokensRouter.put('/tables/:id/tokens/:tokenId', authMiddleware, (req, res) => {
 
   if (!existing) { res.status(404).json({ error: 'not found' }); return }
 
-  // Authorization: admins may edit anything; players only their own tokens,
-  // and cannot change owner/hidden (admin-only controls).
-  const isAdmin = res.locals.role === 'admin'
+  // Authorization: map dms may edit anything; players only their own tokens,
+  // and cannot change owner/hidden (dm-only controls).
+  const isAdmin = isMapDM(res.locals.user, req.params.id, res.locals.role)
   if (!isAdmin && existing.owner !== res.locals.user) {
     res.status(403).json({ error: 'forbidden' }); return
   }
@@ -104,7 +106,8 @@ tokensRouter.put('/tables/:id/tokens/:tokenId', authMiddleware, (req, res) => {
   res.json(normalizeToken(row))
 })
 
-tokensRouter.delete('/tables/:id/tokens/:tokenId', authMiddleware, adminOnly, (req, res) => {
+tokensRouter.delete('/tables/:id/tokens/:tokenId', authMiddleware, (req, res) => {
+  if (!requireMapDM(req, res)) return
   db.prepare('DELETE FROM tokens WHERE id=? AND table_id=?').run(req.params.tokenId, req.params.id)
   res.sendStatus(204)
 })
@@ -117,7 +120,8 @@ tokensRouter.get('/tables/:id/fog', authMiddleware, (req, res) => {
     : db.prepare('SELECT id, table_id, x, y, radius, floor_id FROM fog_points WHERE table_id=?').all(req.params.id))
 })
 
-tokensRouter.post('/tables/:id/fog', authMiddleware, adminOnly, (req, res) => {
+tokensRouter.post('/tables/:id/fog', authMiddleware, (req, res) => {
+  if (!requireMapDM(req, res)) return
   const { x, y, radius = 3, floor_id } = req.body
   const id = newId()
   db.prepare('INSERT INTO fog_points (id, table_id, x, y, radius, floor_id) VALUES (?,?,?,?,?,?)')
@@ -125,7 +129,8 @@ tokensRouter.post('/tables/:id/fog', authMiddleware, adminOnly, (req, res) => {
   res.status(201).json({ id, table_id: req.params.id, x, y, radius, floor_id: floor_id ?? '' })
 })
 
-tokensRouter.delete('/tables/:id/fog', authMiddleware, adminOnly, (req, res) => {
+tokensRouter.delete('/tables/:id/fog', authMiddleware, (req, res) => {
+  if (!requireMapDM(req, res)) return
   // ?floor_id= scopes the clear to one level; without it, all floors
   const floor = typeof req.query.floor_id === 'string' ? req.query.floor_id : null
   if (floor) db.prepare('DELETE FROM fog_points WHERE table_id=? AND floor_id=?').run(req.params.id, floor)

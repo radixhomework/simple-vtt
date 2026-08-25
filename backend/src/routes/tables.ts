@@ -13,10 +13,11 @@ import path from 'path'
 import fs from 'fs'
 import AdmZip from 'adm-zip'
 import { db } from '../db'
-import { authMiddleware, adminOnly } from '../auth'
+import { authMiddleware } from '../auth'
 import { decodeUploadFilename } from '../filename'
 import { pushTableStateToTable, broadcastToTable } from '../hub'
 import { loadTableSettings, sanitizeTableSettingsPatch } from '../settings'
+import { mapRole, requireMapDM, requireMapAccess } from '../mapaccess'
 
 export const tablesRouter = Router()
 
@@ -27,7 +28,7 @@ const upload = multer({ storage, limits: { fileSize: 150 * 1024 * 1024 } })
 
 function newId(): string { return crypto.randomUUID().replace(/-/g, '').slice(0, 16) }
 
-const TABLE_COLS = 'id, name, default_floor_id'
+const TABLE_COLS = 'id, name, owner, default_floor_id'
 const FLOOR_COLS = 'id, table_id, level, name, map_image_path, grid_size, uvt_metadata, map_offset_x, map_offset_y, img_width, img_height'
 
 interface FloorRow {
@@ -37,7 +38,7 @@ interface FloorRow {
 }
 
 function getTable(id: string) {
-  return db.prepare(`SELECT ${TABLE_COLS} FROM tables WHERE id=?`).get(id) as { id: string; name: string; default_floor_id: string } | undefined
+  return db.prepare(`SELECT ${TABLE_COLS} FROM tables WHERE id=?`).get(id) as { id: string; name: string; owner: string; default_floor_id: string } | undefined
 }
 
 function getFloor(id: string) {
@@ -71,34 +72,52 @@ function checkDimensions(tableId: string, w: number, h: number): string | null {
 }
 
 // ── Tables ────────────────────────────────────────────────────────────────────
-tablesRouter.get('/tables', authMiddleware, (_req, res) => {
-  res.json(db.prepare(`
-    SELECT t.id, t.name,
-      (SELECT COUNT(*) FROM floors  WHERE table_id = t.id) AS floor_count,
-      (SELECT COUNT(*) FROM tokens  WHERE table_id = t.id) AS token_count,
-      (SELECT COUNT(*) FROM portals WHERE table_id = t.id) AS portal_count
-    FROM tables t
-  `).all())
-})
+tablesRouter.get('/tables', authMiddleware, (req, res) => {
+    // Users see the maps they can reach (uploaded or invited); admins see
+    // everything through the console.
+    const rows = res.locals.role === 'admin'
+      ? db.prepare(`
+          SELECT t.id, t.name, t.owner,
+            (SELECT COUNT(*) FROM floors  WHERE table_id = t.id) AS floor_count,
+            (SELECT COUNT(*) FROM floors  WHERE table_id = t.id AND map_image_path <> '') AS image_count,
+            (SELECT COUNT(*) FROM tokens  WHERE table_id = t.id) AS token_count,
+            (SELECT COUNT(*) FROM portals WHERE table_id = t.id) AS portal_count
+          FROM tables t ORDER BY t.rowid DESC
+        `).all() as Array<Record<string, unknown>>
+      : db.prepare(`
+          SELECT t.id, t.name, t.owner,
+            (SELECT COUNT(*) FROM floors  WHERE table_id = t.id) AS floor_count,
+            (SELECT COUNT(*) FROM floors  WHERE table_id = t.id AND map_image_path <> '') AS image_count,
+            (SELECT COUNT(*) FROM tokens  WHERE table_id = t.id) AS token_count,
+            (SELECT COUNT(*) FROM portals WHERE table_id = t.id) AS portal_count
+          FROM tables t JOIN map_members m ON m.table_id = t.id
+          WHERE m.username = ? ORDER BY t.rowid DESC
+        `).all(res.locals.user) as Array<Record<string, unknown>>
+    const withRole = rows.map(t => ({ ...t, my_role: mapRole(res.locals.user, t.id as string, res.locals.role) }))
+    res.json(withRole)
+  })
 
-tablesRouter.post('/tables', authMiddleware, adminOnly, (req, res) => {
+tablesRouter.post('/tables', authMiddleware, (req, res) => {
   const { name, grid_size = 70 } = req.body
   if (!name) { res.status(400).json({ error: 'name required' }); return }
   const id = newId()
   db.transaction(() => {
-    db.prepare('INSERT INTO tables (id, name) VALUES (?,?)').run(id, name)
+    db.prepare('INSERT INTO tables (id, name, owner) VALUES (?,?,?)').run(id, name, res.locals.user)
     db.prepare('INSERT INTO floors (id, table_id, level, name, grid_size) VALUES (?,?,1,?,?)').run(newId(), id, '', grid_size)
+    db.prepare("INSERT INTO map_members (table_id, username, role) VALUES (?,?,'dm')").run(id, res.locals.user)
   })()
   res.status(201).json(getTable(id))
 })
 
 tablesRouter.get('/tables/:id', authMiddleware, (req, res) => {
+  if (!requireMapAccess(req, res)) return
   const t = getTable(req.params.id)
   if (!t) { res.status(404).json({ error: 'not found' }); return }
-  res.json({ ...t, floors: floorsOf(req.params.id) })
+  res.json({ ...t, floors: floorsOf(req.params.id), my_role: mapRole(res.locals.user, req.params.id, res.locals.role) })
 })
 
-tablesRouter.put('/tables/:id', authMiddleware, adminOnly, (req, res) => {
+tablesRouter.put('/tables/:id', authMiddleware, (req, res) => {
+  if (!requireMapDM(req, res)) return
   const existing = getTable(req.params.id)
   if (!existing) { res.status(404).json({ error: 'not found' }); return }
   const name = req.body.name !== undefined ? req.body.name : existing.name
@@ -119,13 +138,40 @@ tablesRouter.put('/tables/:id', authMiddleware, adminOnly, (req, res) => {
   res.json(getTable(req.params.id))
 })
 
-tablesRouter.delete('/tables/:id', authMiddleware, adminOnly, (req, res) => {
+tablesRouter.delete('/tables/:id', authMiddleware, (req, res) => {
+  if (!requireMapDM(req, res)) return
   db.prepare('DELETE FROM floors WHERE table_id=?').run(req.params.id) // cascades nothing; children follow below
   db.prepare('DELETE FROM tokens WHERE table_id=?').run(req.params.id)
   db.prepare('DELETE FROM portals WHERE table_id=?').run(req.params.id)
   db.prepare('DELETE FROM fog_points WHERE table_id=?').run(req.params.id)
   db.prepare('DELETE FROM stairs WHERE table_id=?').run(req.params.id)
   db.prepare('DELETE FROM tables WHERE id=?').run(req.params.id)
+  res.sendStatus(204)
+})
+
+// ── Map members (invitations) ─────────────────────────────────────────────────
+tablesRouter.get('/tables/:id/members', authMiddleware, (req, res) => {
+  if (!requireMapDM(req, res)) return
+  res.json(db.prepare('SELECT username, role FROM map_members WHERE table_id=? ORDER BY role, username').all(req.params.id))
+})
+
+tablesRouter.post('/tables/:id/members', authMiddleware, (req, res) => {
+  if (!requireMapDM(req, res)) return
+  const { username, role } = req.body as { username?: string; role?: string }
+  if (!username || (role !== 'dm' && role !== 'player')) { res.status(400).json({ error: 'username and role (dm|player) required' }); return }
+  const user = db.prepare('SELECT username FROM users WHERE username=?').get(username)
+  if (!user) { res.status(404).json({ error: 'unknown user' }); return }
+  db.prepare('INSERT INTO map_members (table_id, username, role) VALUES (?,?,?) ON CONFLICT(table_id, username) DO UPDATE SET role=excluded.role')
+    .run(req.params.id, username, role)
+  res.status(201).json({ username, role })
+})
+
+tablesRouter.delete('/tables/:id/members/:username', authMiddleware, (req, res) => {
+  if (!requireMapDM(req, res)) return
+  const table = getTable(req.params.id)
+  if (req.params.username === table?.owner) { res.status(409).json({ error: 'the map owner cannot be removed' }); return }
+  const r = db.prepare('DELETE FROM map_members WHERE table_id=? AND username=?').run(req.params.id, req.params.username)
+  if (r.changes === 0) { res.status(404).json({ error: 'not a member' }); return }
   res.sendStatus(204)
 })
 
@@ -136,7 +182,8 @@ tablesRouter.get('/tables/:id/settings', authMiddleware, (req, res) => {
   res.json(loadTableSettings(req.params.id))
 })
 
-tablesRouter.patch('/tables/:id/settings', authMiddleware, adminOnly, (req, res) => {
+tablesRouter.patch('/tables/:id/settings', authMiddleware, (req, res) => {
+  if (!requireMapDM(req, res)) return
   const table = getTable(req.params.id)
   if (!table) { res.status(404).json({ error: 'not found' }); return }
   const patches = sanitizeTableSettingsPatch(req.body)
@@ -150,7 +197,7 @@ tablesRouter.patch('/tables/:id/settings', authMiddleware, adminOnly, (req, res)
 })
 
 // ── Table import (UVTT/zip creates a new table with floor 1) ─────────────────
-tablesRouter.post('/tables/import', authMiddleware, adminOnly, upload.single('file'), (req, res) => {
+tablesRouter.post('/tables/import', authMiddleware, upload.single('file'), (req, res) => {
   if (!req.file) { res.status(400).json({ error: 'no file' }); return }
 
   const ext = path.extname(decodeUploadFilename(req.file.originalname)).toLowerCase()
@@ -214,7 +261,8 @@ tablesRouter.post('/tables/import', authMiddleware, adminOnly, upload.single('fi
   const meta = JSON.stringify(uvttJson)
 
   const insertAll = db.transaction(() => {
-    db.prepare('INSERT INTO tables (id, name) VALUES (?,?)').run(tableId, tableName)
+    db.prepare('INSERT INTO tables (id, name, owner) VALUES (?,?,?)').run(tableId, tableName, res.locals.user)
+    db.prepare("INSERT INTO map_members (table_id, username, role) VALUES (?,?,'dm')").run(tableId, res.locals.user)
     db.prepare(
       `INSERT INTO floors (id, table_id, level, name, map_image_path, grid_size, uvt_metadata, img_width, img_height)
        VALUES (?,?,1,'',?,?,?,?,?)`
@@ -243,12 +291,13 @@ tablesRouter.post('/tables/import', authMiddleware, adminOnly, upload.single('fi
   })
   insertAll()
 
-  res.status(201).json({ ...getTable(tableId), floors: floorsOf(tableId) })
+  res.status(201).json({ ...getTable(tableId), floors: floorsOf(tableId), my_role: mapRole(res.locals.user, tableId, res.locals.role) })
 })
 
 // ── Floors ────────────────────────────────────────────────────────────────────
 /** Create an empty floor at the next level. */
-tablesRouter.post('/tables/:id/floors', authMiddleware, adminOnly, (req, res) => {
+tablesRouter.post('/tables/:id/floors', authMiddleware, (req, res) => {
+  if (!requireMapDM(req, res)) return
   const table = getTable(req.params.id)
   if (!table) { res.status(404).json({ error: 'not found' }); return }
   const { name = '', grid_size } = req.body
@@ -262,7 +311,8 @@ tablesRouter.post('/tables/:id/floors', authMiddleware, adminOnly, (req, res) =>
 })
 
 /** Import a UVTT/zip as a new floor (map + walls + portals). */
-tablesRouter.post('/tables/:id/floors/import', authMiddleware, adminOnly, upload.single('file'), (req, res) => {
+tablesRouter.post('/tables/:id/floors/import', authMiddleware, upload.single('file'), (req, res) => {
+  if (!requireMapDM(req, res)) return
   if (!req.file) { res.status(400).json({ error: 'no file' }); return }
   const table = getTable(req.params.id)
   if (!table) { res.status(404).json({ error: 'not found' }); return }
@@ -366,7 +416,8 @@ tablesRouter.post('/tables/:id/floors/import', authMiddleware, adminOnly, upload
 })
 
 /** Reorder floors: the given id sequence becomes levels 1..N. */
-tablesRouter.put('/tables/:id/floors/reorder', authMiddleware, adminOnly, (req, res) => {
+tablesRouter.put('/tables/:id/floors/reorder', authMiddleware, (req, res) => {
+  if (!requireMapDM(req, res)) return
   const { floor_ids } = req.body as { floor_ids?: string[] }
   const floors = floorsOf(req.params.id)
   if (!Array.isArray(floor_ids) || floor_ids.length !== floors.length
@@ -384,9 +435,10 @@ tablesRouter.put('/tables/:id/floors/reorder', authMiddleware, adminOnly, (req, 
 })
 
 /** Upload/replace the map image of a floor. Client sends width/height for the dimension check. */
-tablesRouter.post('/floors/:id/upload-image', authMiddleware, adminOnly, upload.single('image'), (req, res) => {
+tablesRouter.post('/floors/:id/upload-image', authMiddleware, upload.single('image'), (req, res) => {
   const floor = getFloor(req.params.id)
   if (!floor) { res.status(404).json({ error: 'floor not found' }); return }
+  if (!requireMapDM(req, res, floor.table_id)) return
   if (!req.file) { res.status(400).json({ error: 'no file' }); return }
   const w = parseInt(String(req.body.width ?? '0')) || 0
   const h = parseInt(String(req.body.height ?? '0')) || 0
@@ -403,9 +455,10 @@ tablesRouter.post('/floors/:id/upload-image', authMiddleware, adminOnly, upload.
   res.json({ path: imagePath, width: w, height: h })
 })
 
-tablesRouter.put('/floors/:id', authMiddleware, adminOnly, (req, res) => {
+tablesRouter.put('/floors/:id', authMiddleware, (req, res) => {
   const floor = getFloor(req.params.id)
   if (!floor) { res.status(404).json({ error: 'not found' }); return }
+  if (!requireMapDM(req, res, floor.table_id)) return
   const b = req.body
   const merged = {
     name:           b.name           !== undefined ? String(b.name)          : floor.name,
@@ -418,9 +471,10 @@ tablesRouter.put('/floors/:id', authMiddleware, adminOnly, (req, res) => {
   res.json(getFloor(floor.id))
 })
 
-tablesRouter.delete('/floors/:id', authMiddleware, adminOnly, (req, res) => {
+tablesRouter.delete('/floors/:id', authMiddleware, (req, res) => {
   const floor = getFloor(req.params.id)
   if (!floor) { res.status(404).json({ error: 'not found' }); return }
+  if (!requireMapDM(req, res, floor.table_id)) return
   const count = db.prepare('SELECT COUNT(*) AS n FROM floors WHERE table_id=?').get(floor.table_id) as { n: number }
   if (count.n <= 1) { res.status(409).json({ error: 'cannot delete the last floor' }); return }
   db.transaction(() => {
@@ -434,7 +488,8 @@ tablesRouter.delete('/floors/:id', authMiddleware, adminOnly, (req, res) => {
 })
 
 // ── Stairs ────────────────────────────────────────────────────────────────────
-tablesRouter.post('/tables/:id/stairs', authMiddleware, adminOnly, (req, res) => {
+tablesRouter.post('/tables/:id/stairs', authMiddleware, (req, res) => {
+  if (!requireMapDM(req, res)) return
   const { from_floor, from_x, from_y, to_floor, to_x, to_y, radius = 1 } = req.body
   const floors = floorsOf(req.params.id)
   const from = floors.find(f => f.id === from_floor)
@@ -446,13 +501,17 @@ tablesRouter.post('/tables/:id/stairs', authMiddleware, adminOnly, (req, res) =>
   res.status(201).json({ id, table_id: req.params.id, from_floor, from_x, from_y, to_floor, to_x, to_y, radius })
 })
 
-tablesRouter.delete('/stairs/:id', authMiddleware, adminOnly, (req, res) => {
+tablesRouter.delete('/stairs/:id', authMiddleware, (req, res) => {
+  const stair = db.prepare('SELECT table_id FROM stairs WHERE id=?').get(req.params.id) as { table_id: string } | undefined
+  if (!stair) { res.sendStatus(204); return }
+  if (!requireMapDM(req, res, stair.table_id)) return
   db.prepare('DELETE FROM stairs WHERE id=?').run(req.params.id)
   res.sendStatus(204)
 })
 
 /** Change a stair's destination floor (arrival point keeps its coordinates). */
-tablesRouter.patch('/tables/:id/stairs/:stairId', authMiddleware, adminOnly, (req, res) => {
+tablesRouter.patch('/tables/:id/stairs/:stairId', authMiddleware, (req, res) => {
+  if (!requireMapDM(req, res)) return
   const { to_floor } = req.body as { to_floor: string }
   const stair = db.prepare('SELECT id, table_id, from_floor, from_x, from_y, to_floor, to_x, to_y, radius FROM stairs WHERE id=? AND table_id=?')
     .get(req.params.stairId, req.params.id) as Record<string, unknown> | undefined

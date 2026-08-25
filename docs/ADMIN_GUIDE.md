@@ -109,6 +109,21 @@ the queue starts it immediately (players can only reorder/transport).
 
 **⛶** hides all menus and takes the browser fullscreen; **Esc** exits.
 
+## Maps and access control
+
+- **Anyone can upload a map** (UVTT import) — the uploader becomes its
+  **dm**. Global admins additionally manage every map from the console.
+- A map is reached only by its dm and the users they invite (as **player**
+  or **dm**) through the map's **👥 Share** button. The map owner cannot
+  be removed.
+- The map role wins over the global one: an admin invited as player is a
+  player on that map; an uninvited admin joining still acts as dm.
+- Players move their own tokens and open doors/windows per the map's
+  settings and per-portal locks. Dms manage everything (floors, settings,
+  fog, stairs, focus).
+- Deleting a user removes their memberships; maps they owned are handed
+  to another dm, or to the first admin.
+
 ## Admin console — ⚙ Settings tab
 
 Installation-wide settings:

@@ -8,7 +8,8 @@
  */
 import { Router } from 'express'
 import { db } from '../db'
-import { authMiddleware, adminOnly } from '../auth'
+import { authMiddleware } from '../auth'
+import { isMapDM, requireMapDM } from '../mapaccess'
 import { broadcastToTable } from '../hub'
 import { loadTableSettings } from '../settings'
 
@@ -44,7 +45,7 @@ portalsRouter.patch('/tables/:id/portals/:portalId', authMiddleware, (req, res) 
     .get(req.params.portalId, req.params.id) as Record<string, unknown> | undefined
   if (!existing) { res.status(404).json({ error: 'not found' }); return }
 
-  const isAdmin = res.locals.role === 'admin'
+  const isAdmin = isMapDM(res.locals.user, req.params.id, res.locals.role)
   const kind = String(existing.kind) || 'door'
 
   const locked = existing.locked === 1 || existing.locked === true

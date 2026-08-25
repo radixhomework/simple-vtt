@@ -3,6 +3,7 @@ import { IncomingMessage } from 'http'
 import { verifyToken } from './auth'
 import { db } from './db'
 import { loadTableSettings } from './settings'
+import { mapRole } from './mapaccess'
 
 /**
  * WebSocket hub: rooms per table, message dispatch, and server-authoritative
@@ -17,7 +18,11 @@ import { loadTableSettings } from './settings'
 interface Client {
   ws: WebSocket
   username: string
+  /** Global role (admin console rights) — NOT used for map permissions */
   role: string
+  /** Role on THIS map: 'dm' or 'player' (membership-based; admins fall back
+   *  to dm when uninvited). Governs everything done in the room. */
+  mapRole: 'dm' | 'player'
   tableId: string
   /** Floor whose data this client currently views (null = not yet resolved). */
   activeFloorId: string | null
@@ -35,9 +40,9 @@ function unregister(client: Client) {
   tables.get(client.tableId)?.delete(client)
 }
 
-function broadcast(tableId: string, data: string, exclude?: Client, adminOnly = false) {
+function broadcast(tableId: string, data: string, exclude?: Client, dmOnly = false) {
   tables.get(tableId)?.forEach(c => {
-    if (c !== exclude && (!adminOnly || c.role === 'admin') && c.ws.readyState === WebSocket.OPEN) {
+    if (c !== exclude && (!dmOnly || c.mapRole === 'dm') && c.ws.readyState === WebSocket.OPEN) {
       c.ws.send(data)
     }
   })
@@ -157,8 +162,8 @@ function handleMusicControl(client: Client, payload: Record<string, unknown>) {
       break
     }
     case 'select':
-      // Choosing a specific track is admin-only; everyone controls transport
-      if (client.role !== 'admin') break
+      // Choosing a specific track is dm-only; everyone controls transport
+      if (client.mapRole !== 'dm') break
       if (trackId && st.queue.includes(trackId)) startTrack(trackId)
       break
     case 'ended':
@@ -213,9 +218,9 @@ function sendTableState(client: Client) {
     'SELECT id, table_id, name, x, y, icon_path, has_vision, vision_radius, size, color, owner, hidden, floor_id FROM tokens WHERE table_id=? AND floor_id=?'
   ).all(client.tableId, floorId) as Array<Record<string, unknown>>
 
-  // Hidden tokens (and their sight) are invisible to players; admins keep
+  // Hidden tokens (and their sight) are invisible to map players; dms keep
   // the full picture.
-  const tokens = client.role === 'admin'
+  const tokens = client.mapRole === 'dm'
     ? tokenRows.map(normalizeToken)
     : tokenRows.filter(t => t.hidden !== 1).map(normalizeToken)
 
@@ -238,6 +243,7 @@ function sendTableState(client: Client) {
     type: 'table_state',
     payload: {
       table,
+      map_role: client.mapRole,
       floors,
       floor,
       tokens,
@@ -270,8 +276,8 @@ function handleMessage(client: Client, raw: string) {
       }
       const tokenRow = db.prepare('SELECT owner, hidden FROM tokens WHERE id=? AND table_id=?')
         .get(token_id, client.tableId) as { owner: string; hidden: number } | undefined
-      if (client.role !== 'admin') {
-        // Enforce players_move_own_only: non-admins may only move their own
+      if (client.mapRole !== 'dm') {
+        // Enforce players_move_own_only: map players may only move their own
         // tokens, unless the setting explicitly allows moving any token.
         const setting = db.prepare("SELECT value FROM settings WHERE key='players_move_own_only'")
           .get() as { value: string } | undefined
@@ -306,11 +312,11 @@ function handleMessage(client: Client, raw: string) {
         'SELECT name, x, y, icon_path, has_vision, vision_radius, size, color, owner, hidden, floor_id FROM tokens WHERE id=? AND table_id=?'
       ).get(t.id, client.tableId) as Record<string, unknown> | undefined
       if (!existing) break
-      // Authorization: admins may edit anything; players only their own
-      // tokens, and they cannot change owner/hidden (admin-only controls).
+      // Authorization: dms may edit anything; players only their own tokens,
+      // and they cannot change owner/hidden (dm-only controls).
       const isOwner = existing.owner === client.username
-      if (client.role !== 'admin' && !isOwner) break
-      const isAdmin = client.role === 'admin'
+      if (client.mapRole !== 'dm' && !isOwner) break
+      const isAdmin = client.mapRole === 'dm'
       const m = {
         name:          t.name          !== undefined ? t.name          : existing.name,
         x:             t.x             !== undefined ? t.x             : existing.x,
@@ -355,7 +361,7 @@ function handleMessage(client: Client, raw: string) {
     }
 
     case 'token_delete': {
-      if (client.role !== 'admin') return
+      if (client.mapRole !== 'dm') return
       const { token_id } = payload as { token_id: string }
       db.prepare('DELETE FROM tokens WHERE id=? AND table_id=?').run(token_id, client.tableId)
       broadcast(client.tableId, raw, client)
@@ -363,7 +369,7 @@ function handleMessage(client: Client, raw: string) {
     }
 
     case 'fog_update': {
-      if (client.role !== 'admin') return
+      if (client.mapRole !== 'dm') return
       const { action, points, floor_id } = payload as {
         action: string; points: Array<Record<string, unknown>>; floor_id?: string
       }
@@ -407,9 +413,9 @@ function handleMessage(client: Client, raw: string) {
     }
 
     case 'camera_focus': {
-      // Admin one-time focus: snap every other client's display (floor,
-      // camera, zoom) to the admin's current view. Not a continuous follow.
-      if (client.role !== 'admin') return
+      // DM one-time focus: snap every other client's display (floor,
+      // camera, zoom) to the dm's current view. Not a continuous follow.
+      if (client.mapRole !== 'dm') return
       const { x, y, zoom, floor_id } = payload as { x: number; y: number; zoom: number; floor_id?: string }
       if (typeof x !== 'number' || typeof y !== 'number' || typeof zoom !== 'number') return
       const data = JSON.stringify({ type: 'camera_focus', payload: { x, y, zoom, floor_id } })
@@ -420,8 +426,8 @@ function handleMessage(client: Client, raw: string) {
     }
 
     case 'measure_update': {
-      // Admin-only: broadcast the admin's measurement to the other clients
-      if (client.role !== 'admin') return
+      // DM-only: broadcast the dm's measurement to the other clients
+      if (client.mapRole !== 'dm') return
       broadcast(client.tableId, raw, client)
       break
     }
@@ -455,7 +461,11 @@ export function setupWebSocket(wss: WebSocketServer) {
     const tableExists = db.prepare('SELECT id FROM tables WHERE id=?').get(tableId)
     if (!tableExists) { ws.close(1008, 'table not found'); return }
 
-    const client: Client = { ws, username: payload.username, role: payload.role, tableId, activeFloorId: null }
+    // Map access: members only (uninvited global admins still resolve to dm)
+    const role = mapRole(payload.username, tableId, payload.role)
+    if (!role) { ws.close(1008, 'no access to this map'); return }
+
+    const client: Client = { ws, username: payload.username, role: payload.role, mapRole: role, tableId, activeFloorId: null }
     register(client)
     sendTableState(client)
     send(client, { type: 'music_state', payload: musicStatePayload(getMusicState(tableId)) })

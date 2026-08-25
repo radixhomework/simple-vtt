@@ -18,7 +18,7 @@ import type { WallSegment } from '../canvas/los'
 import type {
   User, Table, Token, FogPoint, Portal, Camera, ToolType, MeasureState, TableSettings,
   TableStatePayload, TokenMovePayload, TokenUpdatePayload, TokenDeletePayload, FogUpdatePayload,
-  MeasureUpdatePayload, MusicStatePayload, Asset, Floor, FloorLite, Stairs,
+  MeasureUpdatePayload, MusicStatePayload, Asset, Floor, FloorLite, Stairs, MapMember,
 } from '../types'
 import { DEFAULT_TABLE_SETTINGS } from '../types'
 
@@ -85,7 +85,20 @@ export function renderMap(
   onTeardown: (teardown: () => void) => void,
   onBack: () => void,
 ) {
-  const isAdmin = user.role === 'admin'
+  // DM flag follows the MAP role (from table_state), not the global role:
+  // an admin invited as player is a player here; a user who uploaded the map
+  // is its dm. Global role is only a guess for the very first paint.
+  let isAdmin = user.role === 'admin'
+  const setMapRole = (role: 'dm' | 'player') => {
+    const was = isAdmin
+    isAdmin = role === 'dm'
+    if (was !== isAdmin) {
+      refreshSidebar()
+      renderTokenEditor()
+      updateHeaderToggles()
+      render()
+    }
+  }
 
   root.innerHTML = `
     <style>
@@ -113,7 +126,7 @@ export function renderMap(
       .music-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
       .game-header {
         display: flex; align-items: center; gap: 10px;
-        padding: 0 12px; height: 44px; background: var(--surface);
+        padding: 0 12px; height: 44px; background: var(--header);
         border-bottom: 1px solid var(--border); flex-shrink: 0; z-index: 10;
         user-select: none;
       }
@@ -256,7 +269,8 @@ export function renderMap(
         </div>
         <div class="game-header-right">
           ${isAdmin ? `<button class="header-btn" id="add-token-btn">+ Token</button>
-          <button class="header-btn" id="clear-fog-btn">Clear Fog</button>` : ''}
+          <button class="header-btn" id="clear-fog-btn">Clear Fog</button>
+          <button class="header-btn" id="share-btn" title="Invite users to this map">👥 Share</button>` : ''}
           <button class="header-btn" id="music-btn" title="Music player">🎵</button>
           <button class="header-btn" id="sidebar-btn">Tokens ≡</button>
           <button class="header-btn" id="zen-btn" title="Fullscreen — hide menus (Esc to exit)">⛶</button>
@@ -289,6 +303,8 @@ export function renderMap(
             <div id="music-queue" style="display:flex;flex-direction:column;gap:4px;"></div>
           </div>
         </div>
+
+        <div class="sidebar" id="share-panel"></div>
 
         <div class="sidebar" id="sidebar">
           <div class="sidebar-section">
@@ -716,6 +732,7 @@ export function renderMap(
     switch (msg.type) {
       case 'table_state': {
         const p = msg.payload as TableStatePayload
+        if (p.map_role) setMapRole(p.map_role)
         const oldFloorId = state.floor?.id
         state.floors = p.floors ?? []
         state.floor = p.floor
@@ -942,6 +959,78 @@ export function renderMap(
     })
   }
 
+  // ── Share panel (dm): invite users as player or dm ───────────────────────────
+  const sharePanel = root.querySelector('#share-panel') as HTMLElement | null
+  let membersLoaded = false
+
+  async function renderSharePanel() {
+    if (!sharePanel) return
+    let members: MapMember[] = []
+    try { members = await api.listMembers(state.table.id) } catch { /* keep empty */ }
+    sharePanel.innerHTML = `
+      <div class="sidebar-section" style="display:flex;align-items:center;justify-content:space-between">
+        <span style="font-family:var(--font-title);font-size:15px;font-weight:600;color:var(--text)">Share this map</span>
+        <button class="icon-btn" id="share-close">✕</button>
+      </div>
+      <div class="sidebar-section">
+        <h4>Invite a user</h4>
+        <div class="field-row" style="align-items:flex-end">
+          <div class="field" style="flex:1"><label>Username</label><input type="text" id="share-user" placeholder="username" /></div>
+          <div class="field"><label>Role</label>
+            <select id="share-role">
+              <option value="player">player</option>
+              <option value="dm">dm</option>
+            </select>
+          </div>
+        </div>
+        <button class="save-btn" id="share-add" style="margin-top:8px">Invite</button>
+        <div class="msg" id="share-msg"></div>
+      </div>
+      <div class="sidebar-section">
+        <h4>Members (${members.length})</h4>
+        <div class="token-list">
+          ${members.map(m => `
+            <div class="token-item" style="cursor:default">
+              <span style="font-size:13px;flex:1">${esc(m.username)}</span>
+              <span class="badge ${m.role === 'dm' ? 'badge-admin' : 'badge-player'}" style="text-transform:none">${m.role}</span>
+              ${m.username === user.username ? '' : `<button class="icon-btn" data-unmember="${esc(m.username)}" title="Remove">✕</button>`}
+            </div>`).join('')}
+        </div>
+        <span style="font-size:11px;color:var(--muted)">Dms manage everything on the map; players move their own tokens and open doors/windows per the map settings.</span>
+      </div>
+    `
+    const msg = sharePanel.querySelector('#share-msg') as HTMLElement
+    sharePanel.querySelector('#share-close')!.addEventListener('click', () => sharePanel.classList.remove('open'))
+    sharePanel.querySelector('#share-add')!.addEventListener('click', async () => {
+      const username = (sharePanel.querySelector('#share-user') as HTMLInputElement).value.trim()
+      const role = (sharePanel.querySelector('#share-role') as HTMLSelectElement).value as 'dm' | 'player'
+      if (!username) { msg.textContent = 'Enter a username'; msg.className = 'msg msg-err'; return }
+      try {
+        await api.addMember(state.table.id, username, role)
+        msg.textContent = `${username} invited as ${role}`; msg.className = 'msg msg-ok'
+        setTimeout(renderSharePanel, 600)
+      } catch (e: any) { msg.textContent = e.message; msg.className = 'msg msg-err' }
+    })
+    sharePanel.querySelectorAll('[data-unmember]').forEach(el => {
+      el.addEventListener('click', async () => {
+        const username = (el as HTMLElement).dataset.unmember!
+        if (!confirm(`Remove ${username} from this map?`)) return
+        try { await api.removeMember(state.table.id, username); renderSharePanel() }
+        catch (e: any) { showNotif(e.message) }
+      })
+    })
+  }
+
+  root.querySelector('#share-btn')?.addEventListener('click', () => {
+    if (!sharePanel) return
+    root.querySelector('#sidebar')?.classList.remove('open')
+    sharePanel.classList.toggle('open')
+    if (sharePanel.classList.contains('open') && !membersLoaded) {
+      membersLoaded = true
+      void renderSharePanel()
+    }
+  })
+
   root.querySelector('#music-btn')?.addEventListener('click', () => {
     root.querySelector('#sidebar')?.classList.remove('open')
     root.querySelector('#music-panel')?.classList.toggle('open')
@@ -968,6 +1057,7 @@ export function renderMap(
   })
 
   root.querySelector('#sidebar-btn')!.addEventListener('click', () => {
+    root.querySelector('#share-panel')?.classList.remove('open')
     root.querySelector('#sidebar')!.classList.toggle('open')
   })
 
@@ -977,6 +1067,7 @@ export function renderMap(
   const gameRoot = root.querySelector('.game') as HTMLElement
 
   function closeAllPanels() {
+    root.querySelector('#share-panel')?.classList.remove('open')
     root.querySelector('#sidebar')?.classList.remove('open')
     root.querySelector('#music-panel')?.classList.remove('open')
   }
