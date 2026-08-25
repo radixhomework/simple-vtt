@@ -44,6 +44,9 @@ interface GameState {
   mapImagePath: string
   /** z0 overview tile used as the fog's greyscale source on tiled floors. */
   fogOverview: ImageBitmap | null
+  /** tiles_path of the pyramid currently loaded — guards loadMap() against
+   *  re-wiping the tile cache on routine table_state pushes. */
+  activeTilesPath: string
   exploredCanvas: OffscreenCanvas | null
   selectedId: string | null
   tool: ToolType
@@ -374,6 +377,7 @@ export function renderMap(
     mapImage: null,
     mapImagePath: '',
     fogOverview: null,
+    activeTilesPath: '',
     exploredCanvas: null,
     selectedId: null,
     tool: 'select',
@@ -521,6 +525,7 @@ export function renderMap(
           mainCtx, state.floor.tiles_path, state.floor.img_width, state.floor.img_height,
           state.camera, state.table.map_offset_x ?? 0, state.table.map_offset_y ?? 0,
           () => render(),
+          state.fogOverview,
         )
       }
       if (!mapDrawn) {
@@ -847,6 +852,7 @@ export function renderMap(
         state.stairs = p.stairs ?? []
         markExploredDirty()
         const floorChanged = !!p.floor && p.floor.id !== oldFloorId
+        const tilesPath = state.floor?.tiles_path ?? ''
         if (floorChanged) {
           // Server-driven floor change (e.g. our viewed floor was deleted):
           // keep the old floor's explored memory, then load the new level.
@@ -855,6 +861,15 @@ export function renderMap(
           state.mapImagePath = ''
           tilesUsable = true // new floor: pyramid retry
           state.exploredCanvas = null
+          state.activeTilesPath = tilesPath
+          loadMap()
+        } else if (tilesPath && tilesPath !== state.activeTilesPath) {
+          // Same floor but its pyramid just appeared (lazy backfill push):
+          // switch to tiles. Plain state pushes (token moves, toggles, fog)
+          // must NOT wipe the tile cache — that refetches the whole viewport
+          // on every push (request storm + flicker).
+          state.activeTilesPath = tilesPath
+          loadMap()
         }
         if (p.settings) state.settings = { ...DEFAULT_TABLE_SETTINGS, ...p.settings }
         if (!initialStateLoaded) {
