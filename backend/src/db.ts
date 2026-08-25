@@ -291,6 +291,16 @@ migrateFloors()
   }
 }
 
+// Migration: tile pyramid path per floor. Empty string = no pyramid yet
+// (legacy floors get theirs built lazily on first use, or fall back to
+// the full map image).
+{
+  const cols = db.prepare('PRAGMA table_info(floors)').all() as Array<{ name: string }>
+  if (!cols.some(c => c.name === 'tiles_path')) {
+    db.exec("ALTER TABLE floors ADD COLUMN tiles_path TEXT NOT NULL DEFAULT ''")
+  }
+}
+
 // Seed default settings (INSERT OR IGNORE so existing values are preserved)
 const seedSetting = db.prepare('INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)')
 const seedAll = db.transaction(() => {

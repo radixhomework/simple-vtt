@@ -17,6 +17,7 @@ import { authMiddleware } from '../auth'
 import { decodeUploadFilename } from '../filename'
 import { pushTableStateToTable, broadcastToTable } from '../hub'
 import { loadTableSettings, sanitizeTableSettingsPatch } from '../settings'
+import { buildTilePyramid, deleteTilePyramid } from '../tiles'
 import { mapRole, requireMapDM, requireMapAccess } from '../mapaccess'
 
 export const tablesRouter = Router()
@@ -29,12 +30,13 @@ const upload = multer({ storage, limits: { fileSize: 150 * 1024 * 1024 } })
 function newId(): string { return crypto.randomUUID().replace(/-/g, '').slice(0, 16) }
 
 const TABLE_COLS = 'id, name, owner, default_floor_id'
-const FLOOR_COLS = 'id, table_id, level, name, map_image_path, grid_size, uvt_metadata, map_offset_x, map_offset_y, img_width, img_height'
+const FLOOR_COLS = 'id, table_id, level, name, map_image_path, grid_size, uvt_metadata, map_offset_x, map_offset_y, img_width, img_height, tiles_path'
 
 interface FloorRow {
   id: string; table_id: string; level: number; name: string
   map_image_path: string; grid_size: number; uvt_metadata: string
   map_offset_x: number; map_offset_y: number; img_width: number; img_height: number
+  tiles_path: string
 }
 
 function getTable(id: string) {
@@ -140,6 +142,13 @@ tablesRouter.put('/tables/:id', authMiddleware, (req, res) => {
 
 tablesRouter.delete('/tables/:id', authMiddleware, (req, res) => {
   if (!requireMapDM(req, res)) return
+  // Free the floors' tile pyramids (and their images) before the rows go
+  for (const f of floorsOf(req.params.id)) {
+    if (f.tiles_path) deleteTilePyramid(f.id)
+    if (f.map_image_path) {
+      try { fs.unlinkSync(path.join(uploadsDir(), path.basename(f.map_image_path))) } catch { /* gone */ }
+    }
+  }
   db.prepare('DELETE FROM floors WHERE table_id=?').run(req.params.id) // cascades nothing; children follow below
   db.prepare('DELETE FROM tokens WHERE table_id=?').run(req.params.id)
   db.prepare('DELETE FROM portals WHERE table_id=?').run(req.params.id)
@@ -255,6 +264,15 @@ tablesRouter.post('/tables/import', authMiddleware, upload.single('file'), (req,
     const filename = `map_${floorId}${imageExt}`
     fs.writeFileSync(path.join(dir, filename), imageBuffer)
     imagePath = `/uploads/${filename}`
+    // Tile pyramid for heavy-map clients; built async so the import
+    // response isn't held up. On failure the floor keeps its full image
+    // (legacy path) — tiling is an optimization, never a blocker.
+    buildTilePyramid(floorId, imageBuffer)
+      .then(() => {
+        db.prepare('UPDATE floors SET tiles_path=? WHERE id=?').run(`/uploads/tiles/${floorId}`, floorId)
+        pushTableStateToTable(tableId)
+      })
+      .catch(err => console.error(`[tiles] pyramid build failed for floor ${floorId}:`, err))
   }
 
   const tableName = req.body.name || path.basename(decodeUploadFilename(req.file.originalname), ext)
@@ -382,6 +400,13 @@ tablesRouter.post('/tables/:id/floors/import', authMiddleware, upload.single('fi
     const filename = `map_${floorId}${imageExt}`
     fs.writeFileSync(path.join(dir, filename), imageBuffer)
     imagePath = `/uploads/${filename}`
+    // Same async pyramid build as the table import above
+    buildTilePyramid(floorId, imageBuffer)
+      .then(() => {
+        db.prepare('UPDATE floors SET tiles_path=? WHERE id=?').run(`/uploads/tiles/${floorId}`, floorId)
+        pushTableStateToTable(req.params.id)
+      })
+      .catch(err => console.error(`[tiles] pyramid build failed for floor ${floorId}:`, err))
   }
 
   const meta = JSON.stringify(uvttJson)
@@ -459,6 +484,13 @@ tablesRouter.post('/floors/:id/upload-image', authMiddleware, upload.single('ima
   const imagePath = `/uploads/${filename}`
   db.prepare('UPDATE floors SET map_image_path=?, img_width=?, img_height=? WHERE id=?')
     .run(imagePath, w, h, floor.id)
+  // Rebuild the tile pyramid from the new image (replaces the old files)
+  buildTilePyramid(floor.id, req.file.buffer)
+    .then(() => {
+      db.prepare('UPDATE floors SET tiles_path=? WHERE id=?').run(`/uploads/tiles/${floor.id}`, floor.id)
+      pushTableStateToTable(floor.table_id)
+    })
+    .catch(err => console.error(`[tiles] pyramid rebuild failed for floor ${floor.id}:`, err))
   res.json({ path: imagePath, width: w, height: h })
 })
 
@@ -491,6 +523,11 @@ tablesRouter.delete('/floors/:id', authMiddleware, (req, res) => {
     db.prepare('DELETE FROM stairs WHERE from_floor=? OR to_floor=?').run(floor.id, floor.id)
     db.prepare('DELETE FROM floors WHERE id=?').run(floor.id)
   })()
+  // Drop this floor's image and tile pyramid
+  if (floor.tiles_path) deleteTilePyramid(floor.id)
+  if (floor.map_image_path) {
+    try { fs.unlinkSync(path.join(uploadsDir(), path.basename(floor.map_image_path))) } catch { /* gone */ }
+  }
   res.sendStatus(204)
 })
 

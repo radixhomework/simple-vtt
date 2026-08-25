@@ -232,7 +232,9 @@ export function drawTokens(
 /**
  * Stamp the currently-visible areas (world space) onto `exploredCanvas` so
  * they can be shown in greyscale when no longer in sight.
- * exploredCanvas uses world-pixel coordinates, same origin as the map.
+ * exploredCanvas uses world-pixel coordinates, same origin as the map, at
+ * 1/`scale` resolution (the mask is binary — a quarter-scale canvas saves
+ * hundreds of MB of RAM on large maps with no visible difference).
  */
 export function updateExplored(
   exploredCanvas: OffscreenCanvas,
@@ -240,10 +242,12 @@ export function updateExplored(
   fogPoints: FogPoint[],
   walls: WallSegment[],
   gridSize: number,
+  scale = 1,
 ) {
   const ctx = exploredCanvas.getContext('2d')!
   ctx.globalCompositeOperation = 'source-over'
   ctx.fillStyle = '#fff'
+  ctx.setTransform(scale, 0, 0, scale, 0, 0)
 
   for (const token of tokens) {
     if (!token.has_vision) continue
@@ -366,13 +370,21 @@ export function drawFog(
   gridSize: number,
   isAdmin: boolean,
   exploredCanvas?: OffscreenCanvas | null,
-  mapImage?: HTMLImageElement | null,
+  mapImage?: ImageBitmap | HTMLImageElement | null,
   mapOffsetX = 0,
   mapOffsetY = 0,
+  worldW?: number,
+  worldH?: number,
 ) {
   const w = ctx.canvas.width
   const h = ctx.canvas.height
   ctx.save()
+
+  // World-space map size: the image's own dimensions by default, or the
+  // floor's declared size when the "image" is a low-res overview bitmap
+  // (tiled floors).
+  const wW = worldW ?? mapImage?.width ?? 0
+  const wH = worldH ?? mapImage?.height ?? 0
 
   if (exploredCanvas && mapImage) {
     // ── Phase 1: greyscale map clipped to explored areas ──────────────────────
@@ -381,7 +393,7 @@ export function drawFog(
     ctx.save()
     ctx.filter = 'grayscale(1) brightness(0.55)'
     const [sx, sy] = worldToScreen(mapOffsetX, mapOffsetY, cam)
-    ctx.drawImage(mapImage, sx, sy, mapImage.width * cam.zoom, mapImage.height * cam.zoom)
+    ctx.drawImage(mapImage, sx, sy, wW * cam.zoom, wH * cam.zoom)
     ctx.filter = 'none'
     ctx.restore()
 
@@ -389,7 +401,7 @@ export function drawFog(
     ctx.globalCompositeOperation = 'destination-in'
     ctx.save()
     ctx.setTransform(cam.zoom, 0, 0, cam.zoom, -cam.x * cam.zoom, -cam.y * cam.zoom)
-    ctx.drawImage(exploredCanvas, 0, 0)
+    ctx.drawImage(exploredCanvas, 0, 0, wW, wH)
     ctx.restore()
 
     // ── Phase 2: punch out currently-visible areas (full colour shows through) ─
@@ -406,7 +418,7 @@ export function drawFog(
     bl.globalCompositeOperation = 'destination-out'
     bl.save()
     bl.setTransform(cam.zoom, 0, 0, cam.zoom, -cam.x * cam.zoom, -cam.y * cam.zoom)
-    bl.drawImage(exploredCanvas, 0, 0)
+    bl.drawImage(exploredCanvas, 0, 0, wW, wH)
     bl.restore()
     ctx.drawImage(blackLayer, 0, 0)
 

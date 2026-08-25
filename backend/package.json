@@ -16,6 +16,7 @@
     "express-rate-limit": "^8.6.2",
     "jsonwebtoken": "^9.0.3",
     "multer": "^2.2.0",
+    "sharp": "^0.35.3",
     "ws": "^8.21.3"
   },
   "devDependencies": {

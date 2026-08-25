@@ -48,6 +48,8 @@ export interface Floor extends FloorLite {
   map_offset_y: number
   img_width: number
   img_height: number
+  /** Tile pyramid base URL ('' when the floor has no pyramid yet). */
+  tiles_path?: string
 }
 
 export interface Token {

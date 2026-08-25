@@ -12,6 +12,7 @@ import {
   drawMap, drawGrid, drawTokens, drawFog, drawPortals, drawMeasure, drawStairs,
   preloadTokenImage, preloadMapImage, updateExplored, clearMapImageCache,
 } from '../canvas/layers'
+import { drawTiledMap, resetTileCache } from '../canvas/tiles'
 import { screenToWorld, worldToScreen, snapToGrid, zoomAround } from '../canvas/camera'
 import { parseStaticWalls, portalWalls, portalSightWalls, pathCrossesWall, pointOnWall } from '../canvas/los'
 import type { WallSegment } from '../canvas/los'
@@ -39,6 +40,8 @@ interface GameState {
   camera: Camera
   mapImage: HTMLImageElement | null
   mapImagePath: string
+  /** z0 overview tile used as the fog's greyscale source on tiled floors. */
+  fogOverview: ImageBitmap | null
   exploredCanvas: OffscreenCanvas | null
   selectedId: string | null
   tool: ToolType
@@ -368,6 +371,7 @@ export function renderMap(
     camera: { x: 0, y: 0, zoom: 1 },
     mapImage: null,
     mapImagePath: '',
+    fogOverview: null,
     exploredCanvas: null,
     selectedId: null,
     tool: 'select',
@@ -385,6 +389,10 @@ export function renderMap(
 
   let lastMoveBroadcast = 0
   let lastMeasureBroadcast = 0
+
+  /** False when a floor's pyramid turned out unusable — render falls back
+   *  to the legacy full image until the floor changes. */
+  let tilesUsable = true
 
   // ── Explored-fog memory, per floor ───────────────────────────────────────────
   // Only the active floor keeps a full-resolution explored canvas; other
@@ -433,22 +441,52 @@ export function renderMap(
   }
 
   // Load map image (also re-run when a floor switch brings a new map path).
-  // Exactly one floor bitmap is ever cached.
+  // Tiled floors never load the full bitmap: the overview tile serves the
+  // fog's greyscale phase and the pyramid renders the map itself.
   function loadMap() {
     const p = state.table.map_image_path ?? ''
-    clearMapImageCache(p) // release every bitmap except the target floor's
-    if (!p || p === state.mapImagePath) return
-    state.mapImagePath = p
-    preloadMapImage(p, img => {
-      if (state.table.map_image_path !== p) return // superseded by a newer map
-      state.mapImage = img
-      // Explored canvas lives in world space at the map's native resolution
+    const tiled = !!state.floor?.tiles_path
+    clearMapImageCache(tiled ? '' : p) // release every cached bitmap
+    resetTileCache()
+    state.fogOverview = null
+    if (tiled) {
+      // Fetch the single z0 overview tile for the fog's greyscale phase.
+      // Its failure means the pyramid is unusable (deleted on disk, partial
+      // write…) — fall back to the legacy full-image path.
+      fetch(`${state.floor!.tiles_path}/0/0_0.jpg`)
+        .then(r => { if (!r.ok) throw new Error(String(r.status)); return r.blob() })
+        .then(b => {
+          if (!b.type.startsWith('image/')) throw new Error('not an image')
+          return createImageBitmap(b)
+        })
+        .then(bmp => { state.fogOverview = bmp; markExploredDirty(); render() })
+        .catch(() => { tilesUsable = false; tileFallback() })
+      if (!tilesUsable) return tileFallback()
+      state.mapImage = null
+      state.mapImagePath = ''
       state.exploredCanvas = state.floor
-        ? restoreExploredMask(state.floor.id, img.width, img.height)
-        : new OffscreenCanvas(img.width, img.height)
+        ? restoreExploredMask(state.floor.id, Math.ceil(state.floor.img_width / 4), Math.ceil(state.floor.img_height / 4))
+        : null
       markExploredDirty()
       render()
-    })
+      return
+    }
+    return tileFallback()
+
+    function tileFallback() {
+      if (!p || p === state.mapImagePath) return
+      state.mapImagePath = p
+      preloadMapImage(p, img => {
+        if (state.table.map_image_path !== p) return // superseded by a newer map
+        state.mapImage = img
+        // Explored canvas lives in world space at the map's native resolution
+        state.exploredCanvas = state.floor
+          ? restoreExploredMask(state.floor.id, img.width, img.height)
+          : new OffscreenCanvas(img.width, img.height)
+        markExploredDirty()
+        render()
+      })
+    }
   }
   loadMap()
 
@@ -463,9 +501,22 @@ export function renderMap(
       const visibleTokens = isAdmin ? state.tokens : state.tokens.filter(t => !t.hidden)
       const hiddenTokens = isAdmin ? state.tokens.filter(t => t.hidden) : []
 
-      // Main canvas: map + grid + tokens
+      // Main canvas: map + grid + tokens. Tiles first: when the floor has a
+      // pyramid, draw from the viewport-only LRU cache and never materialize
+      // the full-resolution bitmap. Until the first tiles arrive (or on a
+      // failed pyramid), fall back to the legacy full image.
       mainCtx.clearRect(0, 0, w, h)
-      drawMap(mainCtx, state.mapImage, state.camera, state.table.map_offset_x ?? 0, state.table.map_offset_y ?? 0)
+      let mapDrawn = false
+      if (tilesUsable && state.floor?.tiles_path && state.floor.img_width > 0 && state.floor.img_height > 0) {
+        mapDrawn = drawTiledMap(
+          mainCtx, state.floor.tiles_path, state.floor.img_width, state.floor.img_height,
+          state.camera, state.table.map_offset_x ?? 0, state.table.map_offset_y ?? 0,
+          () => render(),
+        )
+      }
+      if (!mapDrawn) {
+        drawMap(mainCtx, state.mapImage, state.camera, state.table.map_offset_x ?? 0, state.table.map_offset_y ?? 0)
+      }
       if (state.gridVisible) {
         drawGrid(mainCtx, state.camera, state.table.grid_size ?? 70, w, h)
       }
@@ -487,14 +538,21 @@ export function renderMap(
         // sight keep showing in greyscale instead of going fully black.
         // Stamp only on change (dragging marks dirty per move); the map
         // itself is world-space, so panning/zooming never invalidates it.
+        // Tiled floors run the mask at quarter scale (binary mask —
+        // memory is the point of this path).
+        const tiled = tilesUsable && !!state.floor?.tiles_path
+        const maskScale = tiled ? 0.25 : 1
         if (state.exploredCanvas && exploredDirty) {
-          updateExplored(state.exploredCanvas, sightTokens, state.fog, state.sightWalls, state.table.grid_size ?? 70)
+          updateExplored(state.exploredCanvas, sightTokens, state.fog, state.sightWalls, state.table.grid_size ?? 70, maskScale)
           exploredDirty = false
         }
+        const fogSource = tiled ? state.fogOverview : state.mapImage
         drawFog(
           fogCtx, sightTokens, state.fog, state.sightWalls, state.camera, state.table.grid_size ?? 70, isAdmin,
-          state.exploredCanvas, state.mapImage,
+          state.exploredCanvas, fogSource,
           state.table.map_offset_x ?? 0, state.table.map_offset_y ?? 0,
+          tiled ? state.floor!.img_width : undefined,
+          tiled ? state.floor!.img_height : undefined,
         )
       }
 
@@ -706,6 +764,7 @@ export function renderMap(
     state.selectedId = null
     state.mapImage = null
     state.mapImagePath = '' // force the new floor's bitmap to load
+    tilesUsable = true      // re-try the pyramid on the new floor
     state.exploredCanvas = null
     recomputeWalls()
     loadMap()
@@ -769,6 +828,7 @@ export function renderMap(
           if (oldFloorId) stashExploredMask(oldFloorId, state.exploredCanvas)
           state.mapImage = null
           state.mapImagePath = ''
+          tilesUsable = true // new floor: pyramid retry
           state.exploredCanvas = null
         }
         if (p.settings) state.settings = { ...DEFAULT_TABLE_SETTINGS, ...p.settings }
@@ -1806,6 +1866,10 @@ export function renderMap(
     cancelAnimationFrame(rafId)
     audio.pause()
     audio.removeAttribute('src')
+    // Release the decoded tile bitmaps and the fog overview
+    resetTileCache()
+    state.fogOverview?.close()
+    state.fogOverview = null
   })
 
   // Chat
