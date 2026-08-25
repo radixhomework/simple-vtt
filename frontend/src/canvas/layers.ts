@@ -520,8 +520,17 @@ function punchVision(
 
     const poly = visibilityPolygonFor(token, walls, gridSize, wallVersion, dragQuantum)
     if (poly === undefined) continue // worker compute in flight — keep last frame's hole
+    // Shared reveal rim: solid core fading out near the vision radius.
+    // Used by BOTH the polygon and the plain-circle path so the reveal
+    // edge looks identical whether walls are nearby or not.
+    const rim = ctx.createRadialGradient(sx, sy, 0, sx, sy, visionPx)
+    rim.addColorStop(0, 'rgba(0,0,0,1)')
+    rim.addColorStop(0.7, 'rgba(0,0,0,1)')
+    rim.addColorStop(1, 'rgba(0,0,0,0)')
     if (poly && poly.length > 2) {
-      // Camera transform of the cached world-space polygon
+      // Camera transform of the cached world-space polygon. The gradient
+      // fill keeps wall-cut edges sharp (alpha 1 in the core) while the
+      // radius-limited rim fades exactly like the no-walls fallback.
       ctx.save()
       ctx.beginPath()
       ctx.arc(sx, sy, visionPx, 0, Math.PI * 2)
@@ -534,18 +543,14 @@ function punchVision(
         ctx.lineTo(lx, ly)
       }
       ctx.closePath()
-      ctx.fillStyle = 'rgba(0,0,0,1)'
+      ctx.fillStyle = rim
       ctx.fill()
       ctx.restore()
     } else {
       // No walls nearby (or radius zero): soft radial reveal
-      const grad = ctx.createRadialGradient(sx, sy, 0, sx, sy, visionPx)
-      grad.addColorStop(0, 'rgba(0,0,0,1)')
-      grad.addColorStop(0.7, 'rgba(0,0,0,1)')
-      grad.addColorStop(1, 'rgba(0,0,0,0)')
       ctx.beginPath()
       ctx.arc(sx, sy, visionPx, 0, Math.PI * 2)
-      ctx.fillStyle = grad
+      ctx.fillStyle = rim
       ctx.fill()
     }
   }
