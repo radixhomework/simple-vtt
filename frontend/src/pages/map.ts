@@ -640,6 +640,23 @@ export function renderMap(
         // render through the fog canvas (walls/portals already do on main,
         // but main sits under fog; markers must stay fully visible).
         drawStairs(uiCtx, floorStairs(), state.floors, state.camera, state.table.grid_size ?? 70, true, selectedStairs)
+        // Build-mode group selection: props get the same yellow treatment
+        if (selectedProps.size > 0) {
+          uiCtx.save()
+          uiCtx.strokeStyle = '#ffd54f'
+          uiCtx.lineWidth = 2
+          for (const p of state.props) {
+            if (!selectedProps.has(p.id)) continue
+            const s = p.size * state.camera.zoom
+            const sx = (p.x - state.camera.x) * state.camera.zoom
+            const sy = (p.y - state.camera.y) * state.camera.zoom
+            uiCtx.translate(sx, sy)
+            uiCtx.rotate((p.rotation * Math.PI) / 180)
+            uiCtx.strokeRect(-s / 2, -s / 2, s, s)
+            uiCtx.setTransform(1, 0, 0, 1, 0, 0)
+          }
+          uiCtx.restore()
+        }
         if (buildDrag === 'draw') drawWallGhost(uiCtx, drawStart.x, drawStart.y, drawEnd.x, drawEnd.y, state.camera)
         if (buildDrag === 'marquee') drawMarquee(uiCtx, marqueeStart.x, marqueeStart.y, marqueeEnd.x, marqueeEnd.y)
         // Teleporter placement: pending source marker
@@ -1415,6 +1432,11 @@ export function renderMap(
     state.measure.active = false
     state.dragging = false
     state.panning = false
+    selectedWalls.clear()
+    selectedPortals.clear()
+    selectedStairs.clear()
+    selectedProps.clear()
+    selectedProp = null
     renderToolbar()
     updateModeBtn()
     render()
@@ -1551,8 +1573,10 @@ export function renderMap(
   const selectedPortals = new Set<string>()
   /** Selected stair/teleporter ids (build mode). */
   const selectedStairs = new Set<string>()
+  /** Selected prop ids (build mode — props join the build group). */
+  const selectedProps = new Set<string>()
   /** What the left button is doing in build mode. */
-  let buildDrag: 'none' | 'draw' | 'marquee' | 'move' | 'endpoint' = 'none'
+  let buildDrag: 'none' | 'draw' | 'marquee' | 'move' | 'endpoint' | 'rotate' = 'none'
   /** Draw start (world) + current ghost end. */
   let drawStart = { x: 0, y: 0 }
   let drawEnd = { x: 0, y: 0 }
@@ -1568,6 +1592,7 @@ export function renderMap(
   let groupStartPositions = new Map<string, { ax: number; ay: number; bx: number; by: number }>()
   let portalGroupStarts = new Map<string, { x1: number; y1: number; x2: number; y2: number }>()
   let stairGroupStarts = new Map<string, { x: number; y: number }>()
+  let propGroupStarts = new Map<string, { x: number; y: number; rotation: number }>()
 
   const buildTol = () => Math.max(8 / state.camera.zoom, (state.table.grid_size ?? 70) * 0.12)
   const buildSnap = (v: number) => (state.snap ? snapToGrid(v, state.table.grid_size ?? 70) : v)
@@ -1580,6 +1605,7 @@ export function renderMap(
     walls: WallRecord[]
     portals: Portal[]
     stairs: Stairs[]
+    props: Prop[]
   }
   const undoStack: BuildSnapshot[] = []
   const redoStack: BuildSnapshot[] = []
@@ -1604,6 +1630,7 @@ export function renderMap(
       walls: state.wallRecords.map(w => ({ ...w })),
       portals: floorPortals().map(p => ({ ...p })),
       stairs: floorStairs().map(s => ({ ...s })),
+      props: state.props.map(p => ({ ...p })),
     }
   }
 
@@ -1639,6 +1666,7 @@ export function renderMap(
     selectedWalls.clear()
     selectedPortals.clear()
     selectedStairs.clear()
+    selectedProps.clear()
     render()
   }
 
@@ -1654,7 +1682,7 @@ export function renderMap(
     restoreSnapshot(redoStack.pop()!)
   }
 
-  function buildMouseDown(sx: number, sy: number, wx: number, wy: number, shiftKey: boolean) {
+  function buildMouseDown(sx: number, sy: number, wx: number, wy: number, shiftKey: boolean, altKey = false) {
     const tol = buildTol()
     if (state.tool === 'wall') {
       buildDrag = 'draw'
@@ -1685,7 +1713,7 @@ export function renderMap(
       return
     }
     if (state.tool === 'wall-select') {
-      selectWallAt(sx, sy, wx, wy, tol, shiftKey)
+      selectWallAt(sx, sy, wx, wy, tol, shiftKey, altKey)
       return
     }
     // door/window/grid-setup: M1.3+
@@ -1724,25 +1752,54 @@ export function renderMap(
     render()
   }
 
-  /** wall-select tool: pick a wall, portal, or stair/teleporter (drag
-   *  body = move, drag endpoint = edit) or start a marquee on empty space. */
-  function selectWallAt(sx: number, sy: number, wx: number, wy: number, tol: number, shiftKey: boolean) {
+  /** wall-select tool: pick a wall, portal, stair/teleporter, or prop (drag
+   *  body = move, drag endpoint = edit, Alt+drag = rotate the group) or
+   *  start a marquee on empty space. */
+  function selectWallAt(sx: number, sy: number, wx: number, wy: number, tol: number, shiftKey: boolean, altKey = false) {
     const hit = pickWall(state.wallRecords, wx, wy, tol)
     const portalHit = hit ? null : pickPortalGrab(floorPortals(), wx, wy, tol)
     const stairHit = !hit && !portalHit ? pickStair(wx, wy, floorStairs(), state.table.grid_size ?? 70) : null
-    if (!hit && !portalHit && !stairHit) {
+    const propPick = !hit && !portalHit && !stairHit ? pickProp(state.props, wx, wy) : null
+    if (!hit && !portalHit && !stairHit && !propPick) {
       // Empty press: start a marquee (shift keeps the current selection)
-      if (!shiftKey) { selectedWalls.clear(); selectedPortals.clear(); selectedStairs.clear() }
+      if (!shiftKey) { selectedWalls.clear(); selectedPortals.clear(); selectedStairs.clear(); selectedProps.clear() }
       buildDrag = 'marquee'
       marqueeStart = { x: sx, y: sy }
       marqueeEnd = { x: sx, y: sy }
       render()
       return
     }
+    if (altKey) {
+      // Alt+press on any group member: rotate the whole selection
+      selectForRotation(hit?.wall.id, portalHit?.portal.id, stairHit?.id, propPick?.id, shiftKey)
+      startGroupRotate(wx, wy)
+      render()
+      return
+    }
     if (hit) selectWallHit(hit, shiftKey, wx, wy)
     else if (portalHit) selectPortalHit(portalHit, shiftKey, wx, wy)
     else if (stairHit) selectStairHit(stairHit, shiftKey, wx, wy)
+    else if (propPick) selectPropHit(propPick, shiftKey, wx, wy)
     render()
+  }
+
+  /** Add the pressed object to the selection for an Alt+drag rotation. */
+  function selectForRotation(wallId?: string, portalId?: string, stairId?: string, propId?: string, shiftKey = false) {
+    const alreadyIn = (wallId && selectedWalls.has(wallId)) || (portalId && selectedPortals.has(portalId))
+      || (stairId && selectedStairs.has(stairId)) || (propId && selectedProps.has(propId))
+    if (!shiftKey && !alreadyIn) { selectedWalls.clear(); selectedPortals.clear(); selectedStairs.clear(); selectedProps.clear() }
+    if (wallId) selectedWalls.add(wallId)
+    if (portalId) selectedPortals.add(portalId)
+    if (stairId) selectedStairs.add(stairId)
+    if (propId) selectedProps.add(propId)
+  }
+
+  /** A prop was clicked in build mode: select it and start a move drag. */
+  function selectPropHit(hit: Prop, shiftKey: boolean, wx: number, wy: number) {
+    if (!shiftKey && !selectedProps.has(hit.id)) { selectedWalls.clear(); selectedPortals.clear(); selectedStairs.clear(); selectedProps.clear() }
+    selectedProps.add(hit.id)
+    selectedProp = null // group selection replaces single-prop handles
+    startGroupMove(wx, wy)
   }
 
   /** A stair/teleporter was clicked: select it and start a source drag.
@@ -1803,6 +1860,103 @@ export function renderMap(
     stairGroupStarts = new Map(floorStairs()
       .filter(s => selectedStairs.has(s.id))
       .map(s => [s.id, { x: s.from_x, y: s.from_y }]))
+    propGroupStarts = new Map(state.props
+      .filter(p => selectedProps.has(p.id))
+      .map(p => [p.id, { x: p.x, y: p.y, rotation: p.rotation }]))
+  }
+
+  /** Drag bookkeeping for group rotation. */
+  let rotationSnapshot: BuildSnapshot = { walls: [], portals: [], stairs: [], props: [] }
+  let rotatePivot = { x: 0, y: 0 }
+  let rotateStartAngle = 0
+
+  /** Begin a group rotation around the selection's bbox center. */
+  function startGroupRotate(wx: number, wy: number) {
+    const pivot = groupSelectionCenter()
+    if (!pivot) return
+    buildDrag = 'rotate'
+    moveOrigin = { x: wx, y: wy }
+    moveLast = { ...moveOrigin }
+    pendingDragSnapshot = snapshotBuild()
+    rotationSnapshot = snapshotBuild() // full geometry at drag start
+    rotatePivot = pivot
+    rotateStartAngle = Math.atan2(wy - pivot.y, wx - pivot.x)
+  }
+
+  /** Bounding-box center of the current selection (walls, portals,
+   *  stairs, props). Returns null when nothing is selected. */
+  function groupSelectionCenter(): { x: number; y: number } | null {
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
+    let found = false
+    const expand = (x: number, y: number) => {
+      found = true
+      if (x < minX) minX = x
+      if (x > maxX) maxX = x
+      if (y < minY) minY = y
+      if (y > maxY) maxY = y
+    }
+    for (const w of state.wallRecords) if (selectedWalls.has(w.id)) { expand(w.ax, w.ay); expand(w.bx, w.by) }
+    for (const p of floorPortals()) if (selectedPortals.has(p.id)) { expand(p.x1, p.y1); expand(p.x2, p.y2) }
+    for (const s of floorStairs()) if (selectedStairs.has(s.id)) expand(s.from_x, s.from_y)
+    for (const p of state.props) if (selectedProps.has(p.id)) {
+      // The prop's square corners bound its actual footprint
+      const h = p.size / 2
+      expand(p.x - h, p.y - h); expand(p.x + h, p.y + h)
+    }
+    if (!found) return null
+    return { x: (minX + maxX) / 2, y: (minY + maxY) / 2 }
+  }
+
+  /** Live group-rotation preview: rebuild geometry from the drag-start
+   *  snapshot rotated by the current angle around the pivot. */
+  function previewGroupRotate(wx: number, wy: number) {
+    const a = Math.atan2(wy - rotatePivot.y, wx - rotatePivot.x) - rotateStartAngle
+    applyRotationToSelection(a)
+    recomputeWallsPreview()
+    render()
+  }
+
+  /** Rotate the current selection by angle `a` (radians) around the pivot,
+   *  always computed from the drag-start snapshot (idempotent). */
+  function applyRotationToSelection(a: number): void {
+    const cos = Math.cos(a), sin = Math.sin(a)
+    const rot = (x: number, y: number) => ({
+      x: rotatePivot.x + (x - rotatePivot.x) * cos - (y - rotatePivot.y) * sin,
+      y: rotatePivot.y + (x - rotatePivot.x) * sin + (y - rotatePivot.y) * cos,
+    })
+    for (const w of state.wallRecords) {
+      const start = rotationSnapshot.walls.find(s => s.id === w.id)
+      if (!start) continue
+      const p1 = rot(start.ax, start.ay)
+      const p2 = rot(start.bx, start.by)
+      w.ax = p1.x; w.ay = p1.y; w.bx = p2.x; w.by = p2.y
+    }
+    for (const p of floorPortals()) {
+      const start = rotationSnapshot.portals.find(s => s.id === p.id)
+      if (!start) continue
+      const p1 = rot(start.x1, start.y1)
+      const p2 = rot(start.x2, start.y2)
+      p.x1 = p1.x; p.y1 = p1.y; p.x2 = p2.x; p.y2 = p2.y
+    }
+    for (const s of floorStairs()) {
+      const start = rotationSnapshot.stairs.find(t => t.id === s.id)
+      if (!start) continue
+      const src = rot(start.from_x, start.from_y)
+      s.from_x = src.x; s.from_y = src.y
+      // Teleporters rotate their destination too (the hop rotates rigidly);
+      // cross-floor stairs keep their arrival on the target floor.
+      if (s.to_floor === s.from_floor) {
+        const dst = rot(start.to_x, start.to_y)
+        s.to_x = dst.x; s.to_y = dst.y
+      }
+    }
+    for (const p of state.props) {
+      const start = rotationSnapshot.props.find(t => t.id === p.id)
+      if (!start) continue
+      const c = rot(start.x, start.y)
+      p.x = c.x; p.y = c.y
+      p.rotation = start.rotation + (a * 180) / Math.PI
+    }
   }
 
   function buildMouseMove(sx: number, sy: number) {
@@ -1820,6 +1974,10 @@ export function renderMap(
     }
     if (buildDrag === 'move') {
       previewGroupMove(wx, wy)
+      return
+    }
+    if (buildDrag === 'rotate') {
+      previewGroupRotate(wx, wy)
       return
     }
     if (buildDrag === 'endpoint' && endpointDrag) {
@@ -1847,6 +2005,10 @@ export function renderMap(
       // Teleporters: keep the hop vector constant so the pair moves rigidly.
       // Cross-floor stairs: to_x/to_y live on ANOTHER floor — untouched.
       if (s.to_floor === s.from_floor) { s.to_x += dx; s.to_y += dy }
+    }
+    for (const p of state.props) {
+      if (!propGroupStarts.has(p.id)) continue
+      p.x += dx; p.y += dy
     }
     recomputeWallsPreview()
     render()
@@ -1894,6 +2056,10 @@ export function renderMap(
       commitGroupMove()
       return
     }
+    if (buildDrag === 'rotate') {
+      commitGroupRotate()
+      return
+    }
     if (buildDrag === 'endpoint' && endpointDrag) {
       commitEndpointMove(endpointDrag)
     }
@@ -1920,7 +2086,7 @@ export function renderMap(
     // walls_update push refreshes every client including us
   }
 
-  /** Finish a marquee: select every wall, portal AND stair intersecting the rect. */
+  /** Finish a marquee: select every wall, portal, stair and prop intersecting the rect. */
   function commitMarquee() {
     buildDrag = 'none'
     const [wx0, wy0] = screenToWorld(marqueeStart.x, marqueeStart.y, state.camera)
@@ -1932,6 +2098,10 @@ export function renderMap(
     for (const s of floorStairs()) {
       if (s.from_x >= minX && s.from_x <= maxX && s.from_y >= minY && s.from_y <= maxY) selectedStairs.add(s.id)
     }
+    for (const p of state.props) {
+      const h = p.size / 2
+      if (p.x + h >= minX && p.x - h <= maxX && p.y + h >= minY && p.y - h <= maxY) selectedProps.add(p.id)
+    }
     render()
   }
 
@@ -1942,8 +2112,16 @@ export function renderMap(
     const dx = moveLast.x - moveOrigin.x, dy = moveLast.y - moveOrigin.y
     if (dx === 0 && dy === 0) { pendingDragSnapshot = null; render(); return }
     pushPendingDragUndo()
-    // Restore local records to their start (server is the truth; the
-    // walls_update / table_state pushes re-apply authoritative positions)
+    commitMovedWalls(dx, dy)
+    commitMovedPortals(dx, dy)
+    commitMovedStairs(dx, dy)
+    commitMovedProps(dx, dy)
+    recomputeWallsPreview()
+    render()
+  }
+
+  /** Restore local wall starts; one batch move request for all of them. */
+  function commitMovedWalls(dx: number, dy: number) {
     for (const w of state.wallRecords) {
       const start = groupStartPositions.get(w.id)
       if (!start) continue
@@ -1953,6 +2131,10 @@ export function renderMap(
       api.moveWalls(state.table.id, [...selectedWalls], dx, dy)
         .catch(() => showNotif('Wall move failed'))
     }
+  }
+
+  /** Restore local portal starts; one geometry PATCH per moved portal. */
+  function commitMovedPortals(dx: number, dy: number) {
     for (const p of floorPortals()) {
       const start = portalGroupStarts.get(p.id)
       if (!start) continue
@@ -1960,6 +2142,10 @@ export function renderMap(
       api.updatePortalGeometry(state.table.id, p.id, { x1: start.x1 + dx, y1: start.y1 + dy, x2: start.x2 + dx, y2: start.y2 + dy })
         .catch(() => showNotif('Portal move failed'))
     }
+  }
+
+  /** Restore local stair starts; teleporters keep their rigid hop. */
+  function commitMovedStairs(dx: number, dy: number) {
     for (const s of floorStairs()) {
       const start = stairGroupStarts.get(s.id)
       if (!start) continue
@@ -1977,6 +2163,48 @@ export function renderMap(
       s.from_x = start.x; s.from_y = start.y
       api.updateStair(state.table.id, s.id, patch)
         .catch(() => showNotif('Stair move failed'))
+    }
+  }
+
+  /** Restore local prop positions; one PATCH per moved prop. */
+  function commitMovedProps(dx: number, dy: number) {
+    for (const p of state.props) {
+      const start = propGroupStarts.get(p.id)
+      if (!start) continue
+      // Restore local position; the props_update push re-applies the moved state
+      p.x = start.x; p.y = start.y
+      api.updateProp(state.table.id, p.id, { x: start.x + dx, y: start.y + dy })
+        .catch(() => showNotif('Prop move failed'))
+    }
+  }
+
+  /** Finish a group rotation: persist every rotated object's geometry.
+   *  Local records keep the rotated values (props_update / walls_update /
+   *  table_state pushes confirm them authoritatively). */
+  function commitGroupRotate() {
+    buildDrag = 'none'
+    pushPendingDragUndo()
+    for (const w of state.wallRecords) {
+      if (!selectedWalls.has(w.id)) continue
+      api.updateWall(w.id, { ax: w.ax, ay: w.ay, bx: w.bx, by: w.by })
+        .catch(() => showNotif('Wall rotate failed'))
+    }
+    for (const p of floorPortals()) {
+      if (!selectedPortals.has(p.id)) continue
+      api.updatePortalGeometry(state.table.id, p.id, { x1: p.x1, y1: p.y1, x2: p.x2, y2: p.y2 })
+        .catch(() => showNotif('Portal rotate failed'))
+    }
+    for (const s of floorStairs()) {
+      if (!selectedStairs.has(s.id)) continue
+      const patch: Partial<Stairs> = { from_x: s.from_x, from_y: s.from_y }
+      if (s.to_floor === s.from_floor) { patch.to_x = s.to_x; patch.to_y = s.to_y }
+      api.updateStair(state.table.id, s.id, patch)
+        .catch(() => showNotif('Stair rotate failed'))
+    }
+    for (const p of state.props) {
+      if (!selectedProps.has(p.id)) continue
+      api.updateProp(state.table.id, p.id, { x: p.x, y: p.y, rotation: p.rotation })
+        .catch(() => showNotif('Prop rotate failed'))
     }
     recomputeWallsPreview()
     render()
@@ -2242,9 +2470,10 @@ export function renderMap(
       // always available while building.
       if (state.mode === 'build') {
         // Props stay interactive in build mode too (pending placement,
-        // handles, picking) — before the wall tools.
-        if (isAdmin && propMouseDown(wx, wy, e.shiftKey)) return
-        if (isAdmin) buildMouseDown(e.offsetX, e.offsetY, wx, wy, e.shiftKey)
+        // handles, picking) — before the wall tools. Alt+press goes to the
+        // build tools directly (group rotation), not single-prop drags.
+        if (isAdmin && !e.altKey && propMouseDown(wx, wy, e.shiftKey)) return
+        if (isAdmin) buildMouseDown(e.offsetX, e.offsetY, wx, wy, e.shiftKey, e.altKey)
         return
       }
       if (state.tool === 'fog-reveal' && isAdmin) {
@@ -3049,7 +3278,7 @@ export function renderMap(
     }
     playModeToolKeys(key)
     if (e.key === 'Escape') handleEscapeKey()
-    if (e.key === 'Delete' && isAdmin && (state.selectedId || selectedProp)) handleDeleteKey()
+    if (e.key === 'Delete' && isAdmin && (state.selectedId || selectedProp || selectedProps.size > 0)) handleDeleteKey()
   }
 
   /** Escape: exit zen, deselect, cancel measuring (shared broadcast). */
@@ -3060,6 +3289,10 @@ export function renderMap(
     state.marquee = null
     selectedProp = null
     pendingPropAsset = null
+    selectedWalls.clear()
+    selectedPortals.clear()
+    selectedStairs.clear()
+    selectedProps.clear()
     renderQuickActions()
     state.measure.active = false
     if (state.shareMeasure) socket.send('measure_update', { measure: null, floor_id: state.floor?.id })
@@ -3077,8 +3310,8 @@ export function renderMap(
         .catch(() => showNotif('Prop delete failed'))
       return
     }
-    // Build mode: delete every selected wall + portal + stair (undoable)
-    if (state.mode === 'build' && isAdmin && (selectedWalls.size > 0 || selectedPortals.size > 0 || selectedStairs.size > 0)) {
+    // Build mode: delete every selected wall + portal + stair + prop (undoable)
+    if (state.mode === 'build' && isAdmin && (selectedWalls.size > 0 || selectedPortals.size > 0 || selectedStairs.size > 0 || selectedProps.size > 0)) {
       pushUndo()
       for (const id of selectedWalls) {
         api.deleteWall(id).catch(() => {})
@@ -3092,9 +3325,14 @@ export function renderMap(
         api.deleteStair(id).catch(() => {})
         state.stairs = state.stairs.filter(s => s.id !== id)
       }
+      for (const id of selectedProps) {
+        api.deleteProp(state.table.id, id).catch(() => {})
+        state.props = state.props.filter(p => p.id !== id)
+      }
       selectedWalls.clear()
       selectedPortals.clear()
       selectedStairs.clear()
+      selectedProps.clear()
       recomputeWalls()
       render()
       return
