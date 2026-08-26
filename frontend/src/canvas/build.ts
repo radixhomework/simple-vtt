@@ -42,8 +42,11 @@ export function distToSegment(px: number, py: number, ax: number, ay: number, bx
 
 /** Wall record whose body or endpoints are within `tol` world px of (x,y).
  *  Returns [record, grab] where grab says what was hit: 'body' | 'a' | 'b'. */
-export function pickWall(walls: WallRecord[], x: number, y: number, tol: number): { wall: WallRecord; grab: 'body' | 'a' | 'b' } | null {
-  let best: { wall: WallRecord; grab: 'body' | 'a' | 'b' } | null = null
+/** Which part of a segment the cursor grabbed. */
+export type SegmentGrab = 'body' | 'a' | 'b'
+
+export function pickWall(walls: WallRecord[], x: number, y: number, tol: number): { wall: WallRecord; grab: SegmentGrab } | null {
+  let best: { wall: WallRecord; grab: SegmentGrab } | null = null
   let bestD = tol
   for (const w of walls) {
     const da = Math.hypot(x - w.ax, y - w.ay)
@@ -154,7 +157,7 @@ export function pickPortalBuild(portals: PortalLike[], x: number, y: number, tol
 
 /** Portal pick with endpoint handles — mirrors pickWall's grab semantics:
  *  near-an-endpoint returns that endpoint, otherwise the body. */
-export function pickPortalGrab(portals: PortalLike[], x: number, y: number, tol: number): { portal: PortalLike; grab: 'body' | 'a' | 'b' } | null {
+export function pickPortalGrab(portals: PortalLike[], x: number, y: number, tol: number): { portal: PortalLike; grab: SegmentGrab } | null {
   // Endpoints win over the body (they sit ON the segment)
   for (const p of portals) {
     if (Math.hypot(x - p.x1, y - p.y1) <= tol) return { portal: p, grab: 'a' }

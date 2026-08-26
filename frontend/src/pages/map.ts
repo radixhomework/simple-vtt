@@ -1680,28 +1680,35 @@ export function renderMap(
       render()
       return
     }
-    if (hit) {
-      if (!shiftKey && !selectedWalls.has(hit.wall.id)) { selectedWalls.clear(); selectedPortals.clear() }
-      selectedWalls.add(hit.wall.id)
-      if (hit.grab === 'body') {
-        startGroupMove(wx, wy)
-      } else {
-        buildDrag = 'endpoint'
-        pendingDragSnapshot = snapshotBuild()
-        endpointDrag = { wall: hit.wall, end: hit.grab }
-      }
-    } else if (portalHit) {
-      if (!shiftKey && !selectedPortals.has(portalHit.portal.id)) { selectedWalls.clear(); selectedPortals.clear() }
-      selectedPortals.add(portalHit.portal.id)
-      if (portalHit.grab === 'body') {
-        startGroupMove(wx, wy)
-      } else {
-        buildDrag = 'endpoint'
-        pendingDragSnapshot = snapshotBuild()
-        endpointDrag = { portal: portalHit.portal as Portal, end: portalHit.grab }
-      }
-    }
+    if (hit) selectWallHit(hit, shiftKey, wx, wy)
+    else if (portalHit) selectPortalHit(portalHit, shiftKey, wx, wy)
     render()
+  }
+
+  /** A wall was clicked: add to selection and start the right drag. */
+  function selectWallHit(hit: { wall: WallRecord; grab: 'body' | 'a' | 'b' }, shiftKey: boolean, wx: number, wy: number) {
+    if (!shiftKey && !selectedWalls.has(hit.wall.id)) { selectedWalls.clear(); selectedPortals.clear() }
+    selectedWalls.add(hit.wall.id)
+    if (hit.grab === 'body') {
+      startGroupMove(wx, wy)
+    } else {
+      buildDrag = 'endpoint'
+      pendingDragSnapshot = snapshotBuild()
+      endpointDrag = { wall: hit.wall, end: hit.grab }
+    }
+  }
+
+  /** A portal was clicked: add to selection and start the right drag. */
+  function selectPortalHit(hit: { portal: Portal; grab: 'body' | 'a' | 'b' }, shiftKey: boolean, wx: number, wy: number) {
+    if (!shiftKey && !selectedPortals.has(hit.portal.id)) { selectedWalls.clear(); selectedPortals.clear() }
+    selectedPortals.add(hit.portal.id)
+    if (hit.grab === 'body') {
+      startGroupMove(wx, wy)
+    } else {
+      buildDrag = 'endpoint'
+      pendingDragSnapshot = snapshotBuild()
+      endpointDrag = { portal: hit.portal, end: hit.grab }
+    }
   }
 
   /** Begin a group drag: capture start geometry of every selected wall
