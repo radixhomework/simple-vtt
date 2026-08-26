@@ -1739,8 +1739,10 @@ export function renderMap(
         if (dir === 'right') state.table.map_offset_x = (state.table.map_offset_x ?? 0) + step
         if (dir === 'up') state.table.map_offset_y = (state.table.map_offset_y ?? 0) - step
         if (dir === 'down') state.table.map_offset_y = (state.table.map_offset_y ?? 0) + step
-        ;(panel.querySelector('#gs-ox') as HTMLElement).textContent = String(state.table.map_offset_x ?? 0)
-        ;(panel.querySelector('#gs-oy') as HTMLElement).textContent = String(state.table.map_offset_y ?? 0)
+        const oxEl = panel.querySelector('#gs-ox') as HTMLElement
+        const oyEl = panel.querySelector('#gs-oy') as HTMLElement
+        oxEl.textContent = String(state.table.map_offset_x ?? 0)
+        oyEl.textContent = String(state.table.map_offset_y ?? 0)
         render()
       })
     })
