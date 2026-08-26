@@ -3245,8 +3245,17 @@ export function renderMap(
       return true
     }
     if (e.key === 'Escape') {
-      state.selectedId = null
-      render()
+      handleEscapeKey()
+      return true
+    }
+    // Delete OR Backspace (Macs label backspace "delete"); same guard as
+    // play mode. Without this, build mode consumed the key silently.
+    if ((e.key === 'Delete' || e.key === 'Backspace') && isAdmin
+      && (state.selectedId || selectedProp || selectedProps.size > 0
+        || selectedWalls.size > 0 || selectedPortals.size > 0 || selectedStairs.size > 0)) {
+      e.preventDefault()
+      handleDeleteKey()
+      return true
     }
     return true // build mode consumes everything else below this line
   }
