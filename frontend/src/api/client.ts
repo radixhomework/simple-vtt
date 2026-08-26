@@ -146,6 +146,10 @@ export const api = {
   moveWalls: (tableId: string, ids: string[], dx: number, dy: number) =>
     request<{ moved: number }>('PATCH', `/tables/${tableId}/walls/move`, { ids, dx, dy }),
   deleteWall: (wallId: string) => request<void>('DELETE', `/walls/${wallId}`),
+  /** Explicit grouping: link (shared group_id) or unlink the listed walls + props. */
+  linkBuildObjects: (tableId: string, floorId: string, action: 'link' | 'unlink', wallIds: string[], propIds: string[]) =>
+    request<{ group_id: string; walls: number; props: number }>('PUT', `/tables/${tableId}/floors/${floorId}/link`, { action, wallIds, propIds }),
+
   /** Undo/redo restore: atomically replace all walls + portals + stairs of a floor. */
   restoreBuildState: (tableId: string, floorId: string, data: { walls: WallRecord[]; portals: Array<Pick<Portal, 'id' | 'x1' | 'y1' | 'x2' | 'y2' | 'closed' | 'kind' | 'locked'>>; stairs: Array<Pick<Stairs, 'id' | 'from_floor' | 'from_x' | 'from_y' | 'to_floor' | 'to_x' | 'to_y' | 'radius'>>; props: Prop[] }) =>
     request<{ walls: number; portals: number; stairs: number }>('PUT', `/tables/${tableId}/floors/${floorId}/build-state`, data),
