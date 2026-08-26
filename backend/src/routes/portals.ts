@@ -97,6 +97,17 @@ portalsRouter.patch('/tables/:id/portals/:portalId', authMiddleware, (req, res) 
     db.prepare('UPDATE portals SET closed=? WHERE id=?').run(req.body.closed ? 1 : 0, req.params.portalId)
   }
 
+  // Geometry edit (build mode): move/resize the door/window. Admin-only.
+  if (req.body.x1 !== undefined || req.body.y1 !== undefined || req.body.x2 !== undefined || req.body.y2 !== undefined) {
+    if (!isAdmin) { res.status(403).json({ error: 'forbidden' }); return }
+    const x1 = Number(req.body.x1 ?? existing.x1), y1 = Number(req.body.y1 ?? existing.y1)
+    const x2 = Number(req.body.x2 ?? existing.x2), y2 = Number(req.body.y2 ?? existing.y2)
+    if (![x1, y1, x2, y2].every(Number.isFinite)) { res.status(400).json({ error: 'finite x1/y1/x2/y2 required' }); return }
+    db.prepare('UPDATE portals SET x1=?, y1=?, x2=?, y2=? WHERE id=?').run(x1, y1, x2, y2, req.params.portalId)
+    // Geometry feeds LOS/movement walls on every client — full resync.
+    pushTableStateToTable(req.params.id)
+  }
+
   const row = db.prepare(`SELECT ${PORTAL_COLS} FROM portals WHERE id=?`)
     .get(req.params.portalId) as Record<string, unknown>
   const portal = normalize(row)

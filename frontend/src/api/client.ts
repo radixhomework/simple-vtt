@@ -132,6 +132,9 @@ export const api = {
     request<Portal>('PATCH', `/tables/${tableId}/portals/${portalId}`, { kind }),
   setPortalLocked: (tableId: string, portalId: string, locked: boolean) =>
     request<Portal>('PATCH', `/tables/${tableId}/portals/${portalId}`, { locked }),
+  /** Build mode: move/resize a portal (geometry edit, admin). */
+  updatePortalGeometry: (tableId: string, portalId: string, g: { x1: number; y1: number; x2: number; y2: number }) =>
+    request<Portal>('PATCH', `/tables/${tableId}/portals/${portalId}`, g),
 
   // Walls (build mode)
   listWalls: (tableId: string) => request<WallRecord[]>('GET', `/tables/${tableId}/walls`),
@@ -142,6 +145,9 @@ export const api = {
   moveWalls: (tableId: string, ids: string[], dx: number, dy: number) =>
     request<{ moved: number }>('PATCH', `/tables/${tableId}/walls/move`, { ids, dx, dy }),
   deleteWall: (wallId: string) => request<void>('DELETE', `/walls/${wallId}`),
+  /** Undo/redo restore: atomically replace all walls + portals of a floor. */
+  restoreBuildState: (tableId: string, floorId: string, data: { walls: WallRecord[]; portals: Array<Pick<Portal, 'id' | 'x1' | 'y1' | 'x2' | 'y2' | 'closed' | 'kind' | 'locked'>> }) =>
+    request<{ walls: number; portals: number }>('PUT', `/tables/${tableId}/floors/${floorId}/build-state`, data),
 
   // Portals (build mode placement)
   createPortal: (tableId: string, p: { floor_id: string; x1: number; y1: number; x2: number; y2: number; kind: 'door' | 'window'; closed?: boolean }) =>

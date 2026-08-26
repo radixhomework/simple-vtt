@@ -17,7 +17,7 @@ import {
 import { drawTiledMap, resetTileCache } from '../canvas/tiles'
 import { screenToWorld, worldToScreen, snapToGrid, zoomAround } from '../canvas/camera'
 import { portalWalls, portalSightWalls, pathCrossesWall, pointOnWall } from '../canvas/los'
-import { loadMode, saveMode, drawWallsOverlay, drawMarquee, drawWallGhost, pickWall, wallsInRect, pickPortalBuild, drawPortalsBuild, type PageMode } from '../canvas/build'
+import { loadMode, saveMode, drawWallsOverlay, drawMarquee, drawWallGhost, pickWall, wallsInRect, pickPortalBuild, pickPortalGrab, portalsInRect, drawPortalsBuild, type PageMode } from '../canvas/build'
 import type { WallSegment } from '../canvas/los'
 import type {
   User, Table, Token, FogPoint, Portal, Camera, ToolType, MeasureState, TableSettings,
@@ -566,7 +566,7 @@ export function renderMap(
         drawTokens(mainCtx, visibleTokens, state.camera, state.table.grid_size ?? 70, null, user.username, isAdmin)
         mainCtx.restore()
         drawWallsOverlay(mainCtx, state.wallRecords, state.camera, selectedWalls)
-        drawPortalsBuild(mainCtx, state.portals, state.camera)
+        drawPortalsBuild(mainCtx, floorPortals(), state.camera, selectedPortals)
       } else {
         drawTokens(mainCtx, visibleTokens, state.camera, state.table.grid_size ?? 70, state.selectedId, user.username, isAdmin)
       }
@@ -885,6 +885,11 @@ export function renderMap(
     const target = state.floors.find(f => f.id === floorId)
     if (!target || target.id === state.floor?.id) return
     socket.send('floor_select', { floor_id: floorId })
+    // Build selections and undo history are per-floor — reset both.
+    selectedWalls.clear()
+    selectedPortals.clear()
+    undoStack.length = 0
+    redoStack.length = 0
     applyFloor(target)
   }
 
@@ -1505,6 +1510,9 @@ export function renderMap(
 
   /** Selected wall ids (build mode). */
   const selectedWalls = new Set<string>()
+  /** Selected portal ids (build mode) — doors/windows join the same
+   *  selection system as walls: marquee, group move, endpoint edit. */
+  const selectedPortals = new Set<string>()
   /** What the left button is doing in build mode. */
   let buildDrag: 'none' | 'draw' | 'marquee' | 'move' | 'endpoint' = 'none'
   /** Draw start (world) + current ghost end. */
@@ -1516,51 +1524,84 @@ export function renderMap(
   /** Wall-move drag bookkeeping (world). */
   let moveOrigin = { x: 0, y: 0 }
   let moveLast = { x: 0, y: 0 }
-  /** Endpoint-drag: which wall + endpoint + its original position. */
-  let endpointDrag: { wall: WallRecord; end: 'a' | 'b' } | null = null
+  /** Endpoint-drag: which object (wall or portal) + endpoint. */
+  let endpointDrag: { wall: WallRecord; end: 'a' | 'b' } | { portal: Portal; end: 'a' | 'b' } | null = null
   /** Start positions of the selected group (world px) for live previews. */
   let groupStartPositions = new Map<string, { ax: number; ay: number; bx: number; by: number }>()
+  let portalGroupStarts = new Map<string, { x1: number; y1: number; x2: number; y2: number }>()
 
   const buildTol = () => Math.max(8 / state.camera.zoom, (state.table.grid_size ?? 70) * 0.12)
   const buildSnap = (v: number) => (state.snap ? snapToGrid(v, state.table.grid_size ?? 70) : v)
 
   // ── Build undo/redo (M1.4) ───────────────────────────────────────────────────
-  /** Full wall-row snapshots (small arrays; restore = replace server state). */
-  const undoStack: WallRecord[][] = []
-  const redoStack: WallRecord[][] = []
+  /** Build snapshot = walls + portals of the active floor. Restore is a
+   *  single atomic server replace (build-state PUT) that keeps snapshot
+   *  ids, so undo/redo is race-free and never duplicates rows. */
+  interface BuildSnapshot {
+    walls: WallRecord[]
+    portals: Portal[]
+  }
+  const undoStack: BuildSnapshot[] = []
+  const redoStack: BuildSnapshot[] = []
   const MAX_UNDO = 50
 
+  /** Portal rows belonging to the ACTIVE floor only (portals ride the
+   *  shared state.portals array across floors after table_state pushes). */
+  function floorPortals(): Portal[] {
+    const fid = state.floor?.id
+    return fid ? state.portals.filter(p => p.floor_id === fid) : state.portals
+  }
+
+  function snapshotBuild(): BuildSnapshot {
+    return {
+      walls: state.wallRecords.map(w => ({ ...w })),
+      portals: floorPortals().map(p => ({ ...p })),
+    }
+  }
+
   function pushUndo() {
-    undoStack.push(state.wallRecords.map(w => ({ ...w })))
+    undoStack.push(snapshotBuild())
     if (undoStack.length > MAX_UNDO) undoStack.shift()
     redoStack.length = 0
   }
 
-  /** Restore a snapshot: rewrite every wall of this floor (replace-all). */
-  function restoreSnapshot(snap: WallRecord[]) {
-    const fid = state.floor?.id ?? ''
-    // Best-effort diff-free restore: delete all, recreate from snapshot
-    state.wallRecords.forEach(w => api.deleteWall(w.id).catch(() => {}))
-    state.wallRecords = []
-    for (const w of snap) {
-      api.createWall(state.table.id, fid, { ax: w.ax, ay: w.ay, bx: w.bx, by: w.by })
-        .catch(() => {})
-    }
-    state.wallRecords = snap.map(w => ({ ...w }))
+  /** Snapshot taken at drag START (original geometry); pushed onto the undo
+   *  stack only if the drag actually commits a change. Snapshotting at
+   *  commit time would capture the moved PREVIEW state — making undo a
+   *  no-op that restores the post-drag geometry. */
+  let pendingDragSnapshot: BuildSnapshot | null = null
+
+  function pushPendingDragUndo() {
+    if (!pendingDragSnapshot) return
+    undoStack.push(pendingDragSnapshot)
+    if (undoStack.length > MAX_UNDO) undoStack.shift()
+    redoStack.length = 0
+    pendingDragSnapshot = null
+  }
+
+  /** Restore a snapshot: one atomic server transaction replaces the floor's
+   *  walls + portals (ids preserved). The walls_update + table_state pushes
+   *  bring every client — including us — back in line. */
+  function restoreSnapshot(snap: BuildSnapshot) {
+    const fid = state.floor?.id
+    if (!fid) return
+    api.restoreBuildState(state.table.id, fid, snap)
+      .then(() => { /* server push refreshes state */ })
+      .catch(() => showNotif('Undo failed'))
     selectedWalls.clear()
-    recomputeWalls()
+    selectedPortals.clear()
     render()
   }
 
   function buildUndo() {
     if (undoStack.length === 0) { showNotif('Nothing to undo'); return }
-    redoStack.push(state.wallRecords.map(w => ({ ...w })))
+    redoStack.push(snapshotBuild())
     restoreSnapshot(undoStack.pop()!)
   }
 
   function buildRedo() {
     if (redoStack.length === 0) { showNotif('Nothing to redo'); return }
-    undoStack.push(state.wallRecords.map(w => ({ ...w })))
+    undoStack.push(snapshotBuild())
     restoreSnapshot(redoStack.pop()!)
   }
 
@@ -1605,10 +1646,12 @@ export function renderMap(
 
   /** wall-erase tool: delete the wall (or portal) under the cursor. */
   function eraseWallAt(wx: number, wy: number, tol: number) {
-    const portal = pickPortalBuild(state.portals, wx, wy, tol)
+    const portal = pickPortalBuild(floorPortals(), wx, wy, tol)
     if (portal) {
+      pushUndo()
       api.deletePortal(state.table.id, portal.id).catch(() => showNotif('Delete failed'))
       state.portals = state.portals.filter(p => p.id !== portal.id)
+      selectedPortals.delete(portal.id)
       recomputeWalls()
       render()
       return
@@ -1623,33 +1666,64 @@ export function renderMap(
     render()
   }
 
-  /** wall-select tool: pick a wall (drag body = move, drag endpoint = edit)
-   *  or start a marquee on empty space. */
+  /** wall-select tool: pick a wall or portal (drag body = move, drag
+   *  endpoint = edit) or start a marquee on empty space. */
   function selectWallAt(sx: number, sy: number, wx: number, wy: number, tol: number, shiftKey: boolean) {
     const hit = pickWall(state.wallRecords, wx, wy, tol)
-    if (!hit) {
+    const portalHit = hit ? null : pickPortalGrab(floorPortals(), wx, wy, tol)
+    if (!hit && !portalHit) {
       // Empty press: start a marquee (shift keeps the current selection)
-      if (!shiftKey) selectedWalls.clear()
+      if (!shiftKey) { selectedWalls.clear(); selectedPortals.clear() }
       buildDrag = 'marquee'
       marqueeStart = { x: sx, y: sy }
       marqueeEnd = { x: sx, y: sy }
       render()
       return
     }
-    if (!shiftKey && !selectedWalls.has(hit.wall.id)) selectedWalls.clear()
+    if (hit) selectWallHit(hit, shiftKey, wx, wy)
+    else if (portalHit) selectPortalHit(portalHit, shiftKey, wx, wy)
+    render()
+  }
+
+  /** A wall was clicked: add to selection and start the right drag. */
+  function selectWallHit(hit: { wall: WallRecord; grab: 'body' | 'a' | 'b' }, shiftKey: boolean, wx: number, wy: number) {
+    if (!shiftKey && !selectedWalls.has(hit.wall.id)) { selectedWalls.clear(); selectedPortals.clear() }
     selectedWalls.add(hit.wall.id)
     if (hit.grab === 'body') {
-      buildDrag = 'move'
-      moveOrigin = { x: wx, y: wy }
-      moveLast = { ...moveOrigin }
-      groupStartPositions = new Map(state.wallRecords
-        .filter(w => selectedWalls.has(w.id))
-        .map(w => [w.id, { ax: w.ax, ay: w.ay, bx: w.bx, by: w.by }]))
+      startGroupMove(wx, wy)
     } else {
       buildDrag = 'endpoint'
+      pendingDragSnapshot = snapshotBuild()
       endpointDrag = { wall: hit.wall, end: hit.grab }
     }
-    render()
+  }
+
+  /** A portal was clicked: add to selection and start the right drag. */
+  function selectPortalHit(hit: { portal: Portal; grab: 'body' | 'a' | 'b' }, shiftKey: boolean, wx: number, wy: number) {
+    if (!shiftKey && !selectedPortals.has(hit.portal.id)) { selectedWalls.clear(); selectedPortals.clear() }
+    selectedPortals.add(hit.portal.id)
+    if (hit.grab === 'body') {
+      startGroupMove(wx, wy)
+    } else {
+      buildDrag = 'endpoint'
+      pendingDragSnapshot = snapshotBuild()
+      endpointDrag = { portal: hit.portal, end: hit.grab }
+    }
+  }
+
+  /** Begin a group drag: capture start geometry of every selected wall
+   *  and portal (they move together as one rigid group). */
+  function startGroupMove(wx: number, wy: number) {
+    buildDrag = 'move'
+    moveOrigin = { x: wx, y: wy }
+    moveLast = { ...moveOrigin }
+    pendingDragSnapshot = snapshotBuild()
+    groupStartPositions = new Map(state.wallRecords
+      .filter(w => selectedWalls.has(w.id))
+      .map(w => [w.id, { ax: w.ax, ay: w.ay, bx: w.bx, by: w.by }]))
+    portalGroupStarts = new Map(floorPortals()
+      .filter(p => selectedPortals.has(p.id))
+      .map(p => [p.id, { x1: p.x1, y1: p.y1, x2: p.x2, y2: p.y2 }]))
   }
 
   function buildMouseMove(sx: number, sy: number) {
@@ -1683,16 +1757,29 @@ export function renderMap(
       w.ax += dx; w.ay += dy
       w.bx += dx; w.by += dy
     }
+    for (const p of floorPortals()) {
+      if (!portalGroupStarts.has(p.id)) continue
+      p.x1 += dx; p.y1 += dy
+      p.x2 += dx; p.y2 += dy
+    }
     recomputeWallsPreview()
     render()
   }
 
-  /** Live endpoint-drag preview (grid-snapped). */
-  function previewEndpointMove(ep: { wall: WallRecord; end: 'a' | 'b' }, wx: number, wy: number) {
-    const w = state.wallRecords.find(x => x.id === ep.wall.id)
-    if (!w) return
-    if (ep.end === 'a') { w.ax = buildSnap(wx); w.ay = buildSnap(wy) }
-    else { w.bx = buildSnap(wx); w.by = buildSnap(wy) }
+  /** Live endpoint-drag preview (grid-snapped) for walls AND portals. */
+  function previewEndpointMove(ep: { wall: WallRecord; end: 'a' | 'b' } | { portal: Portal; end: 'a' | 'b' }, wx: number, wy: number) {
+    const sx = buildSnap(wx), sy = buildSnap(wy)
+    if ('wall' in ep) {
+      const w = state.wallRecords.find(x => x.id === ep.wall.id)
+      if (!w) return
+      if (ep.end === 'a') { w.ax = sx; w.ay = sy }
+      else { w.bx = sx; w.by = sy }
+    } else {
+      const p = state.portals.find(x => x.id === ep.portal.id)
+      if (!p) return
+      if (ep.end === 'a') { p.x1 = sx; p.y1 = sy }
+      else { p.x2 = sx; p.y2 = sy }
+    }
     recomputeWallsPreview()
     render()
   }
@@ -1733,6 +1820,7 @@ export function renderMap(
     buildDrag = 'none'
     if (Math.hypot(bx - ax, by - ay) < 4) { render(); return } // ignore micro-drags
     if (state.tool === 'door' || state.tool === 'window') {
+      pushUndo()
       api.createPortal(state.table.id, {
         floor_id: state.floor?.id ?? '',
         x1: ax, y1: ay, x2: bx, y2: by,
@@ -1746,46 +1834,64 @@ export function renderMap(
     // walls_update push refreshes every client including us
   }
 
-  /** Finish a marquee: select every wall intersecting the rect. */
+  /** Finish a marquee: select every wall AND portal intersecting the rect. */
   function commitMarquee() {
     buildDrag = 'none'
     const [wx0, wy0] = screenToWorld(marqueeStart.x, marqueeStart.y, state.camera)
     const [wx1, wy1] = screenToWorld(marqueeEnd.x, marqueeEnd.y, state.camera)
-    const hits = wallsInRect(state.wallRecords, wx0, wy0, wx1, wy1)
-    for (const h of hits) selectedWalls.add(h.id)
+    for (const h of wallsInRect(state.wallRecords, wx0, wy0, wx1, wy1)) selectedWalls.add(h.id)
+    for (const p of portalsInRect(floorPortals(), wx0, wy0, wx1, wy1)) selectedPortals.add(p.id)
     render()
   }
 
-  /** Finish a group move: restore local starts, send one batch delta. */
+  /** Finish a group move: restore local starts, send one batch delta for
+   *  walls + one geometry PATCH per moved portal. */
   function commitGroupMove() {
     buildDrag = 'none'
     const dx = moveLast.x - moveOrigin.x, dy = moveLast.y - moveOrigin.y
-    if (dx === 0 && dy === 0) { render(); return }
-    pushUndo()
+    if (dx === 0 && dy === 0) { pendingDragSnapshot = null; render(); return }
+    pushPendingDragUndo()
     // Restore local records to their start (server is the truth; the
-    // walls_update push re-applies the authoritative moved positions)
+    // walls_update / table_state pushes re-apply authoritative positions)
     for (const w of state.wallRecords) {
       const start = groupStartPositions.get(w.id)
       if (!start) continue
       w.ax = start.ax; w.ay = start.ay; w.bx = start.bx; w.by = start.by
     }
+    if (selectedWalls.size > 0) {
+      api.moveWalls(state.table.id, [...selectedWalls], dx, dy)
+        .catch(() => showNotif('Wall move failed'))
+    }
+    for (const p of floorPortals()) {
+      const start = portalGroupStarts.get(p.id)
+      if (!start) continue
+      p.x1 = start.x1; p.y1 = start.y1; p.x2 = start.x2; p.y2 = start.y2
+      api.updatePortalGeometry(state.table.id, p.id, { x1: start.x1 + dx, y1: start.y1 + dy, x2: start.x2 + dx, y2: start.y2 + dy })
+        .catch(() => showNotif('Portal move failed'))
+    }
     recomputeWallsPreview()
-    api.moveWalls(state.table.id, [...selectedWalls], dx, dy)
-      .catch(() => showNotif('Wall move failed'))
     render()
   }
 
-  /** Finish an endpoint drag: persist the wall's new geometry. */
-  function commitEndpointMove(ep: { wall: WallRecord; end: 'a' | 'b' }) {
-    const w = state.wallRecords.find(x => x.id === ep.wall.id)
+  /** Finish an endpoint drag: persist the wall's or portal's new geometry. */
+  function commitEndpointMove(ep: { wall: WallRecord; end: 'a' | 'b' } | { portal: Portal; end: 'a' | 'b' }) {
     buildDrag = 'none'
     endpointDrag = null
-    if (w) {
-      pushUndo()
-      api.updateWall(w.id, { ax: w.ax, ay: w.ay, bx: w.bx, by: w.by })
-        .catch(() => showNotif('Wall update failed'))
-      recomputeWalls()
+    pushPendingDragUndo()
+    if ('wall' in ep) {
+      const w = state.wallRecords.find(x => x.id === ep.wall.id)
+      if (w) {
+        api.updateWall(w.id, { ax: w.ax, ay: w.ay, bx: w.bx, by: w.by })
+          .catch(() => showNotif('Wall update failed'))
+      }
+    } else {
+      const p = state.portals.find(x => x.id === ep.portal.id)
+      if (p) {
+        api.updatePortalGeometry(state.table.id, p.id, { x1: p.x1, y1: p.y1, x2: p.x2, y2: p.y2 })
+          .catch(() => showNotif('Portal update failed'))
+      }
     }
+    recomputeWalls()
     render()
   }
 
@@ -2675,6 +2781,23 @@ export function renderMap(
 
   /** Delete: remove the selected token (admin, with confirm). */
   function handleDeleteKey(): void {
+    // Build mode: delete every selected wall + portal (undoable)
+    if (state.mode === 'build' && isAdmin && (selectedWalls.size > 0 || selectedPortals.size > 0)) {
+      pushUndo()
+      for (const id of selectedWalls) {
+        api.deleteWall(id).catch(() => {})
+        state.wallRecords = state.wallRecords.filter(w => w.id !== id)
+      }
+      for (const id of selectedPortals) {
+        api.deletePortal(state.table.id, id).catch(() => {})
+        state.portals = state.portals.filter(p => p.id !== id)
+      }
+      selectedWalls.clear()
+      selectedPortals.clear()
+      recomputeWalls()
+      render()
+      return
+    }
     const token = state.tokens.find(t => t.id === state.selectedId)
     if (token && confirm(`Delete ${token.name}?`)) {
       api.deleteToken(state.table.id, token.id)
