@@ -152,19 +152,48 @@ export function pickPortalBuild(portals: PortalLike[], x: number, y: number, tol
   return best
 }
 
+/** Portal pick with endpoint handles — mirrors pickWall's grab semantics:
+ *  near-an-endpoint returns that endpoint, otherwise the body. */
+export function pickPortalGrab(portals: PortalLike[], x: number, y: number, tol: number): { portal: PortalLike; grab: 'body' | 'a' | 'b' } | null {
+  // Endpoints win over the body (they sit ON the segment)
+  for (const p of portals) {
+    if (Math.hypot(x - p.x1, y - p.y1) <= tol) return { portal: p, grab: 'a' }
+    if (Math.hypot(x - p.x2, y - p.y2) <= tol) return { portal: p, grab: 'b' }
+  }
+  const hit = pickPortalBuild(portals, x, y, tol)
+  return hit ? { portal: hit, grab: 'body' } : null
+}
+
+/** Portals whose segment intersects the world rect (marquee). */
+export function portalsInRect(portals: PortalLike[], x0: number, y0: number, x1: number, y1: number): PortalLike[] {
+  const minX = Math.min(x0, x1), maxX = Math.max(x0, x1)
+  const minY = Math.min(y0, y1), maxY = Math.max(y0, y1)
+  const segInRect = (ax: number, ay: number, bx: number, by: number) => {
+    // cheap conservative test: bounding-box overlap + endpoint/center sample
+    if (Math.max(ax, bx) < minX || Math.min(ax, bx) > maxX) return false
+    if (Math.max(ay, by) < minY || Math.min(ay, by) > maxY) return false
+    if ((ax >= minX && ax <= maxX && ay >= minY && ay <= maxY)
+      || (bx >= minX && bx <= maxX && by >= minY && by <= maxY)) return true
+    const cx = (ax + bx) / 2, cy = (ay + by) / 2
+    return cx >= minX && cx <= maxX && cy >= minY && cy <= maxY
+  }
+  return portals.filter(p => segInRect(p.x1, p.y1, p.x2, p.y2))
+}
+
 /** Build-mode portals overlay: every portal, thicker and brighter than the
  *  play-mode rendering, through fog — editing handles. */
-export function drawPortalsBuild(ctx: CanvasRenderingContext2D, portals: PortalLike[], cam: Camera): void {
+export function drawPortalsBuild(ctx: CanvasRenderingContext2D, portals: PortalLike[], cam: Camera, selectedIds?: Set<string>): void {
   ctx.save()
   ctx.lineCap = 'round'
   for (const p of portals) {
     const [sx1, sy1] = worldToScreen(p.x1, p.y1, cam)
     const [sx2, sy2] = worldToScreen(p.x2, p.y2, cam)
+    const selected = selectedIds?.has(p.id) === true
     ctx.beginPath()
     ctx.moveTo(sx1, sy1)
     ctx.lineTo(sx2, sy2)
     ctx.strokeStyle = p.kind === 'window' ? '#4fc3f7' : '#ffb74d'
-    ctx.lineWidth = p.closed ? 6 : 4
+    ctx.lineWidth = (p.closed ? 6 : 4) + (selected ? 2 : 0)
     ctx.globalAlpha = 0.95
     ctx.stroke()
     if (!p.closed) {
@@ -173,6 +202,18 @@ export function drawPortalsBuild(ctx: CanvasRenderingContext2D, portals: PortalL
       ctx.arc((sx1 + sx2) / 2, (sy1 + sy2) / 2, 3, 0, Math.PI * 2)
       ctx.fillStyle = '#ffd54f'
       ctx.fill()
+    }
+    if (selected) {
+      // Endpoint handles — same affordance as selected walls
+      for (const [hx, hy] of [[sx1, sy1], [sx2, sy2]] as Array<[number, number]>) {
+        ctx.beginPath()
+        ctx.arc(hx, hy, 5, 0, Math.PI * 2)
+        ctx.fillStyle = '#ffd54f'
+        ctx.fill()
+        ctx.lineWidth = 1.5
+        ctx.strokeStyle = '#1e211c'
+        ctx.stroke()
+      }
     }
   }
   ctx.restore()

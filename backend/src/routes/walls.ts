@@ -10,7 +10,7 @@ import { randomUUID } from 'node:crypto'
 import { db } from '../db'
 import { authMiddleware } from '../auth'
 import { requireMapDM } from '../mapaccess'
-import { broadcastToTable } from '../hub'
+import { broadcastToTable, pushTableStateToTable } from '../hub'
 
 export const wallsRouter = Router()
 
@@ -104,3 +104,57 @@ wallsRouter.get('/tables/:id/walls', authMiddleware, (req, res) => {
   const rows = db.prepare(`SELECT ${WALL_COLS} FROM walls WHERE table_id=?`).all(req.params.id)
   res.json(rows)
 })
+
+/** Build snapshot restore (undo/redo): atomically replace ALL walls and
+ *  portals of one floor with the given rows, KEEPING their ids.
+ *
+ *  One transaction, then one walls_update + one table_state push. Because
+ *  the wipe is server-side and the insert preserves snapshot ids, the floor
+ *  ends with EXACTLY the snapshot's rows — no stale-id deletes, no races
+ *  with in-flight per-row requests, no duplication. */
+wallsRouter.put('/tables/:id/floors/:floorId/build-state', authMiddleware, (req, res) => {
+  if (!requireMapDM(req, res, req.params.id)) return
+  const floor = db.prepare('SELECT id FROM floors WHERE id=? AND table_id=?').get(req.params.floorId, req.params.id)
+  if (!floor) { res.status(404).json({ error: 'floor not found' }); return }
+
+  const wallBody = (Array.isArray(req.body.walls) ? req.body.walls : []) as Array<Record<string, unknown>>
+  const portalBody = (Array.isArray(req.body.portals) ? req.body.portals : []) as Array<Record<string, unknown>>
+  const wallRows = wallBody.map(coerceWallBody).filter(Boolean) as WallBody[]
+  const portalRows = portalBody.map(coercePortalBody).filter(Boolean) as PortalBody[]
+  // Ids: keep the snapshot's id when present and well-formed, else new.
+  const cleanId = (v: unknown) => (typeof v === 'string' && /^[a-f0-9]{8,32}$/.test(v) ? v : newId())
+
+  const delWalls = db.prepare('DELETE FROM walls WHERE table_id=? AND floor_id=?')
+  const delPortals = db.prepare('DELETE FROM portals WHERE table_id=? AND floor_id=?')
+  const insWall = db.prepare('INSERT INTO walls (id, table_id, floor_id, ax, ay, bx, by) VALUES (?,?,?,?,?,?,?)')
+  const insPortal = db.prepare('INSERT INTO portals (id, table_id, x1, y1, x2, y2, closed, floor_id, kind, locked) VALUES (?,?,?,?,?,?,?,?,?,?)')
+  db.transaction(() => {
+    delWalls.run(req.params.id, req.params.floorId)
+    delPortals.run(req.params.id, req.params.floorId)
+    for (const w of wallBody) {
+      const g = coerceWallBody(w)
+      if (g) insWall.run(cleanId(w.id), req.params.id, req.params.floorId, g.ax, g.ay, g.bx, g.by)
+    }
+    for (const p of portalBody) {
+      const g = coercePortalBody(p)
+      if (g) insPortal.run(cleanId(p.id), req.params.id, g.x1, g.y1, g.x2, g.y2, g.closed ? 1 : 0, req.params.floorId, g.kind, g.locked ? 1 : 0)
+    }
+  })()
+  pushWalls(req.params.id)
+  pushTableStateToTable(req.params.id)
+  res.json({ walls: wallRows.length, portals: portalRows.length })
+})
+
+/** Snapshot portal row (world px endpoints + open/closed + kind + lock). */
+interface PortalBody { x1: number; y1: number; x2: number; y2: number; closed: boolean; kind: 'door' | 'window'; locked: boolean }
+
+function coercePortalBody(b: Record<string, unknown>): PortalBody | null {
+  const x1 = Number(b.x1), y1 = Number(b.y1), x2 = Number(b.x2), y2 = Number(b.y2)
+  if (![x1, y1, x2, y2].every(Number.isFinite)) return null
+  return {
+    x1, y1, x2, y2,
+    closed: b.closed === true || b.closed === 1,
+    kind: b.kind === 'window' ? 'window' : 'door',
+    locked: b.locked === true || b.locked === 1,
+  }
+}
