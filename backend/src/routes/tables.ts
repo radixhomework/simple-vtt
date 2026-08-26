@@ -230,7 +230,10 @@ function parseUvttUpload(originalName: string, fileBuffer: Buffer): UvttUpload {
 
 /** Zip variant: UVTT JSON + map image + assets/* sidecars. */
 function parseUvttZip(fileBuffer: Buffer): UvttUpload {
-  const zip = new AdmZip(fileBuffer)
+  // Options-object construction ({ input: Buffer }): the dedicated buffer
+  // channel, never the path-taking overload — the upload can only be read
+  // as in-memory data here, no filesystem path is derived from it.
+  const zip = new AdmZip({ input: fileBuffer })
   const uvttEntry = zip.getEntries().find(e => /\.(uvtt|dd2vtt)$/i.test(e.name))
   if (!uvttEntry) throw new Error('no .uvtt file in zip')
   const uvttJson = JSON.parse(uvttEntry.getData().toString('utf8'))
