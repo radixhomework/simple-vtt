@@ -285,6 +285,9 @@ function sendTableState(client: Client) {
     .all(client.tableId, floorId) as Record<string, unknown>[]
   const portals = portalRows.map(p => ({ ...p, closed: p.closed === 1 }))
 
+  const walls = db.prepare('SELECT id, table_id, floor_id, ax, ay, bx, by FROM walls WHERE table_id=? AND floor_id=?')
+    .all(client.tableId, floorId)
+
   // Stairs leaving this floor (their counterparts show on the target floor)
   const stairs = db.prepare(
     'SELECT id, table_id, from_floor, from_x, from_y, to_floor, to_x, to_y, radius FROM stairs WHERE table_id=? AND from_floor=?'
@@ -300,6 +303,7 @@ function sendTableState(client: Client) {
       tokens,
       fog,
       portals,
+      walls,
       stairs,
       settings,
     },
