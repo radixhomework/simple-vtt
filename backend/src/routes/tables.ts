@@ -566,28 +566,38 @@ tablesRouter.patch('/tables/:id/stairs/:stairId', authMiddleware, (req, res) => 
     .get(req.params.stairId, req.params.id) as Record<string, unknown> | undefined
   if (!stair) { res.status(404).json({ error: 'not found' }); return }
 
-  let { to_floor, to_x, to_y } = stair
-  if (b.to_floor !== undefined) {
-    const target = floorsOf(req.params.id).find(f => f.id === b.to_floor)
-    if (!target) { res.status(400).json({ error: 'destination must be a floor of this table' }); return }
-    to_floor = target.id as string
-    // Same-floor destination = teleporter (legal). Arrival defaults to the
-    // source point; explicit to_x/to_y override it.
-    if (to_x === undefined || b.to_x === undefined) to_x = b.to_x !== undefined ? Number(b.to_x) : stair.from_x
-    if (to_y === undefined || b.to_y !== undefined) to_y = b.to_y !== undefined ? Number(b.to_y) : stair.from_y
-  }
-  const from_x = b.from_x !== undefined ? Number(b.from_x) : stair.from_x
-  const from_y = b.from_y !== undefined ? Number(b.from_y) : stair.from_y
-  if (b.to_x !== undefined) to_x = Number(b.to_x)
-  if (b.to_y !== undefined) to_y = Number(b.to_y)
-  if (![from_x, from_y, to_x, to_y].every(Number.isFinite)) {
-    res.status(400).json({ error: 'finite coordinates required' }); return
-  }
+  const merged = mergeStairEdits(stair, b, req.params.id)
+  if ('error' in merged) { res.status(400).json({ error: merged.error }); return }
 
   db.prepare('UPDATE stairs SET from_x=?, from_y=?, to_floor=?, to_x=?, to_y=? WHERE id=?')
-    .run(from_x, from_y, to_floor, to_x, to_y, req.params.stairId)
+    .run(merged.from_x, merged.from_y, merged.to_floor, merged.to_x, merged.to_y, req.params.stairId)
   pushTableStateToTable(req.params.id)
   const fresh = db.prepare('SELECT id, table_id, from_floor, from_x, from_y, to_floor, to_x, to_y, radius FROM stairs WHERE id=?')
     .get(req.params.stairId)
   res.json(fresh)
 })
+
+/** Apply a stair edit body onto the existing row, validating floors and
+ *  coordinates. Returns the merged values or an { error } marker. */
+function mergeStairEdits(
+  stair: Record<string, unknown>,
+  b: Record<string, unknown>,
+  tableId: string,
+): { error: string } | { from_x: number; from_y: number; to_floor: string; to_x: number; to_y: number } {
+  let { to_floor, to_x, to_y } = stair as { to_floor: string; to_x: number; to_y: number }
+  if (b.to_floor !== undefined) {
+    const target = floorsOf(tableId).find(f => f.id === b.to_floor)
+    if (!target) return { error: 'destination must be a floor of this table' }
+    to_floor = target.id as string
+    // Same-floor destination = teleporter (legal). Arrival defaults to the
+    // source point; explicit to_x/to_y override it.
+    to_x = b.to_x !== undefined ? Number(b.to_x) : stair.from_x as number
+    to_y = b.to_y !== undefined ? Number(b.to_y) : stair.from_y as number
+  }
+  const from_x = b.from_x !== undefined ? Number(b.from_x) : stair.from_x as number
+  const from_y = b.from_y !== undefined ? Number(b.from_y) : stair.from_y as number
+  if (b.to_x !== undefined) to_x = Number(b.to_x)
+  if (b.to_y !== undefined) to_y = Number(b.to_y)
+  if (![from_x, from_y, to_x, to_y].every(Number.isFinite)) return { error: 'finite coordinates required' }
+  return { from_x, from_y, to_floor, to_x, to_y }
+}

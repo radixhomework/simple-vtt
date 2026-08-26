@@ -129,6 +129,7 @@ wallsRouter.put('/tables/:id/floors/:floorId/build-state', authMiddleware, (req,
   const insWall = db.prepare('INSERT INTO walls (id, table_id, floor_id, ax, ay, bx, by) VALUES (?,?,?,?,?,?,?)')
   const insPortal = db.prepare('INSERT INTO portals (id, table_id, x1, y1, x2, y2, closed, floor_id, kind, locked) VALUES (?,?,?,?,?,?,?,?,?,?)')
   const insStair = db.prepare('INSERT INTO stairs (id, table_id, from_floor, from_x, from_y, to_floor, to_x, to_y, radius) VALUES (?,?,?,?,?,?,?,?,?)')
+  const floorExists = db.prepare('SELECT id FROM floors WHERE id=? AND table_id=?')
   let stairCount = 0
   db.transaction(() => {
     delWalls.run(req.params.id, req.params.floorId)
@@ -143,12 +144,9 @@ wallsRouter.put('/tables/:id/floors/:floorId/build-state', authMiddleware, (req,
       if (g) insPortal.run(cleanId(p.id), req.params.id, g.x1, g.y1, g.x2, g.y2, g.closed ? 1 : 0, req.params.floorId, g.kind, g.locked ? 1 : 0)
     }
     for (const s of stairBody) {
-      const fromFloor = String(s.from_floor ?? req.params.floorId)
-      const toFloor = String(s.to_floor ?? '')
-      const fx = Number(s.from_x), fy = Number(s.from_y), tx = Number(s.to_x), ty = Number(s.to_y)
-      const floorsOk = db.prepare('SELECT id FROM floors WHERE id=? AND table_id=?').get(toFloor, req.params.id)
-      if (![fx, fy, tx, ty].every(Number.isFinite) || !floorsOk || fromFloor !== req.params.floorId) continue
-      insStair.run(cleanId(s.id), req.params.id, fromFloor, fx, fy, toFloor, tx, ty, Number(s.radius) || 1)
+      const g = coerceStairRow(s, req.params.floorId, floorExists, req.params.id)
+      if (!g) continue
+      insStair.run(cleanId(s.id), req.params.id, req.params.floorId, g.fx, g.fy, g.toFloor, g.tx, g.ty, g.radius)
       stairCount++
     }
   })()
@@ -156,6 +154,22 @@ wallsRouter.put('/tables/:id/floors/:floorId/build-state', authMiddleware, (req,
   pushTableStateToTable(req.params.id)
   res.json({ walls: wallBody.length, portals: portalBody.length, stairs: stairCount })
 })
+
+/** Snapshot stair row: validates floors + coordinates; null = skip row. */
+function coerceStairRow(
+  s: Record<string, unknown>,
+  floorId: string,
+  floorExists: { get(id: string, tableId: string): unknown },
+  tableId: string,
+): { fx: number; fy: number; toFloor: string; tx: number; ty: number; radius: number } | null {
+  const fromFloor = String(s.from_floor ?? floorId)
+  const toFloor = String(s.to_floor ?? '')
+  const fx = Number(s.from_x), fy = Number(s.from_y), tx = Number(s.to_x), ty = Number(s.to_y)
+  if (![fx, fy, tx, ty].every(Number.isFinite)) return null
+  if (fromFloor !== floorId) return null
+  if (!floorExists.get(toFloor, tableId)) return null
+  return { fx, fy, toFloor, tx, ty, radius: Number(s.radius) || 1 }
+}
 
 /** Snapshot portal row (world px endpoints + open/closed + kind + lock). */
 interface PortalBody { x1: number; y1: number; x2: number; y2: number; closed: boolean; kind: 'door' | 'window'; locked: boolean }
