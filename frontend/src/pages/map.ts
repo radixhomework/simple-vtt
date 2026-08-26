@@ -1959,7 +1959,7 @@ export function renderMap(
       return
     }
 
-    singleMoveTo(token, snapX, snapY)
+    if (token) singleMoveTo(token, snapX, snapY)
     render()
   }
 
