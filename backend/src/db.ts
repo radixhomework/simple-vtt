@@ -117,6 +117,20 @@ db.exec(`
     FOREIGN KEY (table_id) REFERENCES tables(id) ON DELETE CASCADE
   );
 
+  -- Build-mode walls: hand-drawn or imported sight/movement blockers in
+  -- world px (NOT grid units). One source of truth for LOS after the
+  -- UVTT-metadata migration below.
+  CREATE TABLE IF NOT EXISTS walls (
+    id       TEXT PRIMARY KEY,
+    table_id TEXT NOT NULL,
+    floor_id TEXT NOT NULL DEFAULT '',
+    ax       REAL NOT NULL,
+    ay       REAL NOT NULL,
+    bx       REAL NOT NULL,
+    by       REAL NOT NULL,
+    FOREIGN KEY (table_id) REFERENCES tables(id) ON DELETE CASCADE
+  );
+
   CREATE TABLE IF NOT EXISTS assets (
     id     TEXT PRIMARY KEY,
     kind   TEXT NOT NULL CHECK (kind IN ('image','audio')),
@@ -326,5 +340,36 @@ seedAll()
   if (!marker) {
     db.prepare("UPDATE settings SET value='true' WHERE key IN ('players_open_doors','players_open_windows') AND value='false'").run()
     db.prepare("INSERT INTO settings (key, value) VALUES ('migrated_open_defaults', 'true')").run()
+  }
+}
+
+// Migration (one-time, guarded by a marker): copy UVTT line_of_sight walls
+// from floors.uvt_metadata into rows of the `walls` table — one source of
+// truth for LOS. Runs once per install; floors created later (including
+// new UVTT imports, which write walls directly) are unaffected.
+{
+  const marker = db.prepare("SELECT value FROM settings WHERE key='migrated_uvtt_walls'").get()
+  if (!marker) {
+    const floors = db.prepare("SELECT id, table_id, grid_size, uvt_metadata FROM floors WHERE uvt_metadata IS NOT NULL AND uvt_metadata <> ''").all() as Array<{
+      id: string; table_id: string; grid_size: number; uvt_metadata: string
+    }>
+    const insert = db.prepare('INSERT INTO walls (id, table_id, floor_id, ax, ay, bx, by) VALUES (?,?,?,?,?,?,?)')
+    const copy = db.transaction(() => {
+      for (const f of floors) {
+        try {
+          const meta = JSON.parse(f.uvt_metadata)
+          if (!Array.isArray(meta.line_of_sight)) continue
+          for (const poly of meta.line_of_sight as Array<Array<{ x: number; y: number }>>) {
+            for (let i = 0; i + 1 < poly.length; i++) {
+              const a = poly[i], b = poly[i + 1]
+              const wid = crypto.randomUUID().replace(/-/g, '').slice(0, 16)
+              insert.run(wid, f.table_id, f.id, a.x * f.grid_size, a.y * f.grid_size, b.x * f.grid_size, b.y * f.grid_size)
+            }
+          }
+        } catch { /* malformed metadata: skip this floor */ }
+      }
+      db.prepare("INSERT INTO settings (key, value) VALUES ('migrated_uvtt_walls', 'true')").run()
+    })
+    copy()
   }
 }

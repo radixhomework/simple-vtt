@@ -16,13 +16,13 @@ import {
 } from '../canvas/layers'
 import { drawTiledMap, resetTileCache } from '../canvas/tiles'
 import { screenToWorld, worldToScreen, snapToGrid, zoomAround } from '../canvas/camera'
-import { parseStaticWalls, portalWalls, portalSightWalls, pathCrossesWall, pointOnWall } from '../canvas/los'
-import { loadMode, saveMode, drawWallsOverlay, type PageMode } from '../canvas/build'
+import { portalWalls, portalSightWalls, pathCrossesWall, pointOnWall } from '../canvas/los'
+import { loadMode, saveMode, drawWallsOverlay, drawMarquee, drawWallGhost, pickWall, wallsInRect, type PageMode } from '../canvas/build'
 import type { WallSegment } from '../canvas/los'
 import type {
   User, Table, Token, FogPoint, Portal, Camera, ToolType, MeasureState, TableSettings,
   TableStatePayload, TokenMovePayload, TokenUpdatePayload, TokenDeletePayload, FogUpdatePayload,
-  MeasureUpdatePayload, MusicStatePayload, Asset, Floor, FloorLite, Stairs, MapMember,
+  MeasureUpdatePayload, MusicStatePayload, Asset, Floor, FloorLite, Stairs, MapMember, WallRecord,
 } from '../types'
 import { DEFAULT_TABLE_SETTINGS } from '../types'
 
@@ -37,6 +37,8 @@ interface GameState {
   fog: FogPoint[]
   portals: Portal[]
   walls: WallSegment[]
+  /** Build-mode wall rows (persisted; the source of `walls` above). */
+  wallRecords: WallRecord[]
   /** Sight blockers: static walls + closed doors only (windows are transparent) */
   sightWalls: WallSegment[]
   settings: TableSettings
@@ -362,7 +364,8 @@ export function renderMap(
     tokens: [],
     fog: [],
     portals: [],
-    walls: parseStaticWalls(table.uvt_metadata ?? '{}', table.grid_size ?? 70),
+    walls: [],
+    wallRecords: [] as WallRecord[],
     sightWalls: [],
     settings: { ...DEFAULT_TABLE_SETTINGS },
     camera: { x: 0, y: 0, zoom: 1 },
@@ -436,14 +439,31 @@ export function renderMap(
   }
 
   function recomputeWalls() {
-    const staticWalls = parseStaticWalls(state.table.uvt_metadata ?? '{}', state.table.grid_size ?? 70)
-    // Movement blocks on every closed portal; sight blocks on closed doors
+    // Wall rows are the single source of truth (UVTT metadata was migrated
+    // into rows server-side). Portals still join per their semantics:
+    // movement blocks on every closed portal; sight blocks on closed doors
     // only — a closed window stops movement but not vision.
+    const staticWalls: WallSegment[] = state.wallRecords.map(w => ({ ax: w.ax, ay: w.ay, bx: w.bx, by: w.by }))
     state.walls = [...staticWalls, ...portalWalls(state.portals)]
     state.sightWalls = [...staticWalls, ...portalSightWalls(state.portals)]
     wallVersion++               // cached LOS polygons are now stale
     updateLosWorkerWalls(state.sightWalls, wallVersion)
     markExploredDirty()
+  }
+
+  /** Rebuild wall inputs after table_state already delivered fresh rows
+   *  (walls ride along in the payload) or after a walls_update push. */
+  function applyWallRecords(rows: WallRecord[]) {
+    const fid = state.floor?.id ?? ''
+    state.wallRecords = rows.filter(w => w.floor_id === fid)
+    recomputeWalls()
+  }
+
+  /** Fetch wall rows for the table and rebuild LOS inputs (walls_update). */
+  function refreshWalls() {
+    api.listWalls(state.table.id)
+      .then(rows => { applyWallRecords(rows); render() })
+      .catch(() => { /* transient network error: keep current walls */ })
   }
 
   // Load map image (also re-run when a floor switch brings a new map path).
@@ -536,7 +556,7 @@ export function renderMap(
         mainCtx.globalAlpha = 0.35
         drawTokens(mainCtx, visibleTokens, state.camera, state.table.grid_size ?? 70, null, user.username, isAdmin)
         mainCtx.restore()
-        drawWallsOverlay(mainCtx, state.walls, state.camera, null, (_w, i) => String(i))
+        drawWallsOverlay(mainCtx, state.wallRecords, state.camera, selectedWalls)
       } else {
         drawTokens(mainCtx, visibleTokens, state.camera, state.table.grid_size ?? 70, state.selectedId, user.username, isAdmin)
       }
@@ -584,6 +604,10 @@ export function renderMap(
 
       // UI canvas: shared (admin) measurement, then the local measuring tool
       uiCtx.clearRect(0, 0, w, h)
+      if (state.mode === 'build' && isAdmin) {
+        if (buildDrag === 'draw') drawWallGhost(uiCtx, drawStart.x, drawStart.y, drawEnd.x, drawEnd.y, state.camera)
+        if (buildDrag === 'marquee') drawMarquee(uiCtx, marqueeStart.x, marqueeStart.y, marqueeEnd.x, marqueeEnd.y)
+      }
       const unitSize = state.settings.grid_square_size
       const unit = state.settings.measurement_unit
       if (state.sharedMeasure) {
@@ -857,6 +881,7 @@ export function renderMap(
         state.fog = p.fog ?? []
         state.portals = p.portals ?? []
         state.stairs = p.stairs ?? []
+        if (p.walls) applyWallRecords(p.walls)
         markExploredDirty()
         const floorChanged = !!p.floor && p.floor.id !== oldFloorId
         const tilesPath = state.floor?.tiles_path ?? ''
@@ -903,6 +928,11 @@ export function renderMap(
         if (idx !== -1) state.portals[idx] = p.portal
         recomputeWalls()
         render()
+        break
+      }
+      case 'walls_update': {
+        // Any wall mutation: refetch rows for this floor (cheap: one GET)
+        refreshWalls()
         break
       }
       case 'settings_update': {
@@ -1422,6 +1452,216 @@ export function renderMap(
     render()
   }, { passive: false })
 
+  // ── Build-mode wall tools (M1.2) ─────────────────────────────────────────────
+
+  /** Selected wall ids (build mode). */
+  const selectedWalls = new Set<string>()
+  /** What the left button is doing in build mode. */
+  let buildDrag: 'none' | 'draw' | 'marquee' | 'move' | 'endpoint' = 'none'
+  /** Draw start (world) + current ghost end. */
+  let drawStart = { x: 0, y: 0 }
+  let drawEnd = { x: 0, y: 0 }
+  /** Marquee corners (screen). */
+  let marqueeStart = { x: 0, y: 0 }
+  let marqueeEnd = { x: 0, y: 0 }
+  /** Wall-move drag bookkeeping (world). */
+  let moveOrigin = { x: 0, y: 0 }
+  let moveLast = { x: 0, y: 0 }
+  /** Endpoint-drag: which wall + endpoint + its original position. */
+  let endpointDrag: { wall: WallRecord; end: 'a' | 'b' } | null = null
+  /** Start positions of the selected group (world px) for live previews. */
+  let groupStartPositions = new Map<string, { ax: number; ay: number; bx: number; by: number }>()
+
+  const buildTol = () => Math.max(8 / state.camera.zoom, (state.table.grid_size ?? 70) * 0.12)
+  const buildSnap = (v: number) => (state.snap ? snapToGrid(v, state.table.grid_size ?? 70) : v)
+
+  function buildMouseDown(sx: number, sy: number, wx: number, wy: number, shiftKey: boolean) {
+    const tol = buildTol()
+    if (state.tool === 'wall') {
+      buildDrag = 'draw'
+      drawStart = { x: buildSnap(wx), y: buildSnap(wy) }
+      drawEnd = { ...drawStart }
+      return
+    }
+    if (state.tool === 'wall-erase') {
+      eraseWallAt(wx, wy, tol)
+      return
+    }
+    if (state.tool === 'wall-select') {
+      selectWallAt(sx, sy, wx, wy, tol, shiftKey)
+      return
+    }
+    // door/window/grid-setup: M1.3+
+    startPan(sx, sy)
+    uiCanvas.style.cursor = 'grabbing'
+  }
+
+  /** wall-erase tool: delete the wall under the cursor (optimistic). */
+  function eraseWallAt(wx: number, wy: number, tol: number) {
+    const hit = pickWall(state.wallRecords, wx, wy, tol)
+    if (!hit) return
+    api.deleteWall(hit.wall.id).catch(() => showNotif('Delete failed'))
+    state.wallRecords = state.wallRecords.filter(w => w.id !== hit.wall.id)
+    selectedWalls.delete(hit.wall.id)
+    recomputeWalls()
+    render()
+  }
+
+  /** wall-select tool: pick a wall (drag body = move, drag endpoint = edit)
+   *  or start a marquee on empty space. */
+  function selectWallAt(sx: number, sy: number, wx: number, wy: number, tol: number, shiftKey: boolean) {
+    const hit = pickWall(state.wallRecords, wx, wy, tol)
+    if (!hit) {
+      // Empty press: start a marquee (shift keeps the current selection)
+      if (!shiftKey) selectedWalls.clear()
+      buildDrag = 'marquee'
+      marqueeStart = { x: sx, y: sy }
+      marqueeEnd = { x: sx, y: sy }
+      render()
+      return
+    }
+    if (!shiftKey && !selectedWalls.has(hit.wall.id)) selectedWalls.clear()
+    selectedWalls.add(hit.wall.id)
+    if (hit.grab === 'body') {
+      buildDrag = 'move'
+      moveOrigin = { x: wx, y: wy }
+      moveLast = { ...moveOrigin }
+      groupStartPositions = new Map(state.wallRecords
+        .filter(w => selectedWalls.has(w.id))
+        .map(w => [w.id, { ax: w.ax, ay: w.ay, bx: w.bx, by: w.by }]))
+    } else {
+      buildDrag = 'endpoint'
+      endpointDrag = { wall: hit.wall, end: hit.grab }
+    }
+    render()
+  }
+
+  function buildMouseMove(sx: number, sy: number) {
+    if (buildDrag === 'none') return
+    const [wx, wy] = screenToWorld(sx, sy, state.camera)
+    if (buildDrag === 'draw') {
+      drawEnd = { x: buildSnap(wx), y: buildSnap(wy) }
+      render()
+      return
+    }
+    if (buildDrag === 'marquee') {
+      marqueeEnd = { x: sx, y: sy }
+      render()
+      return
+    }
+    if (buildDrag === 'move') {
+      previewGroupMove(wx, wy)
+      return
+    }
+    if (buildDrag === 'endpoint' && endpointDrag) {
+      previewEndpointMove(endpointDrag, wx, wy)
+    }
+  }
+
+  /** Live group-move preview: incremental deltas on current positions. */
+  function previewGroupMove(wx: number, wy: number) {
+    const dx = wx - moveLast.x, dy = wy - moveLast.y
+    moveLast = { x: wx, y: wy }
+    for (const w of state.wallRecords) {
+      if (!groupStartPositions.has(w.id)) continue
+      w.ax += dx; w.ay += dy
+      w.bx += dx; w.by += dy
+    }
+    recomputeWallsPreview()
+    render()
+  }
+
+  /** Live endpoint-drag preview (grid-snapped). */
+  function previewEndpointMove(ep: { wall: WallRecord; end: 'a' | 'b' }, wx: number, wy: number) {
+    const w = state.wallRecords.find(x => x.id === ep.wall.id)
+    if (!w) return
+    if (ep.end === 'a') { w.ax = buildSnap(wx); w.ay = buildSnap(wy) }
+    else { w.bx = buildSnap(wx); w.by = buildSnap(wy) }
+    recomputeWallsPreview()
+    render()
+  }
+
+  /** Recompute LOS inputs for the live preview without a server round-trip.
+   *  recomputeWalls() itself is idempotent; the explored stamp stays as-is
+   *  during the drag (it refreshes via markExploredDirty on commit). */
+  function recomputeWallsPreview() {
+    const staticWalls: WallSegment[] = state.wallRecords.map(w => ({ ax: w.ax, ay: w.ay, bx: w.bx, by: w.by }))
+    state.walls = [...staticWalls, ...portalWalls(state.portals)]
+    state.sightWalls = [...staticWalls, ...portalSightWalls(state.portals)]
+    wallVersion++
+    updateLosWorkerWalls(state.sightWalls, wallVersion)
+  }
+
+  function buildMouseUp(sx: number, sy: number) {
+    if (buildDrag === 'draw') {
+      commitWallDraw()
+      return
+    }
+    if (buildDrag === 'marquee') {
+      commitMarquee()
+      return
+    }
+    if (buildDrag === 'move') {
+      commitGroupMove()
+      return
+    }
+    if (buildDrag === 'endpoint' && endpointDrag) {
+      commitEndpointMove(endpointDrag)
+    }
+  }
+
+  /** Finish a wall draw: create the segment if it is long enough. */
+  function commitWallDraw() {
+    const ax = drawStart.x, ay = drawStart.y
+    const bx = drawEnd.x, by = drawEnd.y
+    buildDrag = 'none'
+    if (Math.hypot(bx - ax, by - ay) < 4) { render(); return } // ignore micro-drags
+    api.createWall(state.table.id, state.floor?.id ?? '', { ax, ay, bx, by })
+      .catch(() => showNotif('Wall create failed'))
+    // walls_update push refreshes every client including us
+  }
+
+  /** Finish a marquee: select every wall intersecting the rect. */
+  function commitMarquee() {
+    buildDrag = 'none'
+    const [wx0, wy0] = screenToWorld(marqueeStart.x, marqueeStart.y, state.camera)
+    const [wx1, wy1] = screenToWorld(marqueeEnd.x, marqueeEnd.y, state.camera)
+    const hits = wallsInRect(state.wallRecords, wx0, wy0, wx1, wy1)
+    for (const h of hits) selectedWalls.add(h.id)
+    render()
+  }
+
+  /** Finish a group move: restore local starts, send one batch delta. */
+  function commitGroupMove() {
+    buildDrag = 'none'
+    const dx = moveLast.x - moveOrigin.x, dy = moveLast.y - moveOrigin.y
+    if (dx === 0 && dy === 0) { render(); return }
+    // Restore local records to their start (server is the truth; the
+    // walls_update push re-applies the authoritative moved positions)
+    for (const w of state.wallRecords) {
+      const start = groupStartPositions.get(w.id)
+      if (!start) continue
+      w.ax = start.ax; w.ay = start.ay; w.bx = start.bx; w.by = start.by
+    }
+    recomputeWallsPreview()
+    api.moveWalls(state.table.id, [...selectedWalls], dx, dy)
+      .catch(() => showNotif('Wall move failed'))
+    render()
+  }
+
+  /** Finish an endpoint drag: persist the wall's new geometry. */
+  function commitEndpointMove(ep: { wall: WallRecord; end: 'a' | 'b' }) {
+    const w = state.wallRecords.find(x => x.id === ep.wall.id)
+    buildDrag = 'none'
+    endpointDrag = null
+    if (w) {
+      api.updateWall(w.id, { ax: w.ax, ay: w.ay, bx: w.bx, by: w.by })
+        .catch(() => showNotif('Wall update failed'))
+      recomputeWalls()
+    }
+    render()
+  }
+
   uiCanvas.addEventListener('mousedown', (e) => {
     const [wx, wy] = screenToWorld(e.offsetX, e.offsetY, state.camera)
 
@@ -1435,14 +1675,11 @@ export function renderMap(
     }
 
     if (e.button === 0) {
-      // Build mode owns the canvas: no token drag/select, no portal
-      // toggles, no fog tools, no measuring. Build tools arrive in M1.2+;
-      // until then left-drag pans (right/middle always pan).
+      // Build mode owns the canvas. Tools: draw, erase, select/move walls.
+      // Right/middle mouse still pans (handled above) so navigation is
+      // always available while building.
       if (state.mode === 'build') {
-        if (isAdmin) {
-          startPan(e.offsetX, e.offsetY)
-          uiCanvas.style.cursor = 'grabbing'
-        }
+        if (isAdmin) buildMouseDown(e.offsetX, e.offsetY, wx, wy, e.shiftKey)
         return
       }
       if (state.tool === 'stairs' && isAdmin) {
@@ -1606,6 +1843,12 @@ export function renderMap(
       return
     }
 
+    // Build mode: wall ghost / marquee / wall drags
+    if (state.mode === 'build' && isAdmin) {
+      buildMouseMove(e.offsetX, e.offsetY)
+      return
+    }
+
     if (state.dragging && state.selectedId) {
       dragInputTo(e.offsetX, e.offsetY)
       return
@@ -1636,6 +1879,12 @@ export function renderMap(
     if (state.panning) {
       state.panning = false
       uiCanvas.style.cursor = 'crosshair'
+      return
+    }
+
+    // Build mode: commit wall draws / drags / marquee
+    if (state.mode === 'build' && isAdmin && e.button === 0) {
+      buildMouseUp(e.offsetX, e.offsetY)
       return
     }
 

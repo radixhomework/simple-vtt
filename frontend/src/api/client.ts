@@ -2,7 +2,7 @@
  * Typed REST client. The JWT is read from localStorage on every call;
  * multipart uploads (maps, music, icons) use their own fetch helpers.
  */
-import type { Table, Token, User, FogPoint, AppSettings, TableSettings, Portal, Asset, Floor, Stairs, MapMember } from '../types'
+import type { Table, Token, User, FogPoint, AppSettings, TableSettings, Portal, Asset, Floor, Stairs, MapMember, WallRecord } from '../types'
 
 const BASE = '/api'
 
@@ -132,6 +132,16 @@ export const api = {
     request<Portal>('PATCH', `/tables/${tableId}/portals/${portalId}`, { kind }),
   setPortalLocked: (tableId: string, portalId: string, locked: boolean) =>
     request<Portal>('PATCH', `/tables/${tableId}/portals/${portalId}`, { locked }),
+
+  // Walls (build mode)
+  listWalls: (tableId: string) => request<WallRecord[]>('GET', `/tables/${tableId}/walls`),
+  createWall: (tableId: string, floorId: string, w: { ax: number; ay: number; bx: number; by: number }) =>
+    request<WallRecord[]>('POST', `/tables/${tableId}/walls`, { floor_id: floorId, ...w }),
+  updateWall: (wallId: string, w: { ax: number; ay: number; bx: number; by: number }) =>
+    request<WallRecord>('PUT', `/walls/${wallId}`, w),
+  moveWalls: (tableId: string, ids: string[], dx: number, dy: number) =>
+    request<{ moved: number }>('PATCH', `/tables/${tableId}/walls/move`, { ids, dx, dy }),
+  deleteWall: (wallId: string) => request<void>('DELETE', `/walls/${wallId}`),
 
   // Assets (shared image + audio library, deduplicated server-side)
   listAssets: (kind: 'image' | 'audio') => request<Asset[]>('GET', `/assets?kind=${kind}`),

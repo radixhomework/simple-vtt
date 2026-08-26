@@ -149,6 +149,17 @@ export interface MapMember {
   role: 'dm' | 'player'
 }
 
+/** Build-mode wall row (world px endpoints). */
+export interface WallRecord {
+  id: string
+  table_id: string
+  floor_id: string
+  ax: number
+  ay: number
+  bx: number
+  by: number
+}
+
 export interface TableStatePayload {
   table: { id: string; name: string }
   /** This client's role on the map */
@@ -159,6 +170,7 @@ export interface TableStatePayload {
   tokens: Token[]
   fog: FogPoint[]
   portals: Portal[]
+  walls: WallRecord[]
   stairs: Stairs[]
   settings: AppSettings
 }
