@@ -3278,7 +3278,13 @@ export function renderMap(
     }
     playModeToolKeys(key)
     if (e.key === 'Escape') handleEscapeKey()
-    if (e.key === 'Delete' && isAdmin && (state.selectedId || selectedProp || selectedProps.size > 0)) handleDeleteKey()
+    // Delete OR Backspace (Mac keyboards label their backspace key
+    // "delete" and only send ForwardDelete with fn+⌫)
+    if ((e.key === 'Delete' || e.key === 'Backspace') && isAdmin
+      && (state.selectedId || selectedProp || selectedProps.size > 0)) {
+      e.preventDefault()
+      handleDeleteKey()
+    }
   }
 
   /** Escape: exit zen, deselect, cancel measuring (shared broadcast). */
