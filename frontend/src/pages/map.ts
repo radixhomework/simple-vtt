@@ -100,6 +100,9 @@ export function floorLabel(f: { level: number; name: string }): string {
   return f.name ? `#${f.level} ${f.name}` : `Floor ${f.level}`
 }
 
+/** Build-object grab kind: wall/portal body or one of its endpoints. */
+type BuildGrab = 'body' | 'a' | 'b'
+
 /** Toolbar action button (non-tool: place prop, ⋯ more) styled exactly
  *  like a .tool-btn; `armed` highlights a pending interaction. */
 function actionBtn(action: string, label: string, title: string, armed = false): string {
@@ -1989,8 +1992,8 @@ export function renderMap(
   /** Resolve one build press into { wall | portal | stair | prop }, picking
    *  walls → portals → stairs → props in priority order. */
   function pickBuildObject(wx: number, wy: number, tol: number): {
-    wall?: { wall: WallRecord; grab: 'body' | 'a' | 'b' }
-    portal?: { portal: Portal; grab: 'body' | 'a' | 'b' }
+    wall?: { wall: WallRecord; grab: BuildGrab }
+    portal?: { portal: Portal; grab: BuildGrab }
     stair?: Stairs
     prop?: Prop
   } {
@@ -2014,23 +2017,24 @@ export function renderMap(
       render()
       return
     }
-    if (altKey) {
-      // Alt+press: rotate the linked group under the cursor (explicit links
-      // only — a loose selection never rotates as one)
-      clearBuildSelection()
-      if (obj.wall) selectedWalls.add(obj.wall.wall.id)
-      if (obj.portal) selectedPortals.add(obj.portal.portal.id)
-      if (obj.stair) selectedStairs.add(obj.stair.id)
-      if (obj.prop) selectedProps.add(obj.prop.id)
-      expandSelectionToLinked()
-      startGroupRotate(wx, wy)
-      render()
-      return
-    }
+    if (altKey) { rotateLinkedGroupAt(obj, wx, wy); return }
     if (obj.wall) selectWallHit(obj.wall, shiftKey, wx, wy)
     else if (obj.portal) selectPortalHit(obj.portal, shiftKey, wx, wy)
     else if (obj.stair) selectStairHit(obj.stair, shiftKey, wx, wy)
     else if (obj.prop) selectPropHit(obj.prop, shiftKey, wx, wy)
+    render()
+  }
+
+  /** Alt+press: rotate the linked group under the cursor (explicit links
+   *  only — a loose selection never rotates as one). */
+  function rotateLinkedGroupAt(obj: ReturnType<typeof pickBuildObject>, wx: number, wy: number) {
+    clearBuildSelection()
+    if (obj.wall) selectedWalls.add(obj.wall.wall.id)
+    if (obj.portal) selectedPortals.add(obj.portal.portal.id)
+    if (obj.stair) selectedStairs.add(obj.stair.id)
+    if (obj.prop) selectedProps.add(obj.prop.id)
+    expandSelectionToLinked()
+    startGroupRotate(wx, wy)
     render()
   }
 
@@ -2063,16 +2067,22 @@ export function renderMap(
   /** Every wall/prop sharing a group_id with any selection member joins the
    *  drag sets — explicit links, never automatic grouping. */
   function expandSelectionToLinked() {
-    const groupIds = new Set<string>()
-    for (const w of state.wallRecords) if (selectedWalls.has(w.id) && w.group_id) groupIds.add(w.group_id)
-    for (const p of state.props) if (selectedProps.has(p.id) && p.group_id) groupIds.add(p.group_id)
+    const groupIds = selectedGroupIds()
     if (groupIds.size === 0) return
     for (const w of state.wallRecords) if (w.group_id && groupIds.has(w.group_id)) selectedWalls.add(w.id)
     for (const p of state.props) if (p.group_id && groupIds.has(p.group_id)) selectedProps.add(p.id)
   }
 
+  /** group_ids present in the current wall/prop selection. */
+  function selectedGroupIds(): Set<string> {
+    const ids = new Set<string>()
+    for (const w of state.wallRecords) if (selectedWalls.has(w.id) && w.group_id) ids.add(w.group_id)
+    for (const p of state.props) if (selectedProps.has(p.id) && p.group_id) ids.add(p.group_id)
+    return ids
+  }
+
   /** A wall was clicked: add to selection (plus its linked partners) and start the right drag. */
-  function selectWallHit(hit: { wall: WallRecord; grab: 'body' | 'a' | 'b' }, shiftKey: boolean, wx: number, wy: number) {
+  function selectWallHit(hit: { wall: WallRecord; grab: BuildGrab }, shiftKey: boolean, wx: number, wy: number) {
     if (!shiftKey && !selectedWalls.has(hit.wall.id)) { selectedWalls.clear(); selectedPortals.clear(); selectedStairs.clear(); selectedProps.clear() }
     selectedWalls.add(hit.wall.id)
     expandSelectionToLinked()
@@ -2086,7 +2096,7 @@ export function renderMap(
   }
 
   /** A portal was clicked: add to selection and start the right drag. */
-  function selectPortalHit(hit: { portal: Portal; grab: 'body' | 'a' | 'b' }, shiftKey: boolean, wx: number, wy: number) {
+  function selectPortalHit(hit: { portal: Portal; grab: BuildGrab }, shiftKey: boolean, wx: number, wy: number) {
     if (!shiftKey && !selectedPortals.has(hit.portal.id)) { selectedWalls.clear(); selectedPortals.clear(); selectedStairs.clear(); selectedProps.clear() }
     selectedPortals.add(hit.portal.id)
     if (hit.grab === 'body') {
