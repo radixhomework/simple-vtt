@@ -79,7 +79,41 @@ export function drawStairs(
     const [sx, sy] = worldToScreen(st.from_x, st.from_y, cam)
     // Visible marker spans 0.75 grid square (pickup radius is separate)
     const r = Math.max(5, 0.75 * gridSize * cam.zoom * 0.5)
+    const isTeleporter = st.to_floor === st.from_floor
     ctx.save()
+    if (isTeleporter) {
+      // Same-floor link = teleporter: violet ring + double-arrow glyph
+      ctx.beginPath()
+      ctx.arc(sx, sy, r, 0, Math.PI * 2)
+      ctx.fillStyle = 'rgba(110, 94, 123, 0.35)'
+      ctx.fill()
+      ctx.lineWidth = 2.5
+      ctx.strokeStyle = '#b39ddb'
+      ctx.stroke()
+      ctx.beginPath()
+      ctx.arc(sx, sy, r * 0.55, 0, Math.PI * 2)
+      ctx.lineWidth = 1.5
+      ctx.strokeStyle = '#b39ddb'
+      ctx.stroke()
+      ctx.font = `bold ${Math.max(9, r * 0.9)}px system-ui`
+      ctx.fillStyle = '#d1c4e9'
+      ctx.textAlign = 'center'
+      ctx.textBaseline = 'middle'
+      ctx.fillText('↺', sx, sy + 0.5)
+      if (isAdmin && cam.zoom > 0.3) {
+        ctx.font = `bold ${Math.max(10, 11 * cam.zoom)}px system-ui`
+        const label = 'Teleport'
+        const w = ctx.measureText(label).width
+        ctx.fillStyle = 'rgba(30,33,28,0.75)'
+        ctx.fillRect(sx - w / 2 - 4, sy + r + 2, w + 8, 16)
+        ctx.fillStyle = PALETTE.parchment
+        ctx.textAlign = 'center'
+        ctx.textBaseline = 'top'
+        ctx.fillText(label, sx, sy + r + 3)
+      }
+      ctx.restore()
+      continue
+    }
     // Disc in rose with a spiral glyph
     ctx.beginPath()
     ctx.arc(sx, sy, r, 0, Math.PI * 2)
