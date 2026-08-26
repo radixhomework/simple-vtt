@@ -156,8 +156,9 @@ export function pickPortalBuild(portals: PortalLike[], x: number, y: number, tol
 }
 
 /** Portal pick with endpoint handles — mirrors pickWall's grab semantics:
- *  near-an-endpoint returns that endpoint, otherwise the body. */
-export function pickPortalGrab(portals: PortalLike[], x: number, y: number, tol: number): { portal: PortalLike; grab: SegmentGrab } | null {
+ *  near-an-endpoint returns that endpoint, otherwise the body. Generic so
+ *  callers holding full Portal rows get them back without casts. */
+export function pickPortalGrab<T extends PortalLike>(portals: T[], x: number, y: number, tol: number): { portal: T; grab: SegmentGrab } | null {
   // Endpoints win over the body (they sit ON the segment)
   for (const p of portals) {
     if (Math.hypot(x - p.x1, y - p.y1) <= tol) return { portal: p, grab: 'a' }

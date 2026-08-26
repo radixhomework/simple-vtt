@@ -1681,7 +1681,7 @@ export function renderMap(
       return
     }
     if (hit) selectWallHit(hit, shiftKey, wx, wy)
-    else if (portalHit) selectPortalHit(portalHit as { portal: Portal; grab: 'body' | 'a' | 'b' }, shiftKey, wx, wy)
+    else if (portalHit) selectPortalHit(portalHit, shiftKey, wx, wy)
     render()
   }
 
