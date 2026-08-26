@@ -1956,6 +1956,18 @@ export function renderMap(
     return true // build mode consumes everything else below this line
   }
 
+  /** Play-mode tool shortcuts (S/L/C/Q/N); returns true when consumed. */
+  function playModeToolKeys(key: string): boolean {
+    const map: Record<string, ToolType> = { s: 'select', l: 'line', c: 'circle', q: 'square', n: 'cone' }
+    const tool = map[key]
+    if (!tool) return false
+    state.tool = tool
+    root.querySelectorAll('[data-tool]').forEach(b => {
+      b.classList.toggle('active', (b as HTMLElement).dataset.tool === state.tool)
+    })
+    return true
+  }
+
   // Keyboard shortcuts
   const onKeydown = (e: KeyboardEvent) => {
     const tag = (e.target as HTMLElement).tagName
@@ -1969,13 +1981,7 @@ export function renderMap(
       buildModeKeys(key, e)
       return
     }
-    const map: Record<string, ToolType> = { s: 'select', l: 'line', c: 'circle', q: 'square', n: 'cone' }
-    if (map[e.key.toLowerCase()]) {
-      state.tool = map[e.key.toLowerCase()]
-      root.querySelectorAll('[data-tool]').forEach(b => {
-        b.classList.toggle('active', (b as HTMLElement).dataset.tool === state.tool)
-      })
-    }
+    playModeToolKeys(key)
     if (e.key === 'Escape') {
       if (state.zen) exitZen()
       state.selectedId = null
