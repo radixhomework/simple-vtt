@@ -9,7 +9,7 @@
 import { api } from '../api/client'
 import { socket } from '../api/websocket'
 import {
-  drawMap, drawGrid, drawTokens, drawFog, drawPortals, drawMeasure, drawStairs,
+  drawMap, drawGrid, drawTokens, drawFog, drawPortals, drawMeasure, drawStairs, STAIR_MARKER_FRACTION,
   preloadTokenImage, preloadMapImage, updateExplored, clearMapImageCache,
   resetVisionCache, DRAG_QUANTUM,
   initLosWorker, updateLosWorkerWalls, setLosResultHandler, disposeLosWorker, applyLosResult,
@@ -2879,8 +2879,12 @@ function pickPortal(wx: number, wy: number, portals: Portal[], threshold: number
 
 /** Nearest stair marker whose pickup radius contains the point. */
 function pickStair(wx: number, wy: number, stairs: Stairs[], gridSize: number): Stairs | null {
+  // Trigger circle = the drawn ring (STAIR_MARKER_FRACTION × gridSize).
+  // The token's CENTER must land inside it — dropping a token so its edge
+  // merely overlaps the ring does not trigger.
+  const r = STAIR_MARKER_FRACTION * gridSize
   for (const st of stairs) {
-    if (Math.hypot(wx - st.from_x, wy - st.from_y) <= Math.max(st.radius, 0.6) * gridSize) return st
+    if (Math.hypot(wx - st.from_x, wy - st.from_y) <= r) return st
   }
   return null
 }
