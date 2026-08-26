@@ -52,6 +52,10 @@ interface GameState {
   activeTilesPath: string
   exploredCanvas: OffscreenCanvas | null
   selectedId: string | null
+  /** Multi-selection (admin): every selected token id. */
+  selectedIds: Set<string>
+  /** Force-move (Alt+drag): teleport past walls without fog reveal. */
+  forceDrag: boolean
   tool: ToolType
   /** play (classic behavior) or build (authoring) — admin-only. */
   mode: PageMode
@@ -73,6 +77,8 @@ interface GameState {
   panStartY: number
   panCamX: number
   panCamY: number
+  /** Admin marquee token selection (play mode). */
+  marquee: { active: boolean, x0: number, y0: number, x1: number, y1: number, additive: boolean } | null
 }
 
 /** Floor map fields overlaid onto state.table so existing readers keep working. */
@@ -375,6 +381,8 @@ export function renderMap(
     activeTilesPath: '',
     exploredCanvas: null,
     selectedId: null,
+    selectedIds: new Set<string>(),
+    forceDrag: false,
     tool: 'select',
     mode: loadMode(table.id, isAdmin) as PageMode,
     snap: true,
@@ -387,6 +395,7 @@ export function renderMap(
     music: null,
     dragging: false, dragOffX: 0, dragOffY: 0, dragStartX: 0, dragStartY: 0,
     panning: false, panStartX: 0, panStartY: 0, panCamX: 0, panCamY: 0,
+    marquee: null,
   }
 
   let lastMoveBroadcast = 0
@@ -608,6 +617,26 @@ export function renderMap(
       if (state.mode === 'build' && isAdmin) {
         if (buildDrag === 'draw') drawWallGhost(uiCtx, drawStart.x, drawStart.y, drawEnd.x, drawEnd.y, state.camera)
         if (buildDrag === 'marquee') drawMarquee(uiCtx, marqueeStart.x, marqueeStart.y, marqueeEnd.x, marqueeEnd.y)
+      }
+      // Play-mode token marquee (admin)
+      if (state.mode !== 'build' && state.marquee?.active) {
+        drawMarquee(uiCtx, state.marquee.x0, state.marquee.y0, state.marquee.x1, state.marquee.y1)
+      }
+      // Multi-selection rings (admin, play mode)
+      if (state.mode !== 'build' && isAdmin && state.selectedIds.size > 1) {
+        uiCtx.save()
+        uiCtx.strokeStyle = '#ffd54f'
+        uiCtx.lineWidth = 2
+        for (const id of state.selectedIds) {
+          const t = state.tokens.find(x => x.id === id)
+          if (!t) continue
+          const [sx, sy] = worldToScreen(t.x, t.y, state.camera)
+          const r = Math.max(14, (state.table.grid_size ?? 70) * 0.45 * state.camera.zoom)
+          uiCtx.beginPath()
+          uiCtx.arc(sx, sy, r, 0, Math.PI * 2)
+          uiCtx.stroke()
+        }
+        uiCtx.restore()
       }
       const unitSize = state.settings.grid_square_size
       const unit = state.settings.measurement_unit
@@ -1476,6 +1505,46 @@ export function renderMap(
   const buildTol = () => Math.max(8 / state.camera.zoom, (state.table.grid_size ?? 70) * 0.12)
   const buildSnap = (v: number) => (state.snap ? snapToGrid(v, state.table.grid_size ?? 70) : v)
 
+  // ── Build undo/redo (M1.4) ───────────────────────────────────────────────────
+  /** Full wall-row snapshots (small arrays; restore = replace server state). */
+  const undoStack: WallRecord[][] = []
+  const redoStack: WallRecord[][] = []
+  const MAX_UNDO = 50
+
+  function pushUndo() {
+    undoStack.push(state.wallRecords.map(w => ({ ...w })))
+    if (undoStack.length > MAX_UNDO) undoStack.shift()
+    redoStack.length = 0
+  }
+
+  /** Restore a snapshot: rewrite every wall of this floor (replace-all). */
+  function restoreSnapshot(snap: WallRecord[]) {
+    const fid = state.floor?.id ?? ''
+    // Best-effort diff-free restore: delete all, recreate from snapshot
+    state.wallRecords.forEach(w => api.deleteWall(w.id).catch(() => {}))
+    state.wallRecords = []
+    for (const w of snap) {
+      api.createWall(state.table.id, fid, { ax: w.ax, ay: w.ay, bx: w.bx, by: w.by })
+        .catch(() => {})
+    }
+    state.wallRecords = snap.map(w => ({ ...w }))
+    selectedWalls.clear()
+    recomputeWalls()
+    render()
+  }
+
+  function buildUndo() {
+    if (undoStack.length === 0) { showNotif('Nothing to undo'); return }
+    redoStack.push(state.wallRecords.map(w => ({ ...w })))
+    restoreSnapshot(undoStack.pop()!)
+  }
+
+  function buildRedo() {
+    if (redoStack.length === 0) { showNotif('Nothing to redo'); return }
+    undoStack.push(state.wallRecords.map(w => ({ ...w })))
+    restoreSnapshot(redoStack.pop()!)
+  }
+
   function buildMouseDown(sx: number, sy: number, wx: number, wy: number, shiftKey: boolean) {
     const tol = buildTol()
     if (state.tool === 'wall') {
@@ -1519,6 +1588,7 @@ export function renderMap(
     }
     const hit = pickWall(state.wallRecords, wx, wy, tol)
     if (!hit) return
+    pushUndo()
     api.deleteWall(hit.wall.id).catch(() => showNotif('Delete failed'))
     state.wallRecords = state.wallRecords.filter(w => w.id !== hit.wall.id)
     selectedWalls.delete(hit.wall.id)
@@ -1643,6 +1713,7 @@ export function renderMap(
       }).catch(() => showNotif('Portal create failed'))
       return
     }
+    pushUndo()
     api.createWall(state.table.id, state.floor?.id ?? '', { ax, ay, bx, by })
       .catch(() => showNotif('Wall create failed'))
     // walls_update push refreshes every client including us
@@ -1663,6 +1734,7 @@ export function renderMap(
     buildDrag = 'none'
     const dx = moveLast.x - moveOrigin.x, dy = moveLast.y - moveOrigin.y
     if (dx === 0 && dy === 0) { render(); return }
+    pushUndo()
     // Restore local records to their start (server is the truth; the
     // walls_update push re-applies the authoritative moved positions)
     for (const w of state.wallRecords) {
@@ -1682,6 +1754,7 @@ export function renderMap(
     buildDrag = 'none'
     endpointDrag = null
     if (w) {
+      pushUndo()
       api.updateWall(w.id, { ax: w.ax, ay: w.ay, bx: w.bx, by: w.by })
         .catch(() => showNotif('Wall update failed'))
       recomputeWalls()
@@ -1805,18 +1878,38 @@ export function renderMap(
       if (hit) {
         const canMove = isAdmin || !state.settings.players_move_own_only || hit.owner === user.username
         if (canMove) {
-          state.selectedId = hit.id
+          if (e.shiftKey && isAdmin) {
+            // Shift+click: toggle membership in the multi-selection
+            if (state.selectedIds.has(hit.id)) state.selectedIds.delete(hit.id)
+            else state.selectedIds.add(hit.id)
+            state.selectedId = [...state.selectedIds][0] ?? null
+          } else if (!state.selectedIds.has(hit.id)) {
+            state.selectedIds = new Set([hit.id])
+            state.selectedId = hit.id
+          }
           const [tx, ty] = worldToScreen(hit.x, hit.y, state.camera)
           state.dragging = true
+          state.forceDrag = e.altKey && isAdmin
           state.dragOffX = e.offsetX - tx
           state.dragOffY = e.offsetY - ty
           state.dragStartX = hit.x
           state.dragStartY = hit.y
+          groupStarts = new Map<string, { x: number; y: number }>()
+          for (const id of state.selectedIds) {
+            const t = state.tokens.find(x => x.id === id)
+            if (t) groupStarts.set(id, { x: t.x, y: t.y })
+          }
         } else {
           state.selectedId = hit.id
         }
         refreshSidebar()
         if (isAdmin) renderTokenEditor()
+      } else if (isAdmin && e.shiftKey) {
+        // Shift+drag on empty: additive marquee over the current selection
+        state.marquee = { active: true, x0: e.offsetX, y0: e.offsetY, x1: e.offsetX, y1: e.offsetY, additive: true }
+      } else if (isAdmin) {
+        // Drag on empty: marquee selection (replaces)
+        state.marquee = { active: true, x0: e.offsetX, y0: e.offsetY, x1: e.offsetX, y1: e.offsetY, additive: false }
       } else {
         // No token under the cursor: portal click (threshold = 30% of a
         // grid cell) — open/close shortcut for every role, permission-checked
@@ -1828,6 +1921,7 @@ export function renderMap(
         }
 
         state.selectedId = null
+        state.selectedIds.clear()
         refreshSidebar()
         if (isAdmin) renderTokenEditor()
       }
@@ -1838,12 +1932,54 @@ export function renderMap(
   // ── Shared input logic (mouse + touch) ───────────────────────────────────────
 
   /** Move the dragged token toward a screen position, blocking at walls. */
+  let groupStarts = new Map<string, { x: number; y: number }>()
+
   function dragInputTo(screenX: number, screenY: number) {
     if (!state.dragging || !state.selectedId) return
     const [wx, wy] = screenToWorld(screenX - state.dragOffX, screenY - state.dragOffY, state.camera)
     const snapX = state.snap ? snapToGrid(wx, state.table.grid_size ?? 70) : wx
     const snapY = state.snap ? snapToGrid(wy, state.table.grid_size ?? 70) : wy
     const token = state.tokens.find(t => t.id === state.selectedId)
+
+    // FORCE-MOVE (Alt+drag): the token follows the cursor freely, ignoring
+    // walls; nothing is broadcast and no fog is stamped until release —
+    // players must not see the token fly through walls nor reveal fog
+    // along the way.
+    if (state.forceDrag && token) {
+      token.x = snapX
+      token.y = snapY
+      render()   // explored stays untouched; markExploredDirty NOT called
+      return
+    }
+
+    // GROUP MOVE: every selected token translates by the same delta, each
+    // blocked at walls independently (no tunneling). The delta is the RAW
+    // cursor displacement from the drag start (snap would round incremental
+    // steps back into the origin cell, zeroing the motion); snapping is
+    // applied to each token's candidate destination instead.
+    if (state.selectedIds.size > 1 && token) {
+      const dx = wx - state.dragStartX
+      const dy = wy - state.dragStartY
+      const now = Date.now()
+      const broadcast = now - lastMoveBroadcast > 50
+      if (broadcast) lastMoveBroadcast = now
+      for (const id of state.selectedIds) {
+        const t = state.tokens.find(x => x.id === id)
+        if (!t) continue
+        const start = groupStarts.get(id) ?? { x: t.x, y: t.y }
+        const nx = state.snap ? snapToGrid(start.x + dx, state.table.grid_size ?? 70) : start.x + dx
+        const ny = state.snap ? snapToGrid(start.y + dy, state.table.grid_size ?? 70) : start.y + dy
+        if (!pathCrossesWall(t.x, t.y, nx, ny, state.walls) && !pointOnWall(nx, ny, state.walls)) {
+          t.x = nx
+          t.y = ny
+          if (broadcast) socket.send('token_move', { token_id: t.id, x: t.x, y: t.y })
+        }
+      }
+      markExploredDirty()
+      render()
+      return
+    }
+
     if (token) {
       // Block at walls during the drag: only accept positions whose path
       // from the current position crosses no wall/closed door (and doesn't
@@ -1868,9 +2004,51 @@ export function renderMap(
   /** Commit the token drag: wall safety net + final broadcast. */
   function finishTokenDrag() {
     state.dragging = false
-    markExploredDirty()   // exact (unquantized) polygon on the next stamp
     const token = state.tokens.find(t => t.id === state.selectedId)
     if (!token) return
+
+    // FORCE-MOVE commit: one clean teleport. The landing point must be
+    // legal (not inside a wall); on failure everything snaps back. Only
+    // the final position is broadcast — players see A → B, never the path.
+    if (state.forceDrag) {
+      state.forceDrag = false
+      if (pointOnWall(token.x, token.y, state.walls)) {
+        for (const [id, s] of groupStarts) {
+          const t = state.tokens.find(x => x.id === id)
+          if (t) { t.x = s.x; t.y = s.y }
+        }
+        socket.send('token_move', { token_id: token.id, x: state.dragStartX, y: state.dragStartY })
+        showNotif('Landing blocked by wall — reverted')
+        render()
+        return
+      }
+      markExploredDirty()   // stamp the destination reveal only
+      socket.send('token_move', { token_id: token.id, x: token.x, y: token.y })
+      render()
+      return
+    }
+
+    // GROUP commit: wall safety net per token (tokens that already slid
+    // along walls keep their legal positions; only mid-drag races revert).
+    if (state.selectedIds.size > 1) {
+      let anyReverted = false
+      for (const id of state.selectedIds) {
+        const t = state.tokens.find(x => x.id === id)
+        if (!t || !pointOnWall(t.x, t.y, state.walls)) continue
+        const start = groupStarts.get(id)
+        if (!start) continue
+        t.x = start.x
+        t.y = start.y
+        socket.send('token_move', { token_id: t.id, x: t.x, y: t.y })
+        anyReverted = true
+      }
+      if (anyReverted) showNotif('Some tokens hit walls and stayed behind')
+      markExploredDirty()
+      render()
+      return
+    }
+
+    markExploredDirty()   // exact (unquantized) polygon on the next stamp
     // The drag already blocks walls incrementally along the path actually
     // taken, so the legal way around a corner must NOT be rejected here —
     // a straight-line start→end check would falsely flag L-shaped moves.
@@ -1917,6 +2095,87 @@ export function renderMap(
     render()
   }
 
+  /** End the marquee: every token whose position falls inside the rect
+   *  joins the selection (admin, play mode). */
+  function finishMarquee() {
+    if (!state.marquee) return
+    const { x0, y0, x1, y1, additive } = state.marquee
+    state.marquee = null
+    const [wx0, wy0] = screenToWorld(Math.min(x0, x1), Math.min(y0, y1), state.camera)
+    const [wx1, wy1] = screenToWorld(Math.max(x0, x1), Math.max(y0, y1), state.camera)
+    if (!additive) state.selectedIds = new Set()
+    for (const t of state.tokens) {
+      if (t.x >= wx0 && t.x <= wx1 && t.y >= wy0 && t.y <= wy1) state.selectedIds.add(t.id)
+    }
+    state.selectedId = [...state.selectedIds][0] ?? null
+    refreshSidebar()
+    if (isAdmin) renderTokenEditor()
+    renderQuickActions()
+    render()
+  }
+
+  /** Floating quick-actions bar for the multi-selection (align, distribute,
+   *  hide, delete). Admin, play mode. */
+  function renderQuickActions() {
+    root.querySelector('#quick-actions')?.remove()
+    if (!isAdmin || state.mode === 'build' || state.selectedIds.size < 2) return
+    const bar = document.createElement('div')
+    bar.id = 'quick-actions'
+    bar.style.cssText = 'position:absolute;bottom:70px;left:50%;transform:translateX(-50%);z-index:40;display:flex;gap:6px;background:var(--bg-card,#232622);border:1px solid var(--border,#3a3d36);border-radius:10px;padding:8px 10px;font-size:12px;color:var(--text,#e8e4d8);box-shadow:0 6px 24px rgba(0,0,0,.4)'
+    const btn = (label: string, title: string) => `<button data-qa="${title}" title="${title}" style="padding:4px 10px">${label}</button>`
+    bar.innerHTML = `<span style="align-self:center;margin-right:4px">${state.selectedIds.size} tokens</span>`
+      + btn('⇹', 'align-h') + btn('⇳', 'align-v') + btn('⋮⋮', 'distribute-h') + btn('⋯', 'distribute-v')
+      + btn('👁', 'hide-all') + btn('🗑', 'delete-all')
+    wrap.appendChild(bar)
+    bar.querySelectorAll('[data-qa]').forEach(b => {
+      b.addEventListener('click', () => applyQuickAction((b as HTMLElement).dataset.qa!))
+    })
+  }
+
+  /** Apply a quick action to the multi-selection. */
+  function applyQuickAction(action: string) {
+    const sel = state.tokens.filter(t => state.selectedIds.has(t.id))
+    if (sel.length < 2) return
+    const broadcast = (t: Token) => socket.send('token_move', { token_id: t.id, x: t.x, y: t.y })
+    if (action === 'align-h') {
+      const y = sel[0].y
+      sel.forEach(t => { t.y = y; broadcast(t) })
+    } else if (action === 'align-v') {
+      const x = sel[0].x
+      sel.forEach(t => { t.x = x; broadcast(t) })
+    } else if (action === 'distribute-h') {
+      const xs = sel.map(t => t.x).sort((a, b) => a - b)
+      const min = xs[0], max = xs[xs.length - 1]
+      const step = (max - min) / (sel.length - 1)
+      sel.forEach((t, i) => { t.x = min + i * step; broadcast(t) })
+    } else if (action === 'distribute-v') {
+      const ys = sel.map(t => t.y).sort((a, b) => a - b)
+      const min = ys[0], max = ys[ys.length - 1]
+      const step = (max - min) / (sel.length - 1)
+      sel.forEach((t, i) => { t.y = min + i * step; broadcast(t) })
+    } else if (action === 'hide-all') {
+      sel.forEach(t => {
+        t.hidden = !t.hidden
+        api.updateToken(state.table.id, t.id, { hidden: t.hidden }).catch(() => {})
+        socket.send('token_update', { token: t })
+      })
+    } else if (action === 'delete-all') {
+      if (!confirm(`Delete ${sel.length} tokens?`)) return
+      sel.forEach(t => {
+        api.deleteToken(state.table.id, t.id).catch(() => {})
+        socket.send('token_delete', { token_id: t.id })
+      })
+      state.tokens = state.tokens.filter(t => !state.selectedIds.has(t.id))
+      state.selectedIds.clear()
+      state.selectedId = null
+    }
+    markExploredDirty()
+    refreshSidebar()
+    renderTokenEditor()
+    renderQuickActions()
+    render()
+  }
+
   /** Begin panning from a screen position (right/middle mouse, touch). */
   function startPan(screenX: number, screenY: number) {
     state.panning = true
@@ -1942,6 +2201,14 @@ export function renderMap(
     // Build mode: wall ghost / marquee / wall drags
     if (state.mode === 'build' && isAdmin) {
       buildMouseMove(e.offsetX, e.offsetY)
+      return
+    }
+
+    // Play-mode marquee: track the rect live
+    if (state.marquee?.active) {
+      state.marquee.x1 = e.offsetX
+      state.marquee.y1 = e.offsetY
+      render()
       return
     }
 
@@ -1981,6 +2248,12 @@ export function renderMap(
     // Build mode: commit wall draws / drags / marquee
     if (state.mode === 'build' && isAdmin && e.button === 0) {
       buildMouseUp(e.offsetX, e.offsetY)
+      return
+    }
+
+    // Play-mode marquee: select tokens inside the rect
+    if (state.marquee?.active && e.button === 0) {
+      finishMarquee()
       return
     }
 
@@ -2287,6 +2560,11 @@ export function renderMap(
 
   /** Build-mode keyboard shortcuts; returns true when the key was consumed. */
   function buildModeKeys(key: string, e: KeyboardEvent): boolean {
+    if ((e.ctrlKey || e.metaKey) && key === 'z') {
+      if (e.shiftKey) buildRedo()
+      else buildUndo()
+      return true
+    }
     const buildMap: Record<string, ToolType> = { w: 'wall-select', d: 'wall', x: 'wall-erase', o: 'door', j: 'window', g: 'grid-setup' }
     const bt = buildMap[key]
     if (bt) {
@@ -2335,6 +2613,9 @@ export function renderMap(
   function handleEscapeKey(): void {
     if (state.zen) exitZen()
     state.selectedId = null
+    state.selectedIds.clear()
+    state.marquee = null
+    renderQuickActions()
     state.measure.active = false
     if (state.shareMeasure) socket.send('measure_update', { measure: null, floor_id: state.floor?.id })
     refreshSidebar(); renderTokenEditor(); render()
