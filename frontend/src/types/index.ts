@@ -98,7 +98,7 @@ export interface Camera {
   zoom: number
 }
 
-export type ToolType = 'select' | 'line' | 'circle' | 'square' | 'cone' | 'fog-erase' | 'fog-reveal' | 'stairs'
+export type ToolType = 'select' | 'line' | 'circle' | 'square' | 'cone' | 'fog-erase' | 'fog-reveal' | 'stairs' | 'wall' | 'wall-erase' | 'wall-select' | 'door' | 'window' | 'grid-setup'
 
 export interface WSMessage<T = unknown> {
   type: string

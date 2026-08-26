@@ -17,6 +17,7 @@ import {
 import { drawTiledMap, resetTileCache } from '../canvas/tiles'
 import { screenToWorld, worldToScreen, snapToGrid, zoomAround } from '../canvas/camera'
 import { parseStaticWalls, portalWalls, portalSightWalls, pathCrossesWall, pointOnWall } from '../canvas/los'
+import { loadMode, saveMode, drawWallsOverlay, type PageMode } from '../canvas/build'
 import type { WallSegment } from '../canvas/los'
 import type {
   User, Table, Token, FogPoint, Portal, Camera, ToolType, MeasureState, TableSettings,
@@ -50,6 +51,8 @@ interface GameState {
   exploredCanvas: OffscreenCanvas | null
   selectedId: string | null
   tool: ToolType
+  /** play (classic behavior) or build (authoring) — admin-only. */
+  mode: PageMode
   snap: boolean
   gridVisible: boolean
   fogEnabled: boolean
@@ -258,20 +261,9 @@ export function renderMap(
           <select class="header-btn" id="floor-select" title="Active floor"
                   style="max-width:150px;font-weight:600;display:none"></select>
           <div class="header-sep" id="floor-sep" style="display:none"></div>
-          <div class="toolbar-group" id="tools">
-            <button class="tool-btn active" data-tool="select" title="Select/Move (S)">↖</button>
-            <button class="tool-btn" data-tool="line" title="Measure Line (L)">╱</button>
-            <button class="tool-btn" data-tool="circle" title="Measure Circle (C)">◯</button>
-            <button class="tool-btn" data-tool="square" title="Measure Square (Q)">▭</button>
-            <button class="tool-btn" data-tool="cone" title="Measure Cone (N)">◤</button>
-            ${isAdmin ? `
-            <div class="header-sep"></div>
-            <button class="tool-btn" data-tool="fog-reveal" title="Reveal Fog (R)">👁</button>
-            <button class="tool-btn" data-tool="fog-erase" title="Erase Revealed (E)">🌑</button>
-            <div class="header-sep"></div>
-            <button class="tool-btn" data-tool="stairs" title="Place stairs to another floor">🪜</button>
-            ` : ''}
-          </div>
+          <div class="toolbar-group" id="tools"></div>
+          ${isAdmin ? `<div class="header-sep" id="mode-sep"></div>
+          <button class="header-btn" id="mode-btn" title="Toggle Build mode (B)">🔨 Build</button>` : ''}
           ${isAdmin ? `<div class="header-sep"></div>
           <button class="header-btn" id="snap-btn">Snap ✓</button>
           <button class="header-btn" id="grid-btn">Grid ✓</button>` : ''}
@@ -381,6 +373,7 @@ export function renderMap(
     exploredCanvas: null,
     selectedId: null,
     tool: 'select',
+    mode: loadMode(table.id, isAdmin) as PageMode,
     snap: true,
     gridVisible: true,
     fogEnabled: true,
@@ -534,13 +527,27 @@ export function renderMap(
       if (state.gridVisible) {
         drawGrid(mainCtx, state.camera, state.table.grid_size ?? 70, w, h)
       }
-      drawPortals(mainCtx, state.portals, state.camera, isAdmin)
-      drawStairs(mainCtx, state.stairs, state.floors, state.camera, state.table.grid_size ?? 70, isAdmin)
-      drawTokens(mainCtx, visibleTokens, state.camera, state.table.grid_size ?? 70, state.selectedId, user.username, isAdmin)
-      if (hiddenTokens.length > 0) {
+      // Build mode: boost grid visibility for alignment work, dim tokens
+      // (placement context only — not interactive) and draw the walls
+      // overlay through the fog so walls act as editing handles.
+      if (state.mode === 'build') {
+        if (!state.gridVisible) drawGrid(mainCtx, state.camera, state.table.grid_size ?? 70, w, h)
+        mainCtx.save()
+        mainCtx.globalAlpha = 0.35
+        drawTokens(mainCtx, visibleTokens, state.camera, state.table.grid_size ?? 70, null, user.username, isAdmin)
+        mainCtx.restore()
+        drawWallsOverlay(mainCtx, state.walls, state.camera, null, (_w, i) => String(i))
+      } else {
+        drawTokens(mainCtx, visibleTokens, state.camera, state.table.grid_size ?? 70, state.selectedId, user.username, isAdmin)
+      }
+      if (hiddenTokens.length > 0 && state.mode !== 'build') {
         mainCtx.globalAlpha = 0.5
         drawTokens(mainCtx, hiddenTokens, state.camera, state.table.grid_size ?? 70, state.selectedId, user.username, isAdmin)
         mainCtx.globalAlpha = 1
+      }
+      if (state.mode !== 'build') {
+        drawPortals(mainCtx, state.portals, state.camera, isAdmin)
+        drawStairs(mainCtx, state.stairs, state.floors, state.camera, state.table.grid_size ?? 70, isAdmin)
       }
 
       // Fog canvas: punched only by the tokens each viewer can see (admins
@@ -1237,14 +1244,70 @@ export function renderMap(
     render()
   }
 
-  // Tools
-  root.querySelectorAll('[data-tool]').forEach(btn => {
-    btn.addEventListener('click', () => {
-      const tool = (btn as HTMLElement).dataset.tool as ToolType
-      state.tool = tool
-      root.querySelectorAll('[data-tool]').forEach(b => b.classList.remove('active'))
-      btn.classList.add('active')
+  // ── Mode-aware toolbar ──────────────────────────────────────────────────────
+
+  /** Render the toolbar for the active mode. Build tools only exist in
+   *  build mode; play tools only in play mode — they never share a
+   *  toolbar or a gesture. */
+  function renderToolbar() {
+    const group = root.querySelector('#tools') as HTMLElement | null
+    if (!group) return
+    const play = `
+      <button class="tool-btn${state.tool === 'select' ? ' active' : ''}" data-tool="select" title="Select/Move (S)">↖</button>
+      <button class="tool-btn${state.tool === 'line' ? ' active' : ''}" data-tool="line" title="Measure Line (L)">╱</button>
+      <button class="tool-btn${state.tool === 'circle' ? ' active' : ''}" data-tool="circle" title="Measure Circle (C)">◯</button>
+      <button class="tool-btn${state.tool === 'square' ? ' active' : ''}" data-tool="square" title="Measure Square (Q)">▭</button>
+      <button class="tool-btn${state.tool === 'cone' ? ' active' : ''}" data-tool="cone" title="Measure Cone (N)">◤</button>
+      ${isAdmin ? `
+      <div class="header-sep"></div>
+      <button class="tool-btn${state.tool === 'fog-reveal' ? ' active' : ''}" data-tool="fog-reveal" title="Reveal Fog (R)">👁</button>
+      <button class="tool-btn${state.tool === 'fog-erase' ? ' active' : ''}" data-tool="fog-erase" title="Erase Revealed (E)">🌑</button>
+      <div class="header-sep"></div>
+      <button class="tool-btn${state.tool === 'stairs' ? ' active' : ''}" data-tool="stairs" title="Place stairs to another floor">🪜</button>` : ''}`
+    const build = `
+      <button class="tool-btn${state.tool === 'wall-select' ? ' active' : ''}" data-tool="wall-select" title="Select/Move Walls (W)">⬚</button>
+      <button class="tool-btn${state.tool === 'wall' ? ' active' : ''}" data-tool="wall" title="Draw Wall (D)">╱</button>
+      <button class="tool-btn${state.tool === 'wall-erase' ? ' active' : ''}" data-tool="wall-erase" title="Erase Wall (X)">⌫</button>
+      <div class="header-sep"></div>
+      <button class="tool-btn${state.tool === 'door' ? ' active' : ''}" data-tool="door" title="Place Door (O)">🚪</button>
+      <button class="tool-btn${state.tool === 'window' ? ' active' : ''}" data-tool="window" title="Place Window (J)">🪟</button>
+      <div class="header-sep"></div>
+      <button class="tool-btn${state.tool === 'grid-setup' ? ' active' : ''}" data-tool="grid-setup" title="Grid Setup (G)">▦</button>`
+    group.innerHTML = state.mode === 'build' ? build : play
+    group.querySelectorAll('[data-tool]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        state.tool = (btn as HTMLElement).dataset.tool as ToolType
+        renderToolbar()
+      })
     })
+  }
+  renderToolbar()
+
+  /** Switch build ⇄ play. Cancels any active gesture and swaps the toolbar. */
+  function setMode(mode: PageMode) {
+    if (state.mode === mode) return
+    state.mode = mode
+    saveMode(table.id, mode)
+    state.tool = mode === 'build' ? 'wall-select' : 'select'
+    state.selectedId = null
+    state.measure.active = false
+    state.dragging = false
+    state.panning = false
+    renderToolbar()
+    updateModeBtn()
+    render()
+  }
+
+  /** Update the 🔨/🎲 button label to the mode you'd switch TO. */
+  function updateModeBtn() {
+    const btn = root.querySelector('#mode-btn') as HTMLButtonElement | null
+    if (!btn) return
+    btn.textContent = state.mode === 'build' ? '🎲 Play' : '🔨 Build'
+    btn.title = state.mode === 'build' ? 'Back to Play mode (B)' : 'Toggle Build mode (B)'
+  }
+  updateModeBtn()
+  root.querySelector('#mode-btn')?.addEventListener('click', () => {
+    setMode(state.mode === 'build' ? 'play' : 'build')
   })
 
   // Snap toggle
@@ -1370,6 +1433,16 @@ export function renderMap(
     }
 
     if (e.button === 0) {
+      // Build mode owns the canvas: no token drag/select, no portal
+      // toggles, no fog tools, no measuring. Build tools arrive in M1.2+;
+      // until then left-drag pans (right/middle always pan).
+      if (state.mode === 'build') {
+        if (isAdmin) {
+          startPan(e.offsetX, e.offsetY)
+          uiCanvas.style.cursor = 'grabbing'
+        }
+        return
+      }
       if (state.tool === 'stairs' && isAdmin) {
         placeStairs(wx, wy)
         return
@@ -1869,6 +1942,24 @@ export function renderMap(
   const onKeydown = (e: KeyboardEvent) => {
     const tag = (e.target as HTMLElement).tagName
     if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return
+    if (e.key.toLowerCase() === 'b' && isAdmin) {
+      setMode(state.mode === 'build' ? 'play' : 'build')
+      return
+    }
+    if (state.mode === 'build') {
+      const buildMap: Record<string, ToolType> = { w: 'wall-select', d: 'wall', x: 'wall-erase', o: 'door', j: 'window', g: 'grid-setup' }
+      const bt = buildMap[e.key.toLowerCase()]
+      if (bt) {
+        state.tool = bt
+        renderToolbar()
+        return
+      }
+      if (e.key === 'Escape') {
+        state.selectedId = null
+        render()
+      }
+      return
+    }
     const map: Record<string, ToolType> = { s: 'select', l: 'line', c: 'circle', q: 'square', n: 'cone' }
     if (map[e.key.toLowerCase()]) {
       state.tool = map[e.key.toLowerCase()]
