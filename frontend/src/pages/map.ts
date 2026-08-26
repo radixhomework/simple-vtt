@@ -161,8 +161,13 @@ export function renderMap(
         padding: 8px 11px; border-radius: 6px; border: 1px solid var(--border);
         background: transparent; color: var(--text); font-size: 12px; cursor: pointer;
         transition: background 0.15s, border-color 0.15s;
+        line-height: 1; height: 36px; box-sizing: border-box;
+        display: inline-flex; align-items: center; justify-content: center;
       }
       .header-btn:hover { background: rgba(30,33,28,0.08); }
+      .header-btn:focus-visible, .tool-btn:focus-visible, .chat-send:focus-visible, .chat-collapse:focus-visible {
+        outline: 2px solid var(--accent); outline-offset: 1px;
+      }
       .header-btn.active { background: var(--brand); border-color: var(--brand); color: var(--on-brand); }
       .header-sep { width: 1px; height: 22px; background: var(--border); }
       .table-name { font-family: var(--font-title); font-size: 16px; font-weight: 600; color: var(--text); max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -275,11 +280,18 @@ export function renderMap(
         box-shadow: 0 4px 16px rgba(0,0,0,0.35);
       }
       .tool-dock::-webkit-scrollbar { display: none; }
-      .tool-dock .tool-btn {
+      /* Dock sits on dark glass over the map: ivory ink, light-alpha states.
+         Same tokens as the chat glass so the two floaters read as one family. */
+      .tool-dock .tool-btn, .tool-dock button {
         width: 44px; height: 44px; font-size: 19px; flex-shrink: 0;
-        background: rgba(216,208,189,0.06); border-radius: 10px;
+        color: #DCD4C1; background: rgba(216,208,189,0.07); border: 1px solid rgba(216,208,189,0.14);
+        border-radius: 10px;
       }
-      .tool-dock .header-sep { height: 28px; flex-shrink: 0; }
+      .tool-dock .tool-btn:hover, .tool-dock button:hover { background: rgba(216,208,189,0.16); }
+      .tool-dock .tool-btn.active {
+        background: var(--brand); border-color: var(--brand); color: var(--on-brand);
+      }
+      .tool-dock .header-sep { height: 28px; flex-shrink: 0; background: rgba(216,208,189,0.25); }
       .game.zen .tool-dock, .game.zen .more-sheet { display: none; }
 
       .more-sheet {
@@ -301,7 +313,8 @@ export function renderMap(
       .chat-wrap.collapsed .chat-messages, .chat-wrap.collapsed .chat-input-row { display: none; }
       .chat-wrap.collapsed .chat-bubble { display: flex; }
       .chat-collapse { display: none; background: none; border: none; cursor: pointer;
-        color: var(--muted); font-size: 14px; padding: 2px 4px; align-self: center; }
+        color: #DCD4C1; opacity: 0.75; font-size: 14px; padding: 2px 4px; align-self: center; }
+      .chat-collapse:hover { opacity: 1; }
 
       @media (max-width: 900px) {
         .game-header { min-height: 40px; padding: 4px 8px; gap: 6px; }
