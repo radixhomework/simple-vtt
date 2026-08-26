@@ -120,21 +120,25 @@ wallsRouter.put('/tables/:id/floors/:floorId/build-state', authMiddleware, (req,
   const wallBody = (Array.isArray(req.body.walls) ? req.body.walls : []) as Array<Record<string, unknown>>
   const portalBody = (Array.isArray(req.body.portals) ? req.body.portals : []) as Array<Record<string, unknown>>
   const stairBody = (Array.isArray(req.body.stairs) ? req.body.stairs : []) as Array<Record<string, unknown>>
+  const propBody = (Array.isArray(req.body.props) ? req.body.props : []) as Array<Record<string, unknown>>
   // Ids: keep the snapshot's id when present and well-formed, else new.
   const cleanId = (v: unknown) => (typeof v === 'string' && /^[a-f0-9]{8,32}$/.test(v) ? v : newId())
 
   const delWalls = db.prepare('DELETE FROM walls WHERE table_id=? AND floor_id=?')
   const delPortals = db.prepare('DELETE FROM portals WHERE table_id=? AND floor_id=?')
   const delStairs = db.prepare('DELETE FROM stairs WHERE table_id=? AND from_floor=?')
+  const delProps = db.prepare('DELETE FROM props WHERE table_id=? AND floor_id=?')
   const insWall = db.prepare('INSERT INTO walls (id, table_id, floor_id, ax, ay, bx, by) VALUES (?,?,?,?,?,?,?)')
   const insPortal = db.prepare('INSERT INTO portals (id, table_id, x1, y1, x2, y2, closed, floor_id, kind, locked) VALUES (?,?,?,?,?,?,?,?,?,?)')
   const insStair = db.prepare('INSERT INTO stairs (id, table_id, from_floor, from_x, from_y, to_floor, to_x, to_y, radius) VALUES (?,?,?,?,?,?,?,?,?)')
+  const insProp = db.prepare('INSERT INTO props (id, table_id, floor_id, asset_path, name, x, y, size, rotation, z, opacity) VALUES (?,?,?,?,?,?,?,?,?,?,?)')
   const floorExists = db.prepare('SELECT id FROM floors WHERE id=? AND table_id=?')
   let stairCount = 0
   db.transaction(() => {
     delWalls.run(req.params.id, req.params.floorId)
     delPortals.run(req.params.id, req.params.floorId)
     delStairs.run(req.params.id, req.params.floorId)
+    delProps.run(req.params.id, req.params.floorId)
     for (const w of wallBody) {
       const g = coerceWallBody(w)
       if (g) insWall.run(cleanId(w.id), req.params.id, req.params.floorId, g.ax, g.ay, g.bx, g.by)
@@ -149,14 +153,37 @@ wallsRouter.put('/tables/:id/floors/:floorId/build-state', authMiddleware, (req,
       insStair.run(cleanId(s.id), req.params.id, req.params.floorId, g.fx, g.fy, g.toFloor, g.tx, g.ty, g.radius)
       stairCount++
     }
+    for (const p of propBody) {
+      const g = coercePropRow(p)
+      if (!g) continue
+      insProp.run(cleanId(p.id), req.params.id, req.params.floorId, g.assetPath, g.name, g.x, g.y, g.size, g.rotation, g.z, g.opacity)
+    }
   })()
   pushWalls(req.params.id)
   pushTableStateToTable(req.params.id)
-  res.json({ walls: wallBody.length, portals: portalBody.length, stairs: stairCount })
+  broadcastToTable(req.params.id, { type: 'props_update', payload: {} })
+  res.json({ walls: wallBody.length, portals: portalBody.length, stairs: stairCount, props: propBody.length })
 })
 
 /** Snapshot stair row: validates floors + coordinates; null = skip row. */
 function isStr(v: unknown): v is string { return typeof v === 'string' }
+function coercePropRow(
+  p: Record<string, unknown>,
+): { assetPath: string; name: string; x: number; y: number; size: number; rotation: number; z: number; opacity: number } | null {
+  const assetPath = isStr(p.asset_path) ? p.asset_path : ''
+  if (!assetPath.startsWith('/uploads/')) return null
+  const x = Number(p.x), y = Number(p.y)
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return null
+  return {
+    assetPath,
+    name: isStr(p.name) ? p.name.slice(0, 60) : 'prop',
+    x, y,
+    size: Number(p.size) > 0 ? Number(p.size) : 70,
+    rotation: Number.isFinite(Number(p.rotation)) ? Number(p.rotation) : 0,
+    z: Math.trunc(Number(p.z) || 0),
+    opacity: Number(p.opacity) > 0 ? Number(p.opacity) : 1,
+  }
+}
 function coerceStairRow(
   s: Record<string, unknown>,
   floorId: string,

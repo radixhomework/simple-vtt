@@ -147,7 +147,7 @@ export const api = {
     request<{ moved: number }>('PATCH', `/tables/${tableId}/walls/move`, { ids, dx, dy }),
   deleteWall: (wallId: string) => request<void>('DELETE', `/walls/${wallId}`),
   /** Undo/redo restore: atomically replace all walls + portals + stairs of a floor. */
-  restoreBuildState: (tableId: string, floorId: string, data: { walls: WallRecord[]; portals: Array<Pick<Portal, 'id' | 'x1' | 'y1' | 'x2' | 'y2' | 'closed' | 'kind' | 'locked'>>; stairs: Array<Pick<Stairs, 'id' | 'from_floor' | 'from_x' | 'from_y' | 'to_floor' | 'to_x' | 'to_y' | 'radius'>> }) =>
+  restoreBuildState: (tableId: string, floorId: string, data: { walls: WallRecord[]; portals: Array<Pick<Portal, 'id' | 'x1' | 'y1' | 'x2' | 'y2' | 'closed' | 'kind' | 'locked'>>; stairs: Array<Pick<Stairs, 'id' | 'from_floor' | 'from_x' | 'from_y' | 'to_floor' | 'to_x' | 'to_y' | 'radius'>>; props: Prop[] }) =>
     request<{ walls: number; portals: number; stairs: number }>('PUT', `/tables/${tableId}/floors/${floorId}/build-state`, data),
 
   // Portals (build mode placement)
