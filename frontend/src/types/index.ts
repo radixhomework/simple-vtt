@@ -160,6 +160,25 @@ export interface WallRecord {
   by: number
 }
 
+/** Map prop: decorative asset anchored at center (world px). */
+export interface Prop {
+  id: string
+  table_id: string
+  floor_id: string
+  asset_path: string
+  name: string
+  x: number
+  y: number
+  /** Square side in world px. */
+  size: number
+  /** Degrees clockwise, around the center. */
+  rotation: number
+  /** Draw order: higher paints above lower. */
+  z: number
+  /** 0.05–1. */
+  opacity: number
+}
+
 export interface TableStatePayload {
   table: { id: string; name: string }
   /** This client's role on the map */
@@ -172,6 +191,7 @@ export interface TableStatePayload {
   portals: Portal[]
   walls: WallRecord[]
   stairs: Stairs[]
+  props: Prop[]
   settings: AppSettings
 }
 

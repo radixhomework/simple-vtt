@@ -154,6 +154,8 @@ tablesRouter.delete('/tables/:id', authMiddleware, (req, res) => {
   db.prepare('DELETE FROM portals WHERE table_id=?').run(req.params.id)
   db.prepare('DELETE FROM fog_points WHERE table_id=?').run(req.params.id)
   db.prepare('DELETE FROM stairs WHERE table_id=?').run(req.params.id)
+  db.prepare('DELETE FROM walls WHERE table_id=?').run(req.params.id)
+  db.prepare('DELETE FROM props WHERE table_id=?').run(req.params.id)
   db.prepare('DELETE FROM tables WHERE id=?').run(req.params.id)
   res.sendStatus(204)
 })
@@ -206,38 +208,53 @@ tablesRouter.patch('/tables/:id/settings', authMiddleware, (req, res) => {
 })
 
 // ── Table import (UVTT/zip creates a new table with floor 1) ─────────────────
-tablesRouter.post('/tables/import', authMiddleware, upload.single('file'), (req, res) => {
-  if (!req.file) { res.status(400).json({ error: 'no file' }); return }
 
-  const ext = path.extname(decodeUploadFilename(req.file.originalname)).toLowerCase()
-  let uvttJson: Record<string, unknown>
+/** Parse an uploaded UVTT/zip: returns the UVTT JSON, the map image
+ *  (buffer + ext, if bundled), and any sidecar prop assets (props
+ *  extension) keyed by their entry name. Throws on malformed input. */
+interface UvttUpload {
+  uvttJson: Record<string, unknown>
+  imageBuffer: Buffer | null
+  imageExt: string
+  propAssets: Map<string, Buffer>
+}
+
+function parseUvttUpload(originalName: string, fileBuffer: Buffer): UvttUpload {
+  const ext = path.extname(decodeUploadFilename(originalName)).toLowerCase()
+  if (ext === '.zip') return parseUvttZip(fileBuffer)
+  if (ext === '.uvtt' || ext === '.dd2vtt') {
+    return { ...parseImageRef(JSON.parse(fileBuffer.toString('utf8'))), propAssets: new Map() }
+  }
+  throw new Error('unsupported file type')
+}
+
+/** Zip variant: UVTT JSON + map image + assets/* sidecars. */
+function parseUvttZip(fileBuffer: Buffer): UvttUpload {
+  // Options-object construction ({ input: Buffer }): the dedicated buffer
+  // channel, never the path-taking overload — the upload can only be read
+  // as in-memory data here, no filesystem path is derived from it.
+  const zip = new AdmZip({ input: fileBuffer })
+  const uvttEntry = zip.getEntries().find(e => /\.(uvtt|dd2vtt)$/i.test(e.name))
+  if (!uvttEntry) throw new Error('no .uvtt file in zip')
+  const uvttJson = JSON.parse(uvttEntry.getData().toString('utf8'))
+  const propAssets = new Map<string, Buffer>()
+  for (const e of zip.getEntries()) {
+    if (/^assets\//i.test(e.entryName) && !e.isDirectory) propAssets.set(e.entryName, e.getData())
+  }
+  const out = parseImageRef(uvttJson)
+  const imgEntry = zip.getEntries().find(e => /\.(png|jpe?g|webp)$/i.test(e.name))
+  if (out.imageBuffer === null && imgEntry) {
+    out.imageBuffer = imgEntry.getData()
+    out.imageExt = path.extname(imgEntry.name).toLowerCase()
+  }
+  return { ...out, propAssets }
+}
+
+/** Decode the UVTT `image` field (data-URL or raw base64) if present. */
+function parseImageRef(uvttJson: Record<string, unknown>): { uvttJson: Record<string, unknown>; imageBuffer: Buffer | null; imageExt: string } {
   let imageBuffer: Buffer | null = null
   let imageExt = '.png'
-
-  try {
-    if (ext === '.zip') {
-      const zip = new AdmZip(req.file.buffer)
-      const uvttEntry = zip.getEntries().find(e => /\.(uvtt|dd2vtt)$/i.test(e.name))
-      const imgEntry = zip.getEntries().find(e => /\.(png|jpe?g|webp)$/i.test(e.name))
-      if (!uvttEntry) { res.status(400).json({ error: 'no .uvtt file in zip' }); return }
-      uvttJson = JSON.parse(uvttEntry.getData().toString('utf8'))
-      if (imgEntry) {
-        imageBuffer = imgEntry.getData()
-        imageExt = path.extname(imgEntry.name).toLowerCase()
-      }
-    } else if (ext === '.uvtt' || ext === '.dd2vtt') {
-      uvttJson = JSON.parse(req.file.buffer.toString('utf8'))
-    } else {
-      res.status(400).json({ error: 'unsupported file type' }); return
-    }
-  } catch (e: unknown) {
-    res.status(400).json({ error: 'parse error: ' + (e as Error).message }); return
-  }
-
-  const resolution = uvttJson.resolution as Record<string, unknown> | undefined
-  const gridSize = typeof resolution?.pixels_per_grid === 'number' ? Math.round(resolution.pixels_per_grid) : 70
-
-  if (!imageBuffer && typeof uvttJson.image === 'string') {
+  if (typeof uvttJson.image === 'string') {
     const raw = uvttJson.image as string
     if (raw.startsWith('data:')) {
       const [header, b64] = raw.split(',', 2)
@@ -248,6 +265,22 @@ tablesRouter.post('/tables/import', authMiddleware, upload.single('file'), (req,
       imageBuffer = Buffer.from(raw, 'base64')
     }
   }
+  return { uvttJson, imageBuffer, imageExt }
+}
+
+tablesRouter.post('/tables/import', authMiddleware, upload.single('file'), (req, res) => {
+  if (!req.file) { res.status(400).json({ error: 'no file' }); return }
+
+  let parsed: ReturnType<typeof parseUvttUpload>
+  try {
+    parsed = parseUvttUpload(req.file.originalname, req.file.buffer)
+  } catch (e: unknown) {
+    res.status(400).json({ error: 'parse error: ' + (e as Error).message }); return
+  }
+  const { uvttJson, imageBuffer, imageExt, propAssets } = parsed
+
+  const resolution = uvttJson.resolution as Record<string, unknown> | undefined
+  const gridSize = typeof resolution?.pixels_per_grid === 'number' ? Math.round(resolution.pixels_per_grid) : 70
 
   // UVTT stores the grid dimensions under resolution.map_size
   const mapSize = (resolution as Record<string, unknown> | undefined)?.map_size as { x?: number; y?: number } | undefined
@@ -275,7 +308,7 @@ tablesRouter.post('/tables/import', authMiddleware, upload.single('file'), (req,
       .catch(err => console.error(`[tiles] pyramid build failed for floor ${floorId}:`, err))
   }
 
-  const tableName = req.body.name || path.basename(decodeUploadFilename(req.file.originalname), ext)
+  const tableName = req.body.name || path.basename(decodeUploadFilename(req.file.originalname), path.extname(decodeUploadFilename(req.file.originalname)))
   const meta = JSON.stringify(uvttJson)
 
   const insertAll = db.transaction(() => {
@@ -306,11 +339,80 @@ tablesRouter.post('/tables/import', authMiddleware, upload.single('file'), (req,
         )
       }
     }
+
+    // Props extension (see docs/UVTT-PROPS.md)
+    importUvttProps(uvttJson, tableId, floorId, gridSize, propAssets)
   })
   insertAll()
 
   res.status(201).json({ ...getTable(tableId), floors: floorsOf(tableId), my_role: mapRole(res.locals.user, tableId, res.locals.role) })
 })
+
+// ── UVTT extensions: props + stairs import (see docs/UVTT-PROPS.md) ──────────
+
+/** Resolve one prop's image to an uploads path, or null.
+ *  Handles both carriage variants: inline base64 (`assetData`) and
+ *  zip sidecar files (`asset`). */
+function resolvePropAsset(
+  p: Record<string, unknown>,
+  floorId: string,
+  assetFiles: Map<string, Buffer>,
+): string | null {
+  const dir = uploadsDir()
+  if (typeof p.assetData === 'string' && p.assetData.length > 32) {
+    const raw = p.assetData
+    const b64 = raw.includes(',') ? raw.split(',').pop()! : raw
+    try {
+      const buf = Buffer.from(b64, 'base64')
+      const filename = `prop_${floorId}_${newId()}.png`
+      fs.writeFileSync(path.join(dir, filename), buf)
+      return `/uploads/${filename}`
+    } catch { /* malformed base64: fall through */ }
+  }
+  if (typeof p.asset === 'string') {
+    const buf = assetFiles.get(p.asset) ?? assetFiles.get(p.asset.replace(/^assets\//, ''))
+    if (buf) {
+      const ext = path.extname(p.asset) || '.png'
+      const filename = `prop_${floorId}_${newId()}${ext}`
+      fs.writeFileSync(path.join(dir, filename), buf)
+      return `/uploads/${filename}`
+    }
+  }
+  return null
+}
+
+/** Extract `props` extension rows from a UVTT payload and insert them for
+ *  `floorId` (see docs/UVTT-PROPS.md). Grid units → world px. */
+function importUvttProps(
+  uvttJson: Record<string, unknown>,
+  tableId: string,
+  floorId: string,
+  gridSize: number,
+  assetFiles: Map<string, Buffer>,
+): number {
+  fs.mkdirSync(uploadsDir(), { recursive: true })
+  if (!Array.isArray(uvttJson.props)) return 0
+  const insert = db.prepare(`INSERT INTO props (id, table_id, floor_id, asset_path, name, x, y, size, rotation, z, opacity)
+                             VALUES (?,?,?,?,?,?,?,?,?,?,?)`)
+  let count = 0
+  for (const p of uvttJson.props as Array<Record<string, unknown>>) {
+    const x = Number(p.x), y = Number(p.y)
+    if (!Number.isFinite(x) || !Number.isFinite(y)) continue
+    const assetPath = resolvePropAsset(p, floorId, assetFiles)
+    if (!assetPath) { console.warn(`[uvtt] prop skipped: asset "${String(p.asset)}" not found`); continue }
+    insert.run(
+      newId(), tableId, floorId, assetPath,
+      typeof p.name === 'string' ? p.name.slice(0, 60) : 'prop',
+      x * gridSize, y * gridSize,
+      (Number(p.size) || 1) * gridSize,
+      Number(p.rotation) || 0,
+      Math.trunc(Number(p.z) || 0),
+      Number(p.opacity) || 1,
+    )
+    count++
+  }
+  return count
+}
 
 // ── Floors ────────────────────────────────────────────────────────────────────
 /** Create an empty floor at the next level. */
@@ -328,52 +430,23 @@ tablesRouter.post('/tables/:id/floors', authMiddleware, (req, res) => {
   res.status(201).json(getFloor(id))
 })
 
-/** Import a UVTT/zip as a new floor (map + walls + portals). */
+/** Import a UVTT/zip as a new floor (map + walls + portals + props). */
 tablesRouter.post('/tables/:id/floors/import', authMiddleware, upload.single('file'), (req, res) => {
   if (!requireMapDM(req, res)) return
   if (!req.file) { res.status(400).json({ error: 'no file' }); return }
   const table = getTable(req.params.id)
   if (!table) { res.status(404).json({ error: 'not found' }); return }
 
-  const ext = path.extname(decodeUploadFilename(req.file.originalname)).toLowerCase()
-  let uvttJson: Record<string, unknown>
-  let imageBuffer: Buffer | null = null
-  let imageExt = '.png'
-
+  let parsed: ReturnType<typeof parseUvttUpload>
   try {
-    if (ext === '.zip') {
-      const zip = new AdmZip(req.file.buffer)
-      const uvttEntry = zip.getEntries().find(e => /\.(uvtt|dd2vtt)$/i.test(e.name))
-      const imgEntry = zip.getEntries().find(e => /\.(png|jpe?g|webp)$/i.test(e.name))
-      if (!uvttEntry) { res.status(400).json({ error: 'no .uvtt file in zip' }); return }
-      uvttJson = JSON.parse(uvttEntry.getData().toString('utf8'))
-      if (imgEntry) {
-        imageBuffer = imgEntry.getData()
-        imageExt = path.extname(imgEntry.name).toLowerCase()
-      }
-    } else if (ext === '.uvtt' || ext === '.dd2vtt') {
-      uvttJson = JSON.parse(req.file.buffer.toString('utf8'))
-    } else {
-      res.status(400).json({ error: 'unsupported file type' }); return
-    }
+    parsed = parseUvttUpload(req.file.originalname, req.file.buffer)
   } catch (e: unknown) {
     res.status(400).json({ error: 'parse error: ' + (e as Error).message }); return
   }
+  const { uvttJson, imageBuffer, imageExt, propAssets } = parsed
 
   const resolution = uvttJson.resolution as Record<string, unknown> | undefined
   const gridSize = typeof resolution?.pixels_per_grid === 'number' ? Math.round(resolution.pixels_per_grid) : 70
-
-  if (!imageBuffer && typeof uvttJson.image === 'string') {
-    const raw = uvttJson.image as string
-    if (raw.startsWith('data:')) {
-      const [header, b64] = raw.split(',', 2)
-      const mime = header.replace('data:', '').replace(';base64', '')
-      imageExt = mime === 'image/jpeg' ? '.jpg' : mime === 'image/webp' ? '.webp' : '.png'
-      imageBuffer = Buffer.from(b64, 'base64')
-    } else {
-      imageBuffer = Buffer.from(raw, 'base64')
-    }
-  }
 
   // UVTT declares its size in grid cells — enforce the same-dimensions rule
   // UVTT stores the grid dimensions under resolution.map_size
@@ -435,6 +508,9 @@ tablesRouter.post('/tables/:id/floors/import', authMiddleware, upload.single('fi
         )
       }
     }
+
+    // Props extension (see docs/UVTT-PROPS.md)
+    importUvttProps(uvttJson, req.params.id, floorId, gridSize, propAssets)
   })()
 
   res.status(201).json(getFloor(floorId))
@@ -512,6 +588,138 @@ tablesRouter.put('/floors/:id', authMiddleware, (req, res) => {
   res.json(getFloor(floor.id))
 })
 
+// ── UVTT export (with the props extension; see docs/UVTT-PROPS.md) ────────────
+
+/** Export one floor as a UVTT bundle: `map.uvtt` (standard UVTT fields +
+ *  the `props` extension) + `assets/*.png|jpg` sidecar files referenced by
+ *  `props[].asset`. Coordinates convert world px → grid units (÷grid_size),
+ *  matching the UVTT convention. */
+tablesRouter.get('/floors/:floorId/export.uvtt', authMiddleware, async (req, res) => {
+  const floor = getFloor(req.params.floorId)
+  if (!floor) { res.status(404).json({ error: 'floor not found' }); return }
+  if (!requireMapDM(req, res, floor.table_id)) return
+
+  const table = db.prepare('SELECT id, name, grid_size, uvt_metadata FROM tables WHERE id=?').get(floor.table_id) as
+    { id: string; name: string; grid_size: number; uvt_metadata: string } | undefined
+  if (!table) { res.status(404).json({ error: 'table not found' }); return }
+  const grid = floor.grid_size || table.grid_size || 70
+
+  // Walls (rows are the source of truth) + portals + stairs + props
+  const wallRows = db.prepare('SELECT ax, ay, bx, by FROM walls WHERE floor_id=?').all(floor.id) as Array<{ ax: number; ay: number; bx: number; by: number }>
+  const portalRows = db.prepare('SELECT x1, y1, x2, y2, closed, kind FROM portals WHERE floor_id=?').all(floor.id) as Array<Record<string, unknown>>
+  const propRows = db.prepare('SELECT asset_path, name, x, y, size, rotation, z, opacity FROM props WHERE floor_id=? ORDER BY z, rowid').all(floor.id) as Array<Record<string, unknown>>
+  // Stairs leaving this floor (arrival data lives in world px of the target)
+  const stairRows = db.prepare('SELECT from_x, from_y, to_floor, to_x, to_y, radius FROM stairs WHERE from_floor=?').all(floor.id) as Array<Record<string, unknown>>
+
+  // Sidecar assets: unique files actually on disk
+  const uploadsRoot = process.env.UPLOADS_DIR || path.join(process.cwd(), 'uploads')
+  const zip = new AdmZip()
+  const usedAssets = new Map<string, string>() // asset_path → sidecar name
+  let assetIndex = 0
+  const propsOut: Array<Record<string, unknown>> = []
+  for (const p of propRows) {
+    const rel = String(p.asset_path).replace(/^\/uploads\//, '')
+    const sidecar = sidecarFor(rel, usedAssets, zip, uploadsRoot, () => assetIndex++)
+    if (!sidecar) continue // asset file missing: skip, keep export valid
+    propsOut.push(propToUvtt(p, sidecar, grid))
+  }
+
+  const stairsOut = stairRows.map(s => ({
+    from: { x: roundG(Number(s.from_x) / grid), y: roundG(Number(s.from_y) / grid) },
+    to_floor_level: floorLevelOf(String(s.to_floor)),
+    to: { x: roundG(Number(s.to_x) / grid), y: roundG(Number(s.to_y) / grid) },
+    radius: Number(s.radius) || 1,
+  }))
+
+  const uvtt: Record<string, unknown> = {
+    format: `${floor.img_width / grid}.${floor.img_height / grid}`,
+    resolution: {
+      map_size: { x: Math.round(floor.img_width / grid), y: Math.round(floor.img_height / grid) },
+      pixels_per_grid: grid,
+    },
+    line_of_sight: wallRows.map(w => [
+      { x: roundG(w.ax / grid), y: roundG(w.ay / grid) },
+      { x: roundG(w.bx / grid), y: roundG(w.by / grid) },
+    ]),
+    portals: portalRows.map(p => ({
+      bounds: [
+        { x: roundG(Number(p.x1) / grid), y: roundG(Number(p.y1) / grid) },
+        { x: roundG(Number(p.x2) / grid), y: roundG(Number(p.y2) / grid) },
+      ],
+      closed: p.closed === 1,
+      ...(p.kind === 'window' ? { kind: 'window' } : {}),
+    })),
+    // ── Extensions (see docs/UVTT-PROPS.md) ──
+    props: propsOut,
+    stairs: stairsOut,
+    image: `map${path.extname(floor.map_image_path) || '.png'}`,
+  }
+
+  // The main map image rides as the zip's map entry (not base64 in JSON —
+  // keeps the .uvtt readable and the bundle small).
+  const mapAbs = uploadsFile(uploadsRoot, floor.map_image_path)
+  if (mapAbs && fs.existsSync(mapAbs)) zip.addFile(String(uvtt.image), fs.readFileSync(mapAbs))
+  zip.addFile('map.uvtt', Buffer.from(JSON.stringify(uvtt, null, 2), 'utf8'))
+
+  const slug = (floor.name || table.name || 'map').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'map'
+  res.setHeader('Content-Type', 'application/zip')
+  res.setHeader('Content-Disposition', `attachment; filename="${slug}-floor${floor.level}.zip`)
+  res.send(zip.toBuffer())
+})
+
+/** Resolve an uploads-relative path safely: rejects traversal outside the
+ *  uploads dir (S2083). Returns null when the reference escapes or is empty. */
+function uploadsFile(uploadsRoot: string, rel: string): string | null {
+  const clean = rel.replace(/^\/uploads\//, '')
+  if (!clean || clean.includes('..') || path.isAbsolute(clean)) return null
+  const root = path.resolve(uploadsRoot)
+  const abs = path.resolve(root, clean)
+  if (abs !== root && !abs.startsWith(root + path.sep)) return null
+  return abs
+}
+
+/** Register `rel` as a zip sidecar (dedup via `usedAssets`); null if the
+ *  file is missing on disk. */
+function sidecarFor(
+  rel: string,
+  usedAssets: Map<string, string>,
+  zip: AdmZip,
+  uploadsRoot: string,
+  nextIndex: () => number,
+): string | null {
+  const known = usedAssets.get(rel)
+  if (known) return known
+  const abs = uploadsFile(uploadsRoot, rel)
+  if (!abs || !fs.existsSync(abs)) return null
+  const sidecar = `assets/prop-${nextIndex()}${path.extname(rel) || '.png'}`
+  zip.addFile(sidecar, fs.readFileSync(abs))
+  usedAssets.set(rel, sidecar)
+  return sidecar
+}
+
+/** One prop row → UVTT extension entry (world px → grid units). */
+function propToUvtt(p: Record<string, unknown>, sidecar: string, grid: number): Record<string, unknown> {
+  return {
+    asset: sidecar,
+    name: p.name,
+    x: roundG(Number(p.x) / grid),
+    y: roundG(Number(p.y) / grid),
+    size: roundG(Number(p.size) / grid),
+    rotation: Number(p.rotation) || 0,
+    z: Number(p.z) || 0,
+    opacity: Number.isFinite(Number(p.opacity)) ? Number(p.opacity) : 1,
+  }
+}
+
+/** Level of a floor id (for stair cross-references in exports). */
+function floorLevelOf(floorId: string): number {
+  const row = db.prepare('SELECT level FROM floors WHERE id=?').get(floorId) as { level: number } | undefined
+  return row?.level ?? 1
+}
+
+/** Round a grid-unit value to 3 decimals (JSON stays readable). */
+function roundG(v: number): number { return Math.round(v * 1000) / 1000 }
+
 tablesRouter.delete('/floors/:id', authMiddleware, (req, res) => {
   const floor = getFloor(req.params.id)
   if (!floor) { res.status(404).json({ error: 'not found' }); return }
@@ -523,6 +731,8 @@ tablesRouter.delete('/floors/:id', authMiddleware, (req, res) => {
     db.prepare('DELETE FROM portals WHERE floor_id=?').run(floor.id)
     db.prepare('DELETE FROM fog_points WHERE floor_id=?').run(floor.id)
     db.prepare('DELETE FROM stairs WHERE from_floor=? OR to_floor=?').run(floor.id, floor.id)
+    db.prepare('DELETE FROM walls WHERE floor_id=?').run(floor.id)
+    db.prepare('DELETE FROM props WHERE floor_id=?').run(floor.id)
     db.prepare('DELETE FROM floors WHERE id=?').run(floor.id)
   })()
   // Drop this floor's image and tile pyramid

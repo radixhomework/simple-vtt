@@ -131,6 +131,24 @@ db.exec(`
     FOREIGN KEY (table_id) REFERENCES tables(id) ON DELETE CASCADE
   );
 
+  -- Map props: independent decorative assets (trees, furniture…).
+  -- Anchored at CENTER, world px. Purely visual — never blocks LOS or
+  -- movement. asset_path points at a shared-library uploads file.
+  CREATE TABLE IF NOT EXISTS props (
+    id         TEXT PRIMARY KEY,
+    table_id   TEXT NOT NULL,
+    floor_id   TEXT NOT NULL DEFAULT '',
+    asset_path TEXT NOT NULL,
+    name       TEXT NOT NULL DEFAULT '',
+    x          REAL NOT NULL,
+    y          REAL NOT NULL,
+    size       REAL NOT NULL DEFAULT 70,
+    rotation   REAL NOT NULL DEFAULT 0,
+    z          INTEGER NOT NULL DEFAULT 0,
+    opacity    REAL NOT NULL DEFAULT 1,
+    FOREIGN KEY (table_id) REFERENCES tables(id) ON DELETE CASCADE
+  );
+
   CREATE TABLE IF NOT EXISTS assets (
     id     TEXT PRIMARY KEY,
     kind   TEXT NOT NULL CHECK (kind IN ('image','audio')),

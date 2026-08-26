@@ -2,7 +2,7 @@
  * Typed REST client. The JWT is read from localStorage on every call;
  * multipart uploads (maps, music, icons) use their own fetch helpers.
  */
-import type { Table, Token, User, FogPoint, AppSettings, TableSettings, Portal, Asset, Floor, Stairs, MapMember, WallRecord } from '../types'
+import type { Table, Token, User, FogPoint, AppSettings, TableSettings, Portal, Asset, Floor, Stairs, MapMember, WallRecord, Prop } from '../types'
 
 const BASE = '/api'
 
@@ -155,6 +155,12 @@ export const api = {
     request<Portal>('POST', `/tables/${tableId}/portals`, p),
   deletePortal: (tableId: string, portalId: string) =>
     request<void>('DELETE', `/tables/${tableId}/portals/${portalId}`),
+
+  // Props (decorative assets)
+  listProps: (tableId: string, floorId: string) => request<Prop[]>('GET', `/tables/${tableId}/props?floor_id=${floorId}`),
+  createProp: (tableId: string, p: Partial<Prop>) => request<Prop>('POST', `/tables/${tableId}/props`, p),
+  updateProp: (tableId: string, propId: string, p: Partial<Prop>) => request<Prop>('PATCH', `/tables/${tableId}/props/${propId}`, p),
+  deleteProp: (tableId: string, propId: string) => request<void>('DELETE', `/tables/${tableId}/props/${propId}`),
 
   // Assets (shared image + audio library, deduplicated server-side)
   listAssets: (kind: 'image' | 'audio') => request<Asset[]>('GET', `/assets?kind=${kind}`),

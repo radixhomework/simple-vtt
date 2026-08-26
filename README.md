@@ -12,5 +12,6 @@ or tablet (including Apple Pencil support).
   proxy (HTTPS + WebSocket)
 - [Admin (DM) guide](docs/ADMIN_GUIDE.md)
 - [Player guide](docs/PLAYER_GUIDE.md)
+- [UVTT props extension](docs/UVTT-PROPS.md) — placeable scenery (trees, furniture) in `.uvtt` bundles
 - [Architecture notes](docs/ARCHITECTURE.md) — code layout, builds,
   rendering pipeline, tile pyramids, data flow

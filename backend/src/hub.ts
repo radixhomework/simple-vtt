@@ -293,6 +293,11 @@ function sendTableState(client: Client) {
     'SELECT id, table_id, from_floor, from_x, from_y, to_floor, to_x, to_y, radius FROM stairs WHERE table_id=? AND from_floor=?'
   ).all(client.tableId, floorId)
 
+  // Props on this floor (decorative assets; players see them too)
+  const props = db.prepare(
+    'SELECT id, table_id, floor_id, asset_path, name, x, y, size, rotation, z, opacity FROM props WHERE table_id=? AND floor_id=? ORDER BY z, rowid'
+  ).all(client.tableId, floorId)
+
   send(client, {
     type: 'table_state',
     payload: {
@@ -305,6 +310,7 @@ function sendTableState(client: Client) {
       portals,
       walls,
       stairs,
+      props,
       settings,
     },
   })
