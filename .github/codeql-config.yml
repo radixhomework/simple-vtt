@@ -1,0 +1,17 @@
+# CodeQL analysis configuration.
+#
+# paths-ignore excludes vendored third-party tooling that is not part of
+# the shipped app (backend + frontend). The impeccable.style skill
+# (npx impeccable install) ships its own detector/live-server scripts
+# that trip HTML-injection/Math.random alerts but never run in the
+# application — they are consumed by AI coding harnesses locally.
+name: "CodeQL Config"
+
+paths:
+  - backend
+  - frontend
+
+paths-ignore:
+  - .github/skills
+  - .hermes/skills
+  - node_modules

@@ -16,3 +16,7 @@ data/
 ## OS
 .DS_Store
 Thumbs.db
+
+## Vendored AI-harness tooling (installed via npx impeccable install; see .github/skills/impeccable/SKILL.md)
+.github/skills/impeccable/scripts/
+.hermes/skills/impeccable/scripts/
