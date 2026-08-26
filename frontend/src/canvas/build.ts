@@ -9,8 +9,7 @@
 
 import type { WallSegment } from './los'
 import { worldToScreen } from './camera'
-import type { Camera } from '../types'
-import type { WallRecord } from '../types'
+import type { Camera, WallRecord } from '../types'
 
 export type PageMode = 'play' | 'build'
 

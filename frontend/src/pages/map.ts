@@ -16,7 +16,7 @@ import {
 } from '../canvas/layers'
 import { drawTiledMap, resetTileCache } from '../canvas/tiles'
 import { screenToWorld, worldToScreen, snapToGrid, zoomAround } from '../canvas/camera'
-import { parseStaticWalls, portalWalls, portalSightWalls, pathCrossesWall, pointOnWall } from '../canvas/los'
+import { portalWalls, portalSightWalls, pathCrossesWall, pointOnWall } from '../canvas/los'
 import { loadMode, saveMode, drawWallsOverlay, drawMarquee, drawWallGhost, pickWall, wallsInRect, type PageMode } from '../canvas/build'
 import type { WallSegment } from '../canvas/los'
 import type {
@@ -1467,10 +1467,9 @@ export function renderMap(
   /** Wall-move drag bookkeeping (world). */
   let moveOrigin = { x: 0, y: 0 }
   let moveLast = { x: 0, y: 0 }
-  let movedIds: string[] = []
   /** Endpoint-drag: which wall + endpoint + its original position. */
   let endpointDrag: { wall: WallRecord; end: 'a' | 'b' } | null = null
-  /** Last applied cumulative delta for live group moves (world px). */
+  /** Start positions of the selected group (world px) for live previews. */
   let groupStartPositions = new Map<string, { ax: number; ay: number; bx: number; by: number }>()
 
   const buildTol = () => Math.max(8 / state.camera.zoom, (state.table.grid_size ?? 70) * 0.12)
@@ -1485,47 +1484,56 @@ export function renderMap(
       return
     }
     if (state.tool === 'wall-erase') {
-      const hit = pickWall(state.wallRecords, wx, wy, tol)
-      if (hit) {
-        api.deleteWall(hit.wall.id).catch(() => showNotif('Delete failed'))
-        state.wallRecords = state.wallRecords.filter(w => w.id !== hit.wall.id)
-        selectedWalls.delete(hit.wall.id)
-        recomputeWalls()
-        render()
-      }
+      eraseWallAt(wx, wy, tol)
       return
     }
     if (state.tool === 'wall-select') {
-      const hit = pickWall(state.wallRecords, wx, wy, tol)
-      if (hit) {
-        const additive = shiftKey
-        if (!additive && !selectedWalls.has(hit.wall.id)) selectedWalls.clear()
-        selectedWalls.add(hit.wall.id)
-        if (hit.grab === 'body') {
-          buildDrag = 'move'
-          moveOrigin = { x: wx, y: wy }
-          moveLast = { ...moveOrigin }
-          movedIds = [...selectedWalls]
-          groupStartPositions = new Map(state.wallRecords
-            .filter(w => selectedWalls.has(w.id))
-            .map(w => [w.id, { ax: w.ax, ay: w.ay, bx: w.bx, by: w.by }]))
-        } else {
-          buildDrag = 'endpoint'
-          endpointDrag = { wall: hit.wall, end: hit.grab }
-        }
-      } else {
-        // Empty press: start a marquee (shift keeps the current selection)
-        if (!shiftKey) selectedWalls.clear()
-        buildDrag = 'marquee'
-        marqueeStart = { x: sx, y: sy }
-        marqueeEnd = { x: sx, y: sy }
-      }
-      render()
+      selectWallAt(sx, sy, wx, wy, tol, shiftKey)
       return
     }
     // door/window/grid-setup: M1.3+
     startPan(sx, sy)
     uiCanvas.style.cursor = 'grabbing'
+  }
+
+  /** wall-erase tool: delete the wall under the cursor (optimistic). */
+  function eraseWallAt(wx: number, wy: number, tol: number) {
+    const hit = pickWall(state.wallRecords, wx, wy, tol)
+    if (!hit) return
+    api.deleteWall(hit.wall.id).catch(() => showNotif('Delete failed'))
+    state.wallRecords = state.wallRecords.filter(w => w.id !== hit.wall.id)
+    selectedWalls.delete(hit.wall.id)
+    recomputeWalls()
+    render()
+  }
+
+  /** wall-select tool: pick a wall (drag body = move, drag endpoint = edit)
+   *  or start a marquee on empty space. */
+  function selectWallAt(sx: number, sy: number, wx: number, wy: number, tol: number, shiftKey: boolean) {
+    const hit = pickWall(state.wallRecords, wx, wy, tol)
+    if (!hit) {
+      // Empty press: start a marquee (shift keeps the current selection)
+      if (!shiftKey) selectedWalls.clear()
+      buildDrag = 'marquee'
+      marqueeStart = { x: sx, y: sy }
+      marqueeEnd = { x: sx, y: sy }
+      render()
+      return
+    }
+    if (!shiftKey && !selectedWalls.has(hit.wall.id)) selectedWalls.clear()
+    selectedWalls.add(hit.wall.id)
+    if (hit.grab === 'body') {
+      buildDrag = 'move'
+      moveOrigin = { x: wx, y: wy }
+      moveLast = { ...moveOrigin }
+      groupStartPositions = new Map(state.wallRecords
+        .filter(w => selectedWalls.has(w.id))
+        .map(w => [w.id, { ax: w.ax, ay: w.ay, bx: w.bx, by: w.by }]))
+    } else {
+      buildDrag = 'endpoint'
+      endpointDrag = { wall: hit.wall, end: hit.grab }
+    }
+    render()
   }
 
   function buildMouseMove(sx: number, sy: number) {
@@ -1542,29 +1550,35 @@ export function renderMap(
       return
     }
     if (buildDrag === 'move') {
-      // Live preview: apply each incremental delta to the CURRENT positions
-      // (cumulative follow of the cursor); commit on mouseup.
-      const dx = wx - moveLast.x, dy = wy - moveLast.y
-      moveLast = { x: wx, y: wy }
-      for (const w of state.wallRecords) {
-        if (!groupStartPositions.has(w.id)) continue
-        w.ax += dx; w.ay += dy
-        w.bx += dx; w.by += dy
-      }
-      recomputeWallsPreview()
-      render()
+      previewGroupMove(wx, wy)
       return
     }
     if (buildDrag === 'endpoint' && endpointDrag) {
-      const ep = endpointDrag
-      const w = state.wallRecords.find(x => x.id === ep.wall.id)
-      if (w) {
-        if (ep.end === 'a') { w.ax = buildSnap(wx); w.ay = buildSnap(wy) }
-        else { w.bx = buildSnap(wx); w.by = buildSnap(wy) }
-        recomputeWallsPreview()
-        render()
-      }
+      previewEndpointMove(endpointDrag, wx, wy)
     }
+  }
+
+  /** Live group-move preview: incremental deltas on current positions. */
+  function previewGroupMove(wx: number, wy: number) {
+    const dx = wx - moveLast.x, dy = wy - moveLast.y
+    moveLast = { x: wx, y: wy }
+    for (const w of state.wallRecords) {
+      if (!groupStartPositions.has(w.id)) continue
+      w.ax += dx; w.ay += dy
+      w.bx += dx; w.by += dy
+    }
+    recomputeWallsPreview()
+    render()
+  }
+
+  /** Live endpoint-drag preview (grid-snapped). */
+  function previewEndpointMove(ep: { wall: WallRecord; end: 'a' | 'b' }, wx: number, wy: number) {
+    const w = state.wallRecords.find(x => x.id === ep.wall.id)
+    if (!w) return
+    if (ep.end === 'a') { w.ax = buildSnap(wx); w.ay = buildSnap(wy) }
+    else { w.bx = buildSnap(wx); w.by = buildSnap(wy) }
+    recomputeWallsPreview()
+    render()
   }
 
   /** Recompute LOS inputs for the live preview without a server round-trip.
@@ -1580,55 +1594,72 @@ export function renderMap(
 
   function buildMouseUp(sx: number, sy: number) {
     if (buildDrag === 'draw') {
-      const ax = drawStart.x, ay = drawStart.y
-      const bx = drawEnd.x, by = drawEnd.y
-      buildDrag = 'none'
-      if (Math.hypot(bx - ax, by - ay) < 4) { render(); return } // ignore micro-drags
-      api.createWall(state.table.id, state.floor?.id ?? '', { ax, ay, bx, by })
-        .then(() => { /* walls_update push refreshes every client incl. us */ })
-        .catch(() => showNotif('Wall create failed'))
+      commitWallDraw()
       return
     }
     if (buildDrag === 'marquee') {
-      buildDrag = 'none'
-      const [wx0, wy0] = screenToWorld(marqueeStart.x, marqueeStart.y, state.camera)
-      const [wx1, wy1] = screenToWorld(marqueeEnd.x, marqueeEnd.y, state.camera)
-      const hits = wallsInRect(state.wallRecords, wx0, wy0, wx1, wy1)
-      for (const h of hits) selectedWalls.add(h.id)
-      render()
+      commitMarquee()
       return
     }
     if (buildDrag === 'move') {
-      buildDrag = 'none'
-      const dx = moveLast.x - moveOrigin.x, dy = moveLast.y - moveOrigin.y
-      movedIds = []
-      endpointDrag = null
-      if (dx === 0 && dy === 0) { render(); return }
-      // Restore local records to their start (server is the truth; the
-      // walls_update push re-applies the authoritative moved positions)
-      for (const w of state.wallRecords) {
-        const start = groupStartPositions.get(w.id)
-        if (!start) continue
-        w.ax = start.ax; w.ay = start.ay; w.bx = start.bx; w.by = start.by
-      }
-      recomputeWallsPreview()
-      api.moveWalls(state.table.id, [...selectedWalls], dx, dy)
-        .catch(() => showNotif('Wall move failed'))
-      render()
+      commitGroupMove()
       return
     }
     if (buildDrag === 'endpoint' && endpointDrag) {
-      const ep = endpointDrag
-      const w = state.wallRecords.find(x => x.id === ep.wall.id)
-      buildDrag = 'none'
-      endpointDrag = null
-      if (w) {
-        api.updateWall(w.id, { ax: w.ax, ay: w.ay, bx: w.bx, by: w.by })
-          .catch(() => showNotif('Wall update failed'))
-        recomputeWalls()
-      }
-      render()
+      commitEndpointMove(endpointDrag)
     }
+  }
+
+  /** Finish a wall draw: create the segment if it is long enough. */
+  function commitWallDraw() {
+    const ax = drawStart.x, ay = drawStart.y
+    const bx = drawEnd.x, by = drawEnd.y
+    buildDrag = 'none'
+    if (Math.hypot(bx - ax, by - ay) < 4) { render(); return } // ignore micro-drags
+    api.createWall(state.table.id, state.floor?.id ?? '', { ax, ay, bx, by })
+      .catch(() => showNotif('Wall create failed'))
+    // walls_update push refreshes every client including us
+  }
+
+  /** Finish a marquee: select every wall intersecting the rect. */
+  function commitMarquee() {
+    buildDrag = 'none'
+    const [wx0, wy0] = screenToWorld(marqueeStart.x, marqueeStart.y, state.camera)
+    const [wx1, wy1] = screenToWorld(marqueeEnd.x, marqueeEnd.y, state.camera)
+    const hits = wallsInRect(state.wallRecords, wx0, wy0, wx1, wy1)
+    for (const h of hits) selectedWalls.add(h.id)
+    render()
+  }
+
+  /** Finish a group move: restore local starts, send one batch delta. */
+  function commitGroupMove() {
+    buildDrag = 'none'
+    const dx = moveLast.x - moveOrigin.x, dy = moveLast.y - moveOrigin.y
+    if (dx === 0 && dy === 0) { render(); return }
+    // Restore local records to their start (server is the truth; the
+    // walls_update push re-applies the authoritative moved positions)
+    for (const w of state.wallRecords) {
+      const start = groupStartPositions.get(w.id)
+      if (!start) continue
+      w.ax = start.ax; w.ay = start.ay; w.bx = start.bx; w.by = start.by
+    }
+    recomputeWallsPreview()
+    api.moveWalls(state.table.id, [...selectedWalls], dx, dy)
+      .catch(() => showNotif('Wall move failed'))
+    render()
+  }
+
+  /** Finish an endpoint drag: persist the wall's new geometry. */
+  function commitEndpointMove(ep: { wall: WallRecord; end: 'a' | 'b' }) {
+    const w = state.wallRecords.find(x => x.id === ep.wall.id)
+    buildDrag = 'none'
+    endpointDrag = null
+    if (w) {
+      api.updateWall(w.id, { ax: w.ax, ay: w.ay, bx: w.bx, by: w.by })
+        .catch(() => showNotif('Wall update failed'))
+      recomputeWalls()
+    }
+    render()
   }
 
   uiCanvas.addEventListener('mousedown', (e) => {

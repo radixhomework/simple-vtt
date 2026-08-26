@@ -6,7 +6,7 @@
  * LOS inputs immediately (wallVersion bump client-side).
  */
 import { Router } from 'express'
-import { randomUUID } from 'crypto'
+import { randomUUID } from 'node:crypto'
 import { db } from '../db'
 import { authMiddleware } from '../auth'
 import { requireMapDM } from '../mapaccess'
@@ -37,9 +37,14 @@ wallsRouter.post('/tables/:id/walls', authMiddleware, (req, res) => {
   if (!floor) { res.status(404).json({ error: 'floor not found' }); return }
 
   const single = coerceWallBody(req.body)
-  const items: WallBody[] = single
-    ? [single]
-    : Array.isArray(req.body.walls) ? req.body.walls.map(coerceWallBody).filter(Boolean) as WallBody[] : []
+  let items: WallBody[]
+  if (single) {
+    items = [single]
+  } else if (Array.isArray(req.body.walls)) {
+    items = req.body.walls.map(coerceWallBody).filter(Boolean) as WallBody[]
+  } else {
+    items = []
+  }
   if (items.length === 0) { res.status(400).json({ error: 'no valid walls' }); return }
 
   const insert = db.prepare('INSERT INTO walls (id, table_id, floor_id, ax, ay, bx, by) VALUES (?,?,?,?,?,?,?)')
