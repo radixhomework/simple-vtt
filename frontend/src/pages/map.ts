@@ -615,8 +615,24 @@ export function renderMap(
       // UI canvas: shared (admin) measurement, then the local measuring tool
       uiCtx.clearRect(0, 0, w, h)
       if (state.mode === 'build' && isAdmin) {
+        // Stairs + teleporters as build handles — on the UI layer so they
+        // render through the fog canvas (walls/portals already do on main,
+        // but main sits under fog; markers must stay fully visible).
+        drawStairs(uiCtx, state.stairs, state.floors, state.camera, state.table.grid_size ?? 70, true)
         if (buildDrag === 'draw') drawWallGhost(uiCtx, drawStart.x, drawStart.y, drawEnd.x, drawEnd.y, state.camera)
         if (buildDrag === 'marquee') drawMarquee(uiCtx, marqueeStart.x, marqueeStart.y, marqueeEnd.x, marqueeEnd.y)
+        // Teleporter placement: pending source marker
+        if (teleporterSource) {
+          const [gx, gy] = worldToScreen(teleporterSource.x, teleporterSource.y, state.camera)
+          uiCtx.save()
+          uiCtx.strokeStyle = '#b39ddb'
+          uiCtx.lineWidth = 2
+          uiCtx.setLineDash([6, 4])
+          uiCtx.beginPath()
+          uiCtx.arc(gx, gy, 16, 0, Math.PI * 2)
+          uiCtx.stroke()
+          uiCtx.restore()
+        }
       }
       // Play-mode token marquee (admin)
       if (state.mode !== 'build' && state.marquee?.active) {
@@ -1324,7 +1340,7 @@ export function renderMap(
       toolBtn('square', '▭', 'Measure Square (Q)'),
       toolBtn('cone', '◤', 'Measure Cone (N)'),
     ]
-    if (isAdmin) play.push(sep, toolBtn('fog-reveal', '👁', 'Reveal Fog (R)'), toolBtn('fog-erase', '🌑', 'Erase Revealed (E)'), sep, toolBtn('stairs', '🪜', 'Place stairs to another floor'))
+    if (isAdmin) play.push(sep, toolBtn('fog-reveal', '👁', 'Reveal Fog (R)'), toolBtn('fog-erase', '🌑', 'Erase Revealed (E)'))
     const build = [
       toolBtn('wall-select', '⬚', 'Select/Move Walls (W)'),
       toolBtn('wall', '╱', 'Draw Wall (D)'),
@@ -1332,6 +1348,9 @@ export function renderMap(
       sep,
       toolBtn('door', '🚪', 'Place Door (O)'),
       toolBtn('window', '🪟', 'Place Window (J)'),
+      sep,
+      toolBtn('stairs', '🪜', 'Place Level Stairs (T)'),
+      toolBtn('teleporter', '✨', 'Place Teleporter (P)'),
       sep,
       toolBtn('grid-setup', '▦', 'Grid Setup (G)'),
     ]
@@ -1565,6 +1584,14 @@ export function renderMap(
     }
     if (state.tool === 'grid-setup') {
       openGridSetup()
+      return
+    }
+    if (state.tool === 'stairs') {
+      placeStairs(wx, wy)
+      return
+    }
+    if (state.tool === 'teleporter') {
+      placeTeleporterClick(wx, wy)
       return
     }
     if (state.tool === 'wall-select') {
@@ -1851,10 +1878,6 @@ export function renderMap(
         if (isAdmin) buildMouseDown(e.offsetX, e.offsetY, wx, wy, e.shiftKey)
         return
       }
-      if (state.tool === 'stairs' && isAdmin) {
-        placeStairs(wx, wy)
-        return
-      }
       if (state.tool === 'fog-reveal' && isAdmin) {
         addFogPoint(wx, wy)
         return
@@ -2085,7 +2108,8 @@ export function renderMap(
       render()
     } else {
       // Dropping the token on a stair marker sends it to the linked floor
-      // and the mover's display follows it there
+      // and the mover's display follows it there. Same-floor links are
+      // teleporters: same flow, no floor switch needed.
       const stair = pickStair(token.x, token.y, state.stairs, state.table.grid_size ?? 70)
       if (stair) {
         const target = state.floors.find(f => f.id === stair.to_floor)
@@ -2093,8 +2117,17 @@ export function renderMap(
           token_id: token.id, x: token.x, y: token.y,
           to_floor: stair.to_floor, to_x: stair.to_x, to_y: stair.to_y,
         })
-        showNotif(`${token.name || 'Token'} → ${target ? floorLabel(target) : 'another floor'}`)
-        switchFloor(stair.to_floor)
+        if (stair.to_floor === stair.from_floor) {
+          // Teleporter: land immediately; the server pushes the full state
+          token.x = stair.to_x
+          token.y = stair.to_y
+          markExploredDirty()
+          showNotif(`${token.name || 'Token'} teleported`)
+          render()
+        } else {
+          showNotif(`${token.name || 'Token'} → ${target ? floorLabel(target) : 'another floor'}`)
+          switchFloor(stair.to_floor)
+        }
         return
       }
       socket.send('token_move', { token_id: token.id, x: token.x, y: token.y })
@@ -2429,7 +2462,6 @@ export function renderMap(
     const [wx, wy] = screenToWorld(x, y, state.camera)
 
     // Active tools first (same behaviour as a left click)
-    if (state.tool === 'stairs' && isAdmin) { placeStairs(wx, wy); return }
     if (state.tool === 'fog-reveal' && isAdmin) { addFogPoint(wx, wy); return }
     if (state.tool === 'fog-erase' && isAdmin) { removeFogPoint(wx, wy); return }
     if (state.tool !== 'select') {
@@ -2585,7 +2617,7 @@ export function renderMap(
       else buildUndo()
       return true
     }
-    const buildMap: Record<string, ToolType> = { w: 'wall-select', d: 'wall', x: 'wall-erase', o: 'door', j: 'window', g: 'grid-setup' }
+    const buildMap: Record<string, ToolType> = { w: 'wall-select', d: 'wall', x: 'wall-erase', o: 'door', j: 'window', g: 'grid-setup', t: 'stairs', p: 'teleporter' }
     const bt = buildMap[key]
     if (bt) {
       state.tool = bt
@@ -2715,6 +2747,33 @@ export function renderMap(
       showNotif(`Stairs to ${floorLabel(target)} placed`)
       render()
     } catch (e: any) { showNotif('Failed: ' + e.message) }
+  }
+
+  /** Teleporter placement (build mode): click source, then click destination.
+   *  Implemented as a same-floor stair link — the drop-trigger system is
+   *  shared with level switches. */
+  let teleporterSource: { x: number; y: number } | null = null
+  function placeTeleporterClick(wx: number, wy: number) {
+    if (!teleporterSource) {
+      teleporterSource = { x: buildSnap(wx), y: buildSnap(wy) }
+      showNotif('Teleport source set — click the destination')
+      render()
+      return
+    }
+    const src = teleporterSource
+    teleporterSource = null
+    const fid = state.floor?.id
+    if (!fid) return
+    api.createStair(state.table.id, {
+      from_floor: fid, from_x: src.x, from_y: src.y,
+      to_floor: fid, to_x: buildSnap(wx), to_y: buildSnap(wy), radius: 1,
+    })
+      .then(st => {
+        state.stairs.push(st)
+        showNotif('Teleporter placed')
+        render()
+      })
+      .catch(() => showNotif('Failed to place teleporter'))
   }
 
   /** May this user toggle this portal? Admins always; players when the

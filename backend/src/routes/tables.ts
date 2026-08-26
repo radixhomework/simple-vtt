@@ -533,14 +533,15 @@ tablesRouter.delete('/floors/:id', authMiddleware, (req, res) => {
   res.sendStatus(204)
 })
 
-// ── Stairs ────────────────────────────────────────────────────────────────────
+// ── Stairs (level links) & same-floor teleporters ─────────────────────────────
 tablesRouter.post('/tables/:id/stairs', authMiddleware, (req, res) => {
   if (!requireMapDM(req, res)) return
   const { from_floor, from_x, from_y, to_floor, to_x, to_y, radius = 1 } = req.body
   const floors = floorsOf(req.params.id)
   const from = floors.find(f => f.id === from_floor)
   const to = floors.find(f => f.id === to_floor)
-  if (!from || !to || from.id === to.id) { res.status(400).json({ error: 'stairs must link two different floors of this table' }); return }
+  if (!from || !to) { res.status(400).json({ error: 'both floors must belong to this table' }); return }
+  // from == to is legal: that's a same-floor teleporter
   const id = newId()
   db.prepare('INSERT INTO stairs (id, table_id, from_floor, from_x, from_y, to_floor, to_x, to_y, radius) VALUES (?,?,?,?,?,?,?,?,?)')
     .run(id, req.params.id, from_floor, from_x, from_y, to_floor, to_x, to_y, radius)
