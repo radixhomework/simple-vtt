@@ -105,8 +105,8 @@ wallsRouter.get('/tables/:id/walls', authMiddleware, (req, res) => {
   res.json(rows)
 })
 
-/** Build snapshot restore (undo/redo): atomically replace ALL walls and
- *  portals of one floor with the given rows, KEEPING their ids.
+/** Build snapshot restore (undo/redo): atomically replace ALL walls,
+ *  portals and stairs of one floor with the given rows, KEEPING their ids.
  *
  *  One transaction, then one walls_update + one table_state push. Because
  *  the wipe is server-side and the insert preserves snapshot ids, the floor
@@ -119,18 +119,22 @@ wallsRouter.put('/tables/:id/floors/:floorId/build-state', authMiddleware, (req,
 
   const wallBody = (Array.isArray(req.body.walls) ? req.body.walls : []) as Array<Record<string, unknown>>
   const portalBody = (Array.isArray(req.body.portals) ? req.body.portals : []) as Array<Record<string, unknown>>
-  const wallRows = wallBody.map(coerceWallBody).filter(Boolean) as WallBody[]
-  const portalRows = portalBody.map(coercePortalBody).filter(Boolean) as PortalBody[]
+  const stairBody = (Array.isArray(req.body.stairs) ? req.body.stairs : []) as Array<Record<string, unknown>>
   // Ids: keep the snapshot's id when present and well-formed, else new.
   const cleanId = (v: unknown) => (typeof v === 'string' && /^[a-f0-9]{8,32}$/.test(v) ? v : newId())
 
   const delWalls = db.prepare('DELETE FROM walls WHERE table_id=? AND floor_id=?')
   const delPortals = db.prepare('DELETE FROM portals WHERE table_id=? AND floor_id=?')
+  const delStairs = db.prepare('DELETE FROM stairs WHERE table_id=? AND from_floor=?')
   const insWall = db.prepare('INSERT INTO walls (id, table_id, floor_id, ax, ay, bx, by) VALUES (?,?,?,?,?,?,?)')
   const insPortal = db.prepare('INSERT INTO portals (id, table_id, x1, y1, x2, y2, closed, floor_id, kind, locked) VALUES (?,?,?,?,?,?,?,?,?,?)')
+  const insStair = db.prepare('INSERT INTO stairs (id, table_id, from_floor, from_x, from_y, to_floor, to_x, to_y, radius) VALUES (?,?,?,?,?,?,?,?,?)')
+  const floorExists = db.prepare('SELECT id FROM floors WHERE id=? AND table_id=?')
+  let stairCount = 0
   db.transaction(() => {
     delWalls.run(req.params.id, req.params.floorId)
     delPortals.run(req.params.id, req.params.floorId)
+    delStairs.run(req.params.id, req.params.floorId)
     for (const w of wallBody) {
       const g = coerceWallBody(w)
       if (g) insWall.run(cleanId(w.id), req.params.id, req.params.floorId, g.ax, g.ay, g.bx, g.by)
@@ -139,11 +143,34 @@ wallsRouter.put('/tables/:id/floors/:floorId/build-state', authMiddleware, (req,
       const g = coercePortalBody(p)
       if (g) insPortal.run(cleanId(p.id), req.params.id, g.x1, g.y1, g.x2, g.y2, g.closed ? 1 : 0, req.params.floorId, g.kind, g.locked ? 1 : 0)
     }
+    for (const s of stairBody) {
+      const g = coerceStairRow(s, req.params.floorId, floorExists, req.params.id)
+      if (!g) continue
+      insStair.run(cleanId(s.id), req.params.id, req.params.floorId, g.fx, g.fy, g.toFloor, g.tx, g.ty, g.radius)
+      stairCount++
+    }
   })()
   pushWalls(req.params.id)
   pushTableStateToTable(req.params.id)
-  res.json({ walls: wallRows.length, portals: portalRows.length })
+  res.json({ walls: wallBody.length, portals: portalBody.length, stairs: stairCount })
 })
+
+/** Snapshot stair row: validates floors + coordinates; null = skip row. */
+function isStr(v: unknown): v is string { return typeof v === 'string' }
+function coerceStairRow(
+  s: Record<string, unknown>,
+  floorId: string,
+  floorExists: { get(id: string, tableId: string): unknown },
+  tableId: string,
+): { fx: number; fy: number; toFloor: string; tx: number; ty: number; radius: number } | null {
+  const fromFloor = isStr(s.from_floor) ? s.from_floor : floorId
+  const toFloor = isStr(s.to_floor) ? s.to_floor : ''
+  const fx = Number(s.from_x), fy = Number(s.from_y), tx = Number(s.to_x), ty = Number(s.to_y)
+  if (![fx, fy, tx, ty].every(Number.isFinite)) return null
+  if (fromFloor !== floorId) return null
+  if (!floorExists.get(toFloor, tableId)) return null
+  return { fx, fy, toFloor, tx, ty, radius: Number(s.radius) || 1 }
+}
 
 /** Snapshot portal row (world px endpoints + open/closed + kind + lock). */
 interface PortalBody { x1: number; y1: number; x2: number; y2: number; closed: boolean; kind: 'door' | 'window'; locked: boolean }

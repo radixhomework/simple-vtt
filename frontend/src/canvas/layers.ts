@@ -79,6 +79,7 @@ export function drawStairs(
   cam: Camera,
   gridSize: number,
   isAdmin: boolean,
+  selectedIds?: Set<string>,
 ) {
   for (const st of stairs) {
     const [sx, sy] = worldToScreen(st.from_x, st.from_y, cam)
@@ -86,7 +87,18 @@ export function drawStairs(
     // see is exactly what triggers.
     const r = Math.max(5, STAIR_MARKER_FRACTION * gridSize * cam.zoom)
     const isTeleporter = st.to_floor === st.from_floor
+    const selected = selectedIds?.has(st.id) === true
     ctx.save()
+    if (selected) {
+      // Selection halo behind the marker
+      ctx.beginPath()
+      ctx.arc(sx, sy, r + 4, 0, Math.PI * 2)
+      ctx.fillStyle = 'rgba(255, 213, 79, 0.25)'
+      ctx.fill()
+      ctx.lineWidth = 2
+      ctx.strokeStyle = '#ffd54f'
+      ctx.stroke()
+    }
     if (isTeleporter) {
       // Same-floor link = teleporter: violet ring + double-arrow glyph
       ctx.beginPath()
