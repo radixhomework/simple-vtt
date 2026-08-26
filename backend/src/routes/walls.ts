@@ -156,14 +156,15 @@ wallsRouter.put('/tables/:id/floors/:floorId/build-state', authMiddleware, (req,
 })
 
 /** Snapshot stair row: validates floors + coordinates; null = skip row. */
+function isStr(v: unknown): v is string { return typeof v === 'string' }
 function coerceStairRow(
   s: Record<string, unknown>,
   floorId: string,
   floorExists: { get(id: string, tableId: string): unknown },
   tableId: string,
 ): { fx: number; fy: number; toFloor: string; tx: number; ty: number; radius: number } | null {
-  const fromFloor = String(s.from_floor ?? floorId)
-  const toFloor = String(s.to_floor ?? '')
+  const fromFloor = isStr(s.from_floor) ? s.from_floor : floorId
+  const toFloor = isStr(s.to_floor) ? s.to_floor : ''
   const fx = Number(s.from_x), fy = Number(s.from_y), tx = Number(s.to_x), ty = Number(s.to_y)
   if (![fx, fy, tx, ty].every(Number.isFinite)) return null
   if (fromFloor !== floorId) return null
