@@ -2112,8 +2112,16 @@ export function renderMap(
     const dx = moveLast.x - moveOrigin.x, dy = moveLast.y - moveOrigin.y
     if (dx === 0 && dy === 0) { pendingDragSnapshot = null; render(); return }
     pushPendingDragUndo()
-    // Restore local records to their start (server is the truth; the
-    // walls_update / table_state pushes re-apply authoritative positions)
+    commitMovedWalls(dx, dy)
+    commitMovedPortals(dx, dy)
+    commitMovedStairs(dx, dy)
+    commitMovedProps(dx, dy)
+    recomputeWallsPreview()
+    render()
+  }
+
+  /** Restore local wall starts; one batch move request for all of them. */
+  function commitMovedWalls(dx: number, dy: number) {
     for (const w of state.wallRecords) {
       const start = groupStartPositions.get(w.id)
       if (!start) continue
@@ -2123,6 +2131,10 @@ export function renderMap(
       api.moveWalls(state.table.id, [...selectedWalls], dx, dy)
         .catch(() => showNotif('Wall move failed'))
     }
+  }
+
+  /** Restore local portal starts; one geometry PATCH per moved portal. */
+  function commitMovedPortals(dx: number, dy: number) {
     for (const p of floorPortals()) {
       const start = portalGroupStarts.get(p.id)
       if (!start) continue
@@ -2130,6 +2142,10 @@ export function renderMap(
       api.updatePortalGeometry(state.table.id, p.id, { x1: start.x1 + dx, y1: start.y1 + dy, x2: start.x2 + dx, y2: start.y2 + dy })
         .catch(() => showNotif('Portal move failed'))
     }
+  }
+
+  /** Restore local stair starts; teleporters keep their rigid hop. */
+  function commitMovedStairs(dx: number, dy: number) {
     for (const s of floorStairs()) {
       const start = stairGroupStarts.get(s.id)
       if (!start) continue
@@ -2148,6 +2164,10 @@ export function renderMap(
       api.updateStair(state.table.id, s.id, patch)
         .catch(() => showNotif('Stair move failed'))
     }
+  }
+
+  /** Restore local prop positions; one PATCH per moved prop. */
+  function commitMovedProps(dx: number, dy: number) {
     for (const p of state.props) {
       const start = propGroupStarts.get(p.id)
       if (!start) continue
@@ -2156,8 +2176,6 @@ export function renderMap(
       api.updateProp(state.table.id, p.id, { x: start.x + dx, y: start.y + dy })
         .catch(() => showNotif('Prop move failed'))
     }
-    recomputeWallsPreview()
-    render()
   }
 
   /** Finish a group rotation: persist every rotated object's geometry.

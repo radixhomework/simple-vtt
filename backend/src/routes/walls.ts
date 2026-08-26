@@ -134,30 +134,42 @@ wallsRouter.put('/tables/:id/floors/:floorId/build-state', authMiddleware, (req,
   const insProp = db.prepare('INSERT INTO props (id, table_id, floor_id, asset_path, name, x, y, size, rotation, z, opacity) VALUES (?,?,?,?,?,?,?,?,?,?,?)')
   const floorExists = db.prepare('SELECT id FROM floors WHERE id=? AND table_id=?')
   let stairCount = 0
-  db.transaction(() => {
-    delWalls.run(req.params.id, req.params.floorId)
-    delPortals.run(req.params.id, req.params.floorId)
-    delStairs.run(req.params.id, req.params.floorId)
-    delProps.run(req.params.id, req.params.floorId)
+  const insertWalls = () => {
     for (const w of wallBody) {
       const g = coerceWallBody(w)
       if (g) insWall.run(cleanId(w.id), req.params.id, req.params.floorId, g.ax, g.ay, g.bx, g.by)
     }
+  }
+  const insertPortals = () => {
     for (const p of portalBody) {
       const g = coercePortalBody(p)
       if (g) insPortal.run(cleanId(p.id), req.params.id, g.x1, g.y1, g.x2, g.y2, g.closed ? 1 : 0, req.params.floorId, g.kind, g.locked ? 1 : 0)
     }
+  }
+  const insertStairs = () => {
     for (const s of stairBody) {
       const g = coerceStairRow(s, req.params.floorId, floorExists, req.params.id)
       if (!g) continue
       insStair.run(cleanId(s.id), req.params.id, req.params.floorId, g.fx, g.fy, g.toFloor, g.tx, g.ty, g.radius)
       stairCount++
     }
+  }
+  const insertProps = () => {
     for (const p of propBody) {
       const g = coercePropRow(p)
       if (!g) continue
       insProp.run(cleanId(p.id), req.params.id, req.params.floorId, g.assetPath, g.name, g.x, g.y, g.size, g.rotation, g.z, g.opacity)
     }
+  }
+  db.transaction(() => {
+    delWalls.run(req.params.id, req.params.floorId)
+    delPortals.run(req.params.id, req.params.floorId)
+    delStairs.run(req.params.id, req.params.floorId)
+    delProps.run(req.params.id, req.params.floorId)
+    insertWalls()
+    insertPortals()
+    insertStairs()
+    insertProps()
   })()
   pushWalls(req.params.id)
   pushTableStateToTable(req.params.id)
