@@ -2073,7 +2073,7 @@ export function renderMap(
     if (grabSelectedPropHandle(wx, wy)) return true
     const hit = pickProp(state.props, wx, wy)
     if (hit) {
-      beginPropDrag(hit, wx, wy, shiftKey)
+      beginPropDrag(hit, wx, wy)
       return true
     }
     if (selectedProp && !shiftKey) {
@@ -2095,8 +2095,7 @@ export function renderMap(
   }
 
   /** A prop body was pressed: select it and start a move drag. */
-  function beginPropDrag(hit: Prop, wx: number, wy: number, shiftKey: boolean) {
-    void shiftKey // selection is exclusive for props (single-object handles)
+  function beginPropDrag(hit: Prop, wx: number, wy: number) {
     state.selectedId = null
     selectedProp = hit
     propDrag = 'move'
@@ -2113,7 +2112,7 @@ export function renderMap(
     const tokenHit = pickToken(wx, wy, state.tokens, state.table.grid_size ?? 70)
     const propHitHere = tokenHit ? null : pickProp(state.props, wx, wy)
     if (propHitHere) {
-      beginPropDrag(propHitHere, wx, wy, false)
+      beginPropDrag(propHitHere, wx, wy)
       return true
     }
     if (!tokenHit && selectedProp) { selectedProp = null; render() }
@@ -2623,37 +2622,38 @@ export function renderMap(
     render()
   }
 
+  /** Mouse-move routing shared by mouse + touch: build tools, play-mode
+   *  marquee, prop drags, token drags. Returns true when consumed. */
+  function sharedMouseMove(sx: number, sy: number): boolean {
+    if (state.mode === 'build' && isAdmin) {
+      buildMouseMove(sx, sy)
+      return true
+    }
+    if (state.marquee?.active) {
+      state.marquee.x1 = sx
+      state.marquee.y1 = sy
+      render()
+      return true
+    }
+    if (propDrag !== 'none' && selectedProp) {
+      const [pwx, pwy] = screenToWorld(sx, sy, state.camera)
+      propMouseMove(pwx, pwy)
+      return true
+    }
+    if (state.dragging && state.selectedId) {
+      dragInputTo(sx, sy)
+      return true
+    }
+    return false
+  }
+
   uiCanvas.addEventListener('mousemove', (e) => {
     if (state.panning) {
       panTo(e.offsetX, e.offsetY)
       return
     }
 
-    // Build mode: wall ghost / marquee / wall drags
-    if (state.mode === 'build' && isAdmin) {
-      buildMouseMove(e.offsetX, e.offsetY)
-      return
-    }
-
-    // Play-mode marquee: track the rect live
-    if (state.marquee?.active) {
-      state.marquee.x1 = e.offsetX
-      state.marquee.y1 = e.offsetY
-      render()
-      return
-    }
-
-    // Prop drag (move/rotate/resize) — live preview
-    if (propDrag !== 'none' && selectedProp) {
-      const [pwx, pwy] = screenToWorld(e.offsetX, e.offsetY, state.camera)
-      propMouseMove(pwx, pwy)
-      return
-    }
-
-    if (state.dragging && state.selectedId) {
-      dragInputTo(e.offsetX, e.offsetY)
-      return
-    }
+    if (sharedMouseMove(e.offsetX, e.offsetY)) return
 
     if (state.measure.active) {
       const [wx, wy] = screenToWorld(e.offsetX, e.offsetY, state.camera)

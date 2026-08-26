@@ -669,8 +669,9 @@ tablesRouter.get('/floors/:floorId/export.uvtt', authMiddleware, async (req, res
 function uploadsFile(uploadsRoot: string, rel: string): string | null {
   const clean = rel.replace(/^\/uploads\//, '')
   if (!clean || clean.includes('..') || path.isAbsolute(clean)) return null
-  const abs = path.join(uploadsRoot, clean)
-  if (!abs.startsWith(uploadsRoot + path.sep)) return null
+  const root = path.resolve(uploadsRoot)
+  const abs = path.resolve(root, clean)
+  if (abs !== root && !abs.startsWith(root + path.sep)) return null
   return abs
 }
 
@@ -703,7 +704,7 @@ function propToUvtt(p: Record<string, unknown>, sidecar: string, grid: number): 
     size: roundG(Number(p.size) / grid),
     rotation: Number(p.rotation) || 0,
     z: Number(p.z) || 0,
-    opacity: Number(p.opacity) ?? 1,
+    opacity: Number.isFinite(Number(p.opacity)) ? Number(p.opacity) : 1,
   }
 }
 
