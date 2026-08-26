@@ -158,6 +158,7 @@ export interface WallRecord {
   ay: number
   bx: number
   by: number
+  group_id?: string
 }
 
 /** Map prop: decorative asset anchored at center (world px). */
@@ -177,6 +178,7 @@ export interface Prop {
   z: number
   /** 0.05–1. */
   opacity: number
+  group_id?: string
 }
 
 export interface TableStatePayload {

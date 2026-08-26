@@ -121,13 +121,14 @@ db.exec(`
   -- world px (NOT grid units). One source of truth for LOS after the
   -- UVTT-metadata migration below.
   CREATE TABLE IF NOT EXISTS walls (
-    id       TEXT PRIMARY KEY,
-    table_id TEXT NOT NULL,
-    floor_id TEXT NOT NULL DEFAULT '',
-    ax       REAL NOT NULL,
-    ay       REAL NOT NULL,
-    bx       REAL NOT NULL,
-    by       REAL NOT NULL,
+    id        TEXT PRIMARY KEY,
+    table_id  TEXT NOT NULL,
+    floor_id  TEXT NOT NULL DEFAULT '',
+    ax        REAL NOT NULL,
+    ay        REAL NOT NULL,
+    bx        REAL NOT NULL,
+    by        REAL NOT NULL,
+    group_id  TEXT NOT NULL DEFAULT '',
     FOREIGN KEY (table_id) REFERENCES tables(id) ON DELETE CASCADE
   );
 
@@ -146,6 +147,7 @@ db.exec(`
     rotation   REAL NOT NULL DEFAULT 0,
     z          INTEGER NOT NULL DEFAULT 0,
     opacity    REAL NOT NULL DEFAULT 1,
+    group_id   TEXT NOT NULL DEFAULT '',
     FOREIGN KEY (table_id) REFERENCES tables(id) ON DELETE CASCADE
   );
 
@@ -330,6 +332,18 @@ migrateFloors()
   const cols = db.prepare('PRAGMA table_info(floors)').all() as Array<{ name: string }>
   if (!cols.some(c => c.name === 'tiles_path')) {
     db.exec("ALTER TABLE floors ADD COLUMN tiles_path TEXT NOT NULL DEFAULT ''")
+  }
+}
+
+
+// Migration: explicit link groups (select → right-click link). group_id is
+// a shared label on walls + props of one floor; empty = unlinked.
+{
+  const cols = (t: string) => db.prepare(`PRAGMA table_info(${t})`).all() as Array<{ name: string }>
+  for (const t of ['walls', 'props']) {
+    if (!cols(t).some(c => c.name === 'group_id')) {
+      db.exec(`ALTER TABLE ${t} ADD COLUMN group_id TEXT NOT NULL DEFAULT ''`)
+    }
   }
 }
 

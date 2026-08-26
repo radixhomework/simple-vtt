@@ -16,7 +16,7 @@ export const wallsRouter = Router()
 
 function newId(): string { return randomUUID().replace(/-/g, '').slice(0, 16) }
 
-const WALL_COLS = 'id, table_id, floor_id, ax, ay, bx, by'
+const WALL_COLS = 'id, table_id, floor_id, ax, ay, bx, by, group_id'
 
 interface WallBody { ax: number; ay: number; bx: number; by: number }
 
@@ -105,6 +105,37 @@ wallsRouter.get('/tables/:id/walls', authMiddleware, (req, res) => {
   res.json(rows)
 })
 
+
+/** Explicit grouping: assign or clear a shared group_id on walls+props.
+ *  Link: every listed id gets the same fresh group id (members of other
+ *  groups keep theirs; an id listed in two groups belongs to the last one).
+ *  Unlink: clears group membership for the listed ids. One transaction,
+ *  then walls_update + props_update + table_state push. */
+wallsRouter.put('/tables/:id/floors/:floorId/link', authMiddleware, (req, res) => {
+  if (!requireMapDM(req, res, req.params.id)) return
+  const floor = db.prepare('SELECT id FROM floors WHERE id=? AND table_id=?').get(req.params.floorId, req.params.id)
+  if (!floor) { res.status(404).json({ error: 'floor not found' }); return }
+
+  const wallIds = (Array.isArray(req.body.wallIds) ? req.body.wallIds : []) as unknown[]
+  const propIds = (Array.isArray(req.body.propIds) ? req.body.propIds : []) as unknown[]
+  const clean = (v: unknown) => (typeof v === 'string' && /^[a-f0-9]{8,32}$/.test(v) ? v : null)
+  const wids = wallIds.map(clean).filter((v): v is string => v !== null)
+  const pids = propIds.map(clean).filter((v): v is string => v !== null)
+  if (wids.length + pids.length === 0) { res.status(400).json({ error: 'no members' }); return }
+
+  const groupId = req.body.action === 'unlink' ? '' : newId()
+  const upWall = db.prepare('UPDATE walls SET group_id=? WHERE id=? AND table_id=? AND floor_id=?')
+  const upProp = db.prepare('UPDATE props SET group_id=? WHERE id=? AND table_id=? AND floor_id=?')
+  db.transaction(() => {
+    for (const id of wids) upWall.run(groupId, id, req.params.id, req.params.floorId)
+    for (const id of pids) upProp.run(groupId, id, req.params.id, req.params.floorId)
+  })()
+  broadcastToTable(req.params.id, { type: 'walls_update', payload: {} })
+  broadcastToTable(req.params.id, { type: 'props_update', payload: {} })
+  pushTableStateToTable(req.params.id)
+  res.json({ group_id: groupId, walls: wids.length, props: pids.length })
+})
+
 /** Build snapshot restore (undo/redo): atomically replace ALL walls,
  *  portals and stairs of one floor with the given rows, KEEPING their ids.
  *
@@ -123,21 +154,22 @@ wallsRouter.put('/tables/:id/floors/:floorId/build-state', authMiddleware, (req,
   const propBody = (Array.isArray(req.body.props) ? req.body.props : []) as Array<Record<string, unknown>>
   // Ids: keep the snapshot's id when present and well-formed, else new.
   const cleanId = (v: unknown) => (typeof v === 'string' && /^[a-f0-9]{8,32}$/.test(v) ? v : newId())
+  const strField = (v: unknown) => (typeof v === 'string' ? v : '')
 
   const delWalls = db.prepare('DELETE FROM walls WHERE table_id=? AND floor_id=?')
   const delPortals = db.prepare('DELETE FROM portals WHERE table_id=? AND floor_id=?')
   const delStairs = db.prepare('DELETE FROM stairs WHERE table_id=? AND from_floor=?')
   const delProps = db.prepare('DELETE FROM props WHERE table_id=? AND floor_id=?')
-  const insWall = db.prepare('INSERT INTO walls (id, table_id, floor_id, ax, ay, bx, by) VALUES (?,?,?,?,?,?,?)')
+  const insWall = db.prepare('INSERT INTO walls (id, table_id, floor_id, ax, ay, bx, by, group_id) VALUES (?,?,?,?,?,?,?,?)')
   const insPortal = db.prepare('INSERT INTO portals (id, table_id, x1, y1, x2, y2, closed, floor_id, kind, locked) VALUES (?,?,?,?,?,?,?,?,?,?)')
   const insStair = db.prepare('INSERT INTO stairs (id, table_id, from_floor, from_x, from_y, to_floor, to_x, to_y, radius) VALUES (?,?,?,?,?,?,?,?,?)')
-  const insProp = db.prepare('INSERT INTO props (id, table_id, floor_id, asset_path, name, x, y, size, rotation, z, opacity) VALUES (?,?,?,?,?,?,?,?,?,?,?)')
+  const insProp = db.prepare('INSERT INTO props (id, table_id, floor_id, asset_path, name, x, y, size, rotation, z, opacity, group_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)')
   const floorExists = db.prepare('SELECT id FROM floors WHERE id=? AND table_id=?')
   let stairCount = 0
   const insertWalls = () => {
     for (const w of wallBody) {
       const g = coerceWallBody(w)
-      if (g) insWall.run(cleanId(w.id), req.params.id, req.params.floorId, g.ax, g.ay, g.bx, g.by)
+      if (g) insWall.run(cleanId(w.id), req.params.id, req.params.floorId, g.ax, g.ay, g.bx, g.by, strField(w.group_id))
     }
   }
   const insertPortals = () => {
@@ -158,7 +190,7 @@ wallsRouter.put('/tables/:id/floors/:floorId/build-state', authMiddleware, (req,
     for (const p of propBody) {
       const g = coercePropRow(p)
       if (!g) continue
-      insProp.run(cleanId(p.id), req.params.id, req.params.floorId, g.assetPath, g.name, g.x, g.y, g.size, g.rotation, g.z, g.opacity)
+      insProp.run(cleanId(p.id), req.params.id, req.params.floorId, g.assetPath, g.name, g.x, g.y, g.size, g.rotation, g.z, g.opacity, strField(p.group_id))
     }
   }
   db.transaction(() => {

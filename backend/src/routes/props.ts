@@ -17,7 +17,7 @@ export const propsRouter = Router()
 
 function newId(): string { return randomUUID().replace(/-/g, '').slice(0, 16) }
 
-const PROP_COLS = 'id, table_id, floor_id, asset_path, name, x, y, size, rotation, z, opacity'
+const PROP_COLS = 'id, table_id, floor_id, asset_path, name, x, y, size, rotation, z, opacity, group_id'
 
 function pushProps(tableId: string) {
   broadcastToTable(tableId, { type: 'props_update', payload: {} })

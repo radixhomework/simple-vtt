@@ -285,7 +285,7 @@ function sendTableState(client: Client) {
     .all(client.tableId, floorId) as Record<string, unknown>[]
   const portals = portalRows.map(p => ({ ...p, closed: p.closed === 1 }))
 
-  const walls = db.prepare('SELECT id, table_id, floor_id, ax, ay, bx, by FROM walls WHERE table_id=? AND floor_id=?')
+  const walls = db.prepare('SELECT id, table_id, floor_id, ax, ay, bx, by, group_id FROM walls WHERE table_id=? AND floor_id=?')
     .all(client.tableId, floorId)
 
   // Stairs leaving this floor (their counterparts show on the target floor)
@@ -295,7 +295,7 @@ function sendTableState(client: Client) {
 
   // Props on this floor (decorative assets; players see them too)
   const props = db.prepare(
-    'SELECT id, table_id, floor_id, asset_path, name, x, y, size, rotation, z, opacity FROM props WHERE table_id=? AND floor_id=? ORDER BY z, rowid'
+    'SELECT id, table_id, floor_id, asset_path, name, x, y, size, rotation, z, opacity, group_id FROM props WHERE table_id=? AND floor_id=? ORDER BY z, rowid'
   ).all(client.tableId, floorId)
 
   send(client, {

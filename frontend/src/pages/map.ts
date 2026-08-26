@@ -479,7 +479,7 @@ export function renderMap(
     selectedId: null,
     selectedIds: new Set<string>(),
     forceDrag: false,
-    tool: 'select',
+    tool: loadMode(table.id, isAdmin) === 'build' ? 'wall-select' : 'select',
     mode: loadMode(table.id, isAdmin) as PageMode,
     snap: true,
     gridVisible: true,
@@ -1884,6 +1884,19 @@ export function renderMap(
     render()
   }
 
+  /** Explicit link/unlink of the current selection (walls + props on this
+   *  floor). Link: one fresh group_id for all; unlink: clears membership. */
+  function applyLink(action: 'link' | 'unlink') {
+    const fid = state.floor?.id
+    if (!fid) return
+    const wallIds = state.wallRecords.filter(w => selectedWalls.has(w.id)).map(w => w.id)
+    const propIds = state.props.filter(p => selectedProps.has(p.id)).map(p => p.id)
+    if (wallIds.length + propIds.length === 0) return
+    api.linkBuildObjects(state.table.id, fid, action, wallIds, propIds)
+      .then(() => { /* server push refreshes rows (group_id rides along) */ })
+      .catch(() => showNotif(action === 'link' ? 'Link failed' : 'Unlink failed'))
+  }
+
   function buildUndo() {
     if (undoStack.length === 0) { showNotif('Nothing to undo'); return }
     redoStack.push(snapshotBuild())
@@ -1984,8 +1997,14 @@ export function renderMap(
       return
     }
     if (altKey) {
-      // Alt+press on any group member: rotate the whole selection
-      selectForRotation(hit?.wall.id, portalHit?.portal.id, stairHit?.id, propPick?.id, shiftKey)
+      // Alt+press: rotate the linked group under the cursor (explicit links
+      // only — a loose selection never rotates as one)
+      selectedWalls.clear(); selectedPortals.clear(); selectedStairs.clear(); selectedProps.clear()
+      if (hit) selectedWalls.add(hit.wall.id)
+      if (portalHit) selectedPortals.add(portalHit.portal.id)
+      if (stairHit) selectedStairs.add(stairHit.id)
+      if (propPick) selectedProps.add(propPick.id)
+      expandSelectionToLinked()
       startGroupRotate(wx, wy)
       render()
       return
@@ -1997,21 +2016,12 @@ export function renderMap(
     render()
   }
 
-  /** Add the pressed object to the selection for an Alt+drag rotation. */
-  function selectForRotation(wallId?: string, portalId?: string, stairId?: string, propId?: string, shiftKey = false) {
-    const alreadyIn = (wallId && selectedWalls.has(wallId)) || (portalId && selectedPortals.has(portalId))
-      || (stairId && selectedStairs.has(stairId)) || (propId && selectedProps.has(propId))
-    if (!shiftKey && !alreadyIn) { selectedWalls.clear(); selectedPortals.clear(); selectedStairs.clear(); selectedProps.clear() }
-    if (wallId) selectedWalls.add(wallId)
-    if (portalId) selectedPortals.add(portalId)
-    if (stairId) selectedStairs.add(stairId)
-    if (propId) selectedProps.add(propId)
-  }
-
-  /** A prop was clicked in build mode: select it and start a move drag. */
+  /** A prop was clicked in build mode: select it (plus linked partners)
+   *  and start a group move. */
   function selectPropHit(hit: Prop, shiftKey: boolean, wx: number, wy: number) {
     if (!shiftKey && !selectedProps.has(hit.id)) { selectedWalls.clear(); selectedPortals.clear(); selectedStairs.clear(); selectedProps.clear() }
     selectedProps.add(hit.id)
+    expandSelectionToLinked()
     selectedProp = null // group selection replaces single-prop handles
     startGroupMove(wx, wy)
   }
@@ -2032,10 +2042,22 @@ export function renderMap(
       .map(s => [s.id, { x: s.from_x, y: s.from_y }]))
   }
 
-  /** A wall was clicked: add to selection and start the right drag. */
+  /** Every wall/prop sharing a group_id with any selection member joins the
+   *  drag sets — explicit links, never automatic grouping. */
+  function expandSelectionToLinked() {
+    const groupIds = new Set<string>()
+    for (const w of state.wallRecords) if (selectedWalls.has(w.id) && w.group_id) groupIds.add(w.group_id)
+    for (const p of state.props) if (selectedProps.has(p.id) && p.group_id) groupIds.add(p.group_id)
+    if (groupIds.size === 0) return
+    for (const w of state.wallRecords) if (w.group_id && groupIds.has(w.group_id)) selectedWalls.add(w.id)
+    for (const p of state.props) if (p.group_id && groupIds.has(p.group_id)) selectedProps.add(p.id)
+  }
+
+  /** A wall was clicked: add to selection (plus its linked partners) and start the right drag. */
   function selectWallHit(hit: { wall: WallRecord; grab: 'body' | 'a' | 'b' }, shiftKey: boolean, wx: number, wy: number) {
-    if (!shiftKey && !selectedWalls.has(hit.wall.id)) { selectedWalls.clear(); selectedPortals.clear() }
+    if (!shiftKey && !selectedWalls.has(hit.wall.id)) { selectedWalls.clear(); selectedPortals.clear(); selectedStairs.clear(); selectedProps.clear() }
     selectedWalls.add(hit.wall.id)
+    expandSelectionToLinked()
     if (hit.grab === 'body') {
       startGroupMove(wx, wy)
     } else {
@@ -2047,7 +2069,7 @@ export function renderMap(
 
   /** A portal was clicked: add to selection and start the right drag. */
   function selectPortalHit(hit: { portal: Portal; grab: 'body' | 'a' | 'b' }, shiftKey: boolean, wx: number, wy: number) {
-    if (!shiftKey && !selectedPortals.has(hit.portal.id)) { selectedWalls.clear(); selectedPortals.clear() }
+    if (!shiftKey && !selectedPortals.has(hit.portal.id)) { selectedWalls.clear(); selectedPortals.clear(); selectedStairs.clear(); selectedProps.clear() }
     selectedPortals.add(hit.portal.id)
     if (hit.grab === 'body') {
       startGroupMove(wx, wy)
@@ -3059,8 +3081,16 @@ export function renderMap(
   }
 
   /** Mouse-move routing shared by mouse + touch: build tools, play-mode
-   *  marquee, prop drags, token drags. Returns true when consumed. */
+   *  marquee, prop drags, token drags. Returns true when consumed.
+   *  Prop drags MUST be checked before the build branch: a prop drag
+   *  started in build mode sets propDrag, not buildDrag — routing it to
+   *  buildMouseMove would silently drop the preview (and the commit). */
   function sharedMouseMove(sx: number, sy: number): boolean {
+    if (propDrag !== 'none' && selectedProp) {
+      const [pwx, pwy] = screenToWorld(sx, sy, state.camera)
+      propMouseMove(pwx, pwy)
+      return true
+    }
     if (state.mode === 'build' && isAdmin) {
       buildMouseMove(sx, sy)
       return true
@@ -3069,11 +3099,6 @@ export function renderMap(
       state.marquee.x1 = sx
       state.marquee.y1 = sy
       render()
-      return true
-    }
-    if (propDrag !== 'none' && selectedProp) {
-      const [pwx, pwy] = screenToWorld(sx, sy, state.camera)
-      propMouseMove(pwx, pwy)
       return true
     }
     if (state.dragging && state.selectedId) {
@@ -3116,6 +3141,14 @@ export function renderMap(
     if (state.panning) {
       state.panning = false
       uiCanvas.style.cursor = 'crosshair'
+      return
+    }
+
+    // Prop drag commit: one PATCH with the final geometry — checked BEFORE
+    // the build branch: prop drags set propDrag (not buildDrag), so the
+    // build-mode early return would swallow the commit entirely.
+    if (propDrag !== 'none' && selectedProp) {
+      propMouseUp()
       return
     }
 
@@ -3185,6 +3218,31 @@ export function renderMap(
     if (Math.hypot(x - rightDownX, y - rightDownY) > 6) return // it was a pan
 
     const [wx, wy] = screenToWorld(x, y, state.camera)
+
+    // ── Build selection link/unlink (DM, any build selection ≥1 object) ──
+    if (isAdmin && state.mode === 'build'
+        && (selectedWalls.size + selectedPortals.size + selectedStairs.size + selectedProps.size) > 0) {
+      const selWalls = state.wallRecords.filter(w => selectedWalls.has(w.id))
+      const selProps = state.props.filter(p => selectedProps.has(p.id))
+      const groupsInSel = new Set<string>()
+      for (const w of selWalls) if (w.group_id) groupsInSel.add(w.group_id)
+      for (const p of selProps) if (p.group_id) groupsInSel.add(p.group_id)
+      const allLinked = groupsInSel.size === 1
+        && (selWalls.length + selProps.length) === (selectedWalls.size + selectedProps.size)
+        && (selectedWalls.size + selectedProps.size) > 0
+        && selectedPortals.size === 0 && selectedStairs.size === 0
+      const items: CtxItem[] = []
+      if (allLinked) {
+        items.push({ label: 'Unlink group', action: () => applyLink('unlink') })
+      }
+      if (selWalls.length + selProps.length >= 2) {
+        items.push({ label: groupsInSel.size === 0 ? 'Link as group' : 'Relink selection', action: () => applyLink('link') })
+      }
+      if (items.length > 0) {
+        showCtxMenu(x, y, `${selectedWalls.size + selectedPortals.size + selectedStairs.size + selectedProps.size} selected`, items)
+        return
+      }
+    }
 
     // Doors and windows: open/close + convert (players: open/close only,
     // when the admin allows it for the kind)
