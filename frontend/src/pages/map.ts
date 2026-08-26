@@ -100,6 +100,12 @@ export function floorLabel(f: { level: number; name: string }): string {
   return f.name ? `#${f.level} ${f.name}` : `Floor ${f.level}`
 }
 
+/** Toolbar action button (non-tool: place prop, ⋯ more) styled exactly
+ *  like a .tool-btn; `armed` highlights a pending interaction. */
+function actionBtn(action: string, label: string, title: string, armed = false): string {
+  return `<button class="tool-btn${armed ? ' active' : ''}" data-action="${action}" title="${title}">${label}</button>`
+}
+
 export function renderMap(
   root: HTMLElement,
   user: User,
@@ -1478,11 +1484,6 @@ export function renderMap(
   function toolBtn(tool: ToolType, label: string, title: string): string {
     const active = state.tool === tool ? ' active' : ''
     return `<button class="tool-btn${active}" data-tool="${tool}" title="${title}">${label}</button>`
-  }
-  /** Non-tool action button styled EXACTLY like a tool button (props, ⋯).
-   *  `armed` highlights a pending interaction (e.g. prop placement). */
-  function actionBtn(action: string, label: string, title: string, armed = false): string {
-    return `<button class="tool-btn${armed ? ' active' : ''}" data-action="${action}" title="${title}">${label}</button>`
   }
   function renderToolbar() {
     const group = root.querySelector('#tools') as HTMLElement | null
