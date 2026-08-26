@@ -1249,31 +1249,33 @@ export function renderMap(
   /** Render the toolbar for the active mode. Build tools only exist in
    *  build mode; play tools only in play mode — they never share a
    *  toolbar or a gesture. */
+  function toolBtn(tool: ToolType, label: string, title: string): string {
+    const active = state.tool === tool ? ' active' : ''
+    return `<button class="tool-btn${active}" data-tool="${tool}" title="${title}">${label}</button>`
+  }
   function renderToolbar() {
     const group = root.querySelector('#tools') as HTMLElement | null
     if (!group) return
-    const play = `
-      <button class="tool-btn${state.tool === 'select' ? ' active' : ''}" data-tool="select" title="Select/Move (S)">↖</button>
-      <button class="tool-btn${state.tool === 'line' ? ' active' : ''}" data-tool="line" title="Measure Line (L)">╱</button>
-      <button class="tool-btn${state.tool === 'circle' ? ' active' : ''}" data-tool="circle" title="Measure Circle (C)">◯</button>
-      <button class="tool-btn${state.tool === 'square' ? ' active' : ''}" data-tool="square" title="Measure Square (Q)">▭</button>
-      <button class="tool-btn${state.tool === 'cone' ? ' active' : ''}" data-tool="cone" title="Measure Cone (N)">◤</button>
-      ${isAdmin ? `
-      <div class="header-sep"></div>
-      <button class="tool-btn${state.tool === 'fog-reveal' ? ' active' : ''}" data-tool="fog-reveal" title="Reveal Fog (R)">👁</button>
-      <button class="tool-btn${state.tool === 'fog-erase' ? ' active' : ''}" data-tool="fog-erase" title="Erase Revealed (E)">🌑</button>
-      <div class="header-sep"></div>
-      <button class="tool-btn${state.tool === 'stairs' ? ' active' : ''}" data-tool="stairs" title="Place stairs to another floor">🪜</button>` : ''}`
-    const build = `
-      <button class="tool-btn${state.tool === 'wall-select' ? ' active' : ''}" data-tool="wall-select" title="Select/Move Walls (W)">⬚</button>
-      <button class="tool-btn${state.tool === 'wall' ? ' active' : ''}" data-tool="wall" title="Draw Wall (D)">╱</button>
-      <button class="tool-btn${state.tool === 'wall-erase' ? ' active' : ''}" data-tool="wall-erase" title="Erase Wall (X)">⌫</button>
-      <div class="header-sep"></div>
-      <button class="tool-btn${state.tool === 'door' ? ' active' : ''}" data-tool="door" title="Place Door (O)">🚪</button>
-      <button class="tool-btn${state.tool === 'window' ? ' active' : ''}" data-tool="window" title="Place Window (J)">🪟</button>
-      <div class="header-sep"></div>
-      <button class="tool-btn${state.tool === 'grid-setup' ? ' active' : ''}" data-tool="grid-setup" title="Grid Setup (G)">▦</button>`
-    group.innerHTML = state.mode === 'build' ? build : play
+    const sep = '<div class="header-sep"></div>'
+    const play = [
+      toolBtn('select', '↖', 'Select/Move (S)'),
+      toolBtn('line', '╱', 'Measure Line (L)'),
+      toolBtn('circle', '◯', 'Measure Circle (C)'),
+      toolBtn('square', '▭', 'Measure Square (Q)'),
+      toolBtn('cone', '◤', 'Measure Cone (N)'),
+    ]
+    if (isAdmin) play.push(sep, toolBtn('fog-reveal', '👁', 'Reveal Fog (R)'), toolBtn('fog-erase', '🌑', 'Erase Revealed (E)'), sep, toolBtn('stairs', '🪜', 'Place stairs to another floor'))
+    const build = [
+      toolBtn('wall-select', '⬚', 'Select/Move Walls (W)'),
+      toolBtn('wall', '╱', 'Draw Wall (D)'),
+      toolBtn('wall-erase', '⌫', 'Erase Wall (X)'),
+      sep,
+      toolBtn('door', '🚪', 'Place Door (O)'),
+      toolBtn('window', '🪟', 'Place Window (J)'),
+      sep,
+      toolBtn('grid-setup', '▦', 'Grid Setup (G)'),
+    ]
+    group.innerHTML = (state.mode === 'build' ? build : play).join('')
     group.querySelectorAll('[data-tool]').forEach(btn => {
       btn.addEventListener('click', () => {
         state.tool = (btn as HTMLElement).dataset.tool as ToolType
@@ -1938,26 +1940,33 @@ export function renderMap(
     touchId = null
   })
 
+  /** Build-mode keyboard shortcuts; returns true when the key was consumed. */
+  function buildModeKeys(key: string, e: KeyboardEvent): boolean {
+    const buildMap: Record<string, ToolType> = { w: 'wall-select', d: 'wall', x: 'wall-erase', o: 'door', j: 'window', g: 'grid-setup' }
+    const bt = buildMap[key]
+    if (bt) {
+      state.tool = bt
+      renderToolbar()
+      return true
+    }
+    if (e.key === 'Escape') {
+      state.selectedId = null
+      render()
+    }
+    return true // build mode consumes everything else below this line
+  }
+
   // Keyboard shortcuts
   const onKeydown = (e: KeyboardEvent) => {
     const tag = (e.target as HTMLElement).tagName
     if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return
-    if (e.key.toLowerCase() === 'b' && isAdmin) {
+    const key = e.key.toLowerCase()
+    if (key === 'b' && isAdmin) {
       setMode(state.mode === 'build' ? 'play' : 'build')
       return
     }
     if (state.mode === 'build') {
-      const buildMap: Record<string, ToolType> = { w: 'wall-select', d: 'wall', x: 'wall-erase', o: 'door', j: 'window', g: 'grid-setup' }
-      const bt = buildMap[e.key.toLowerCase()]
-      if (bt) {
-        state.tool = bt
-        renderToolbar()
-        return
-      }
-      if (e.key === 'Escape') {
-        state.selectedId = null
-        render()
-      }
+      buildModeKeys(key, e)
       return
     }
     const map: Record<string, ToolType> = { s: 'select', l: 'line', c: 'circle', q: 'square', n: 'cone' }
