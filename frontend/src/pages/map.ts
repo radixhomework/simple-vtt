@@ -1953,52 +1953,61 @@ export function renderMap(
     }
 
     // GROUP MOVE: every selected token translates by the same delta, each
-    // blocked at walls independently (no tunneling). The delta is the RAW
-    // cursor displacement from the drag start (snap would round incremental
-    // steps back into the origin cell, zeroing the motion); snapping is
-    // applied to each token's candidate destination instead.
+    // blocked at walls independently (no tunneling).
     if (state.selectedIds.size > 1 && token) {
-      const dx = wx - state.dragStartX
-      const dy = wy - state.dragStartY
-      const now = Date.now()
-      const broadcast = now - lastMoveBroadcast > 50
-      if (broadcast) lastMoveBroadcast = now
-      for (const id of state.selectedIds) {
-        const t = state.tokens.find(x => x.id === id)
-        if (!t) continue
-        const start = groupStarts.get(id) ?? { x: t.x, y: t.y }
-        const nx = state.snap ? snapToGrid(start.x + dx, state.table.grid_size ?? 70) : start.x + dx
-        const ny = state.snap ? snapToGrid(start.y + dy, state.table.grid_size ?? 70) : start.y + dy
-        if (!pathCrossesWall(t.x, t.y, nx, ny, state.walls) && !pointOnWall(nx, ny, state.walls)) {
-          t.x = nx
-          t.y = ny
-          if (broadcast) socket.send('token_move', { token_id: t.id, x: t.x, y: t.y })
-        }
-      }
-      markExploredDirty()
-      render()
+      groupMoveTo(wx, wy)
       return
     }
 
-    if (token) {
-      // Block at walls during the drag: only accept positions whose path
-      // from the current position crosses no wall/closed door (and doesn't
-      // land on one), so the token slides along walls but never walks
-      // through them.
-      if (!pathCrossesWall(token.x, token.y, snapX, snapY, state.walls)
-          && !pointOnWall(snapX, snapY, state.walls)) {
-        token.x = snapX
-        token.y = snapY
-        markExploredDirty()
-      }
-      // Throttle: broadcast live position at ~20 fps so other clients see the drag in real-time
-      const now = Date.now()
-      if (now - lastMoveBroadcast > 50) {
-        socket.send('token_move', { token_id: token.id, x: token.x, y: token.y })
-        lastMoveBroadcast = now
+    singleMoveTo(token, snapX, snapY)
+    render()
+  }
+
+  /** Group drag: translate every selected token by the raw cursor delta
+   *  from the drag start (snap would round incremental steps back into
+   *  the origin cell, zeroing the motion); snapping applies to each
+   *  token's candidate destination. Wall-blocked per token. */
+  function groupMoveTo(wx: number, wy: number) {
+    const dx = wx - state.dragStartX
+    const dy = wy - state.dragStartY
+    const grid = state.table.grid_size ?? 70
+    const now = Date.now()
+    const broadcast = now - lastMoveBroadcast > 50
+    if (broadcast) lastMoveBroadcast = now
+    for (const id of state.selectedIds) {
+      const t = state.tokens.find(x => x.id === id)
+      if (!t) continue
+      const start = groupStarts.get(id) ?? { x: t.x, y: t.y }
+      const nx = state.snap ? snapToGrid(start.x + dx, grid) : start.x + dx
+      const ny = state.snap ? snapToGrid(start.y + dy, grid) : start.y + dy
+      if (!pathCrossesWall(t.x, t.y, nx, ny, state.walls) && !pointOnWall(nx, ny, state.walls)) {
+        t.x = nx
+        t.y = ny
+        if (broadcast) socket.send('token_move', { token_id: t.id, x: t.x, y: t.y })
       }
     }
+    markExploredDirty()
     render()
+  }
+
+  /** Single-token drag step: wall-blocked, throttled broadcast. */
+  function singleMoveTo(token: Token, snapX: number, snapY: number) {
+    // Block at walls during the drag: only accept positions whose path
+    // from the current position crosses no wall/closed door (and doesn't
+    // land on one), so the token slides along walls but never walks
+    // through them.
+    if (!pathCrossesWall(token.x, token.y, snapX, snapY, state.walls)
+        && !pointOnWall(snapX, snapY, state.walls)) {
+      token.x = snapX
+      token.y = snapY
+      markExploredDirty()
+    }
+    // Throttle: broadcast live position at ~20 fps so other clients see the drag in real-time
+    const now = Date.now()
+    if (now - lastMoveBroadcast > 50) {
+      socket.send('token_move', { token_id: token.id, x: token.x, y: token.y })
+      lastMoveBroadcast = now
+    }
   }
 
   /** Commit the token drag: wall safety net + final broadcast. */
@@ -2007,47 +2016,58 @@ export function renderMap(
     const token = state.tokens.find(t => t.id === state.selectedId)
     if (!token) return
 
-    // FORCE-MOVE commit: one clean teleport. The landing point must be
-    // legal (not inside a wall); on failure everything snaps back. Only
-    // the final position is broadcast — players see A → B, never the path.
     if (state.forceDrag) {
-      state.forceDrag = false
-      if (pointOnWall(token.x, token.y, state.walls)) {
-        for (const [id, s] of groupStarts) {
-          const t = state.tokens.find(x => x.id === id)
-          if (t) { t.x = s.x; t.y = s.y }
-        }
-        socket.send('token_move', { token_id: token.id, x: state.dragStartX, y: state.dragStartY })
-        showNotif('Landing blocked by wall — reverted')
-        render()
-        return
-      }
-      markExploredDirty()   // stamp the destination reveal only
-      socket.send('token_move', { token_id: token.id, x: token.x, y: token.y })
-      render()
+      finishForceDrag(token)
       return
     }
-
-    // GROUP commit: wall safety net per token (tokens that already slid
-    // along walls keep their legal positions; only mid-drag races revert).
     if (state.selectedIds.size > 1) {
-      let anyReverted = false
-      for (const id of state.selectedIds) {
+      finishGroupDrag()
+      return
+    }
+    finishSingleDrag(token)
+  }
+
+  /** Force-move commit: one clean teleport. The landing point must be
+   *  legal (not inside a wall); on failure everything snaps back. Only
+   *  the final position is broadcast — players see A → B, never the path. */
+  function finishForceDrag(token: Token) {
+    state.forceDrag = false
+    if (pointOnWall(token.x, token.y, state.walls)) {
+      for (const [id, s] of groupStarts) {
         const t = state.tokens.find(x => x.id === id)
-        if (!t || !pointOnWall(t.x, t.y, state.walls)) continue
-        const start = groupStarts.get(id)
-        if (!start) continue
-        t.x = start.x
-        t.y = start.y
-        socket.send('token_move', { token_id: t.id, x: t.x, y: t.y })
-        anyReverted = true
+        if (t) { t.x = s.x; t.y = s.y }
       }
-      if (anyReverted) showNotif('Some tokens hit walls and stayed behind')
-      markExploredDirty()
+      socket.send('token_move', { token_id: token.id, x: state.dragStartX, y: state.dragStartY })
+      showNotif('Landing blocked by wall — reverted')
       render()
       return
     }
+    markExploredDirty()   // stamp the destination reveal only
+    socket.send('token_move', { token_id: token.id, x: token.x, y: token.y })
+    render()
+  }
 
+  /** Group commit: wall safety net per token (tokens that already slid
+   *  along walls keep their legal positions; only mid-drag races revert). */
+  function finishGroupDrag() {
+    let anyReverted = false
+    for (const id of state.selectedIds) {
+      const t = state.tokens.find(x => x.id === id)
+      if (!t || !pointOnWall(t.x, t.y, state.walls)) continue
+      const start = groupStarts.get(id)
+      if (!start) continue
+      t.x = start.x
+      t.y = start.y
+      socket.send('token_move', { token_id: t.id, x: t.x, y: t.y })
+      anyReverted = true
+    }
+    if (anyReverted) showNotif('Some tokens hit walls and stayed behind')
+    markExploredDirty()
+    render()
+  }
+
+  /** Single-drag commit: resting-point validation, stairs, broadcast. */
+  function finishSingleDrag(token: Token) {
     markExploredDirty()   // exact (unquantized) polygon on the next stamp
     // The drag already blocks walls incrementally along the path actually
     // taken, so the legal way around a corner must NOT be rejected here —
