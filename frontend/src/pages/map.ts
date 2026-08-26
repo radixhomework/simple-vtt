@@ -17,7 +17,7 @@ import {
 import { drawTiledMap, resetTileCache } from '../canvas/tiles'
 import { screenToWorld, worldToScreen, snapToGrid, zoomAround } from '../canvas/camera'
 import { portalWalls, portalSightWalls, pathCrossesWall, pointOnWall } from '../canvas/los'
-import { loadMode, saveMode, drawWallsOverlay, drawMarquee, drawWallGhost, pickWall, wallsInRect, type PageMode } from '../canvas/build'
+import { loadMode, saveMode, drawWallsOverlay, drawMarquee, drawWallGhost, pickWall, wallsInRect, pickPortalBuild, drawPortalsBuild, type PageMode } from '../canvas/build'
 import type { WallSegment } from '../canvas/los'
 import type {
   User, Table, Token, FogPoint, Portal, Camera, ToolType, MeasureState, TableSettings,
@@ -557,6 +557,7 @@ export function renderMap(
         drawTokens(mainCtx, visibleTokens, state.camera, state.table.grid_size ?? 70, null, user.username, isAdmin)
         mainCtx.restore()
         drawWallsOverlay(mainCtx, state.wallRecords, state.camera, selectedWalls)
+        drawPortalsBuild(mainCtx, state.portals, state.camera)
       } else {
         drawTokens(mainCtx, visibleTokens, state.camera, state.table.grid_size ?? 70, state.selectedId, user.username, isAdmin)
       }
@@ -1487,6 +1488,16 @@ export function renderMap(
       eraseWallAt(wx, wy, tol)
       return
     }
+    if (state.tool === 'door' || state.tool === 'window') {
+      buildDrag = 'draw'   // reuse the draw gesture; commit creates a portal
+      drawStart = { x: buildSnap(wx), y: buildSnap(wy) }
+      drawEnd = { ...drawStart }
+      return
+    }
+    if (state.tool === 'grid-setup') {
+      openGridSetup()
+      return
+    }
     if (state.tool === 'wall-select') {
       selectWallAt(sx, sy, wx, wy, tol, shiftKey)
       return
@@ -1496,8 +1507,16 @@ export function renderMap(
     uiCanvas.style.cursor = 'grabbing'
   }
 
-  /** wall-erase tool: delete the wall under the cursor (optimistic). */
+  /** wall-erase tool: delete the wall (or portal) under the cursor. */
   function eraseWallAt(wx: number, wy: number, tol: number) {
+    const portal = pickPortalBuild(state.portals, wx, wy, tol)
+    if (portal) {
+      api.deletePortal(state.table.id, portal.id).catch(() => showNotif('Delete failed'))
+      state.portals = state.portals.filter(p => p.id !== portal.id)
+      recomputeWalls()
+      render()
+      return
+    }
     const hit = pickWall(state.wallRecords, wx, wy, tol)
     if (!hit) return
     api.deleteWall(hit.wall.id).catch(() => showNotif('Delete failed'))
@@ -1616,6 +1635,14 @@ export function renderMap(
     const bx = drawEnd.x, by = drawEnd.y
     buildDrag = 'none'
     if (Math.hypot(bx - ax, by - ay) < 4) { render(); return } // ignore micro-drags
+    if (state.tool === 'door' || state.tool === 'window') {
+      api.createPortal(state.table.id, {
+        floor_id: state.floor?.id ?? '',
+        x1: ax, y1: ay, x2: bx, y2: by,
+        kind: state.tool, closed: true,
+      }).catch(() => showNotif('Portal create failed'))
+      return
+    }
     api.createWall(state.table.id, state.floor?.id ?? '', { ax, ay, bx, by })
       .catch(() => showNotif('Wall create failed'))
     // walls_update push refreshes every client including us
@@ -1660,6 +1687,73 @@ export function renderMap(
       recomputeWalls()
     }
     render()
+  }
+
+  // ── Grid setup (M1.1) ───────────────────────────────────────────────────────
+
+  /** Floating panel adjusting grid size + map offset live; Save persists. */
+  function openGridSetup() {
+    // One panel at a time
+    root.querySelector('#grid-setup-panel')?.remove()
+    const floor = state.floor
+    if (!floor) return
+    const panel = document.createElement('div')
+    panel.id = 'grid-setup-panel'
+    panel.style.cssText = 'position:absolute;top:64px;right:16px;z-index:50;background:var(--bg-card,#232622);border:1px solid var(--border,#3a3d36);border-radius:10px;padding:14px;width:230px;font-size:13px;color:var(--text,#e8e4d8);box-shadow:0 6px 24px rgba(0,0,0,.4)'
+    const gs = state.table.grid_size ?? 70
+    const ox = state.table.map_offset_x ?? 0
+    const oy = state.table.map_offset_y ?? 0
+    panel.innerHTML = `
+      <div style="font-weight:600;margin-bottom:8px">▦ Grid setup</div>
+      <label style="display:block;margin-bottom:6px">Square size (px)
+        <input id="gs-size" type="number" min="10" max="500" value="${gs}" style="width:100%;margin-top:3px">
+      </label>
+      <div style="margin-bottom:6px">Offset X: <span id="gs-ox">${ox}</span> · Y: <span id="gs-oy">${oy}</span></div>
+      <div style="display:flex;gap:4px;flex-wrap:wrap;margin-bottom:8px">
+        <button data-nudge="left" style="flex:1">←</button>
+        <button data-nudge="right" style="flex:1">→</button>
+        <button data-nudge="up" style="flex:1">↑</button>
+        <button data-nudge="down" style="flex:1">↓</button>
+        <button data-nudge="reset" style="flex:1">⟲</button>
+      </div>
+      <label style="display:flex;gap:6px;align-items:center;margin-bottom:8px">
+        <input id="gs-big" type="checkbox" checked> big steps (1 grid)
+      </label>
+      <button id="gs-save" style="width:100%;padding:6px">Save</button>
+      <button id="gs-close" style="width:100%;padding:6px;margin-top:4px">Close</button>
+    `
+    wrap.appendChild(panel)
+    const applyPreview = () => {
+      const size = Math.max(10, Math.min(500, Number((panel.querySelector('#gs-size') as HTMLInputElement).value) || 70))
+      state.table.grid_size = size
+      render()
+    }
+    panel.querySelector('#gs-size')?.addEventListener('input', applyPreview)
+    panel.querySelectorAll('[data-nudge]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const big = (panel.querySelector('#gs-big') as HTMLInputElement).checked
+        const step = big ? (state.table.grid_size ?? 70) : 1
+        const dir = (btn as HTMLElement).dataset.nudge
+        if (dir === 'reset') { state.table.map_offset_x = 0; state.table.map_offset_y = 0 }
+        if (dir === 'left') state.table.map_offset_x = (state.table.map_offset_x ?? 0) - step
+        if (dir === 'right') state.table.map_offset_x = (state.table.map_offset_x ?? 0) + step
+        if (dir === 'up') state.table.map_offset_y = (state.table.map_offset_y ?? 0) - step
+        if (dir === 'down') state.table.map_offset_y = (state.table.map_offset_y ?? 0) + step
+        ;(panel.querySelector('#gs-ox') as HTMLElement).textContent = String(state.table.map_offset_x ?? 0)
+        ;(panel.querySelector('#gs-oy') as HTMLElement).textContent = String(state.table.map_offset_y ?? 0)
+        render()
+      })
+    })
+    panel.querySelector('#gs-save')?.addEventListener('click', () => {
+      api.updateFloor(floor.id, {
+        grid_size: state.table.grid_size ?? 70,
+        map_offset_x: state.table.map_offset_x ?? 0,
+        map_offset_y: state.table.map_offset_y ?? 0,
+      })
+        .then(() => showNotif('Grid saved'))
+        .catch(() => showNotif('Save failed'))
+    })
+    panel.querySelector('#gs-close')?.addEventListener('click', () => panel.remove())
   }
 
   uiCanvas.addEventListener('mousedown', (e) => {
