@@ -260,36 +260,90 @@ export function renderMap(
         background: #1E211C; color: #D8D0BD; padding: 3px 7px; border-radius: 4px; font-size: 11px;
         white-space: nowrap; pointer-events: none; z-index: 100;
       }
+
+      /* ── Mobile / tablet: map-first layout ───────────────────────────────
+         Players (and GMs on touch devices) get a floating tool dock at the
+         bottom instead of the header tool cluster; secondary controls fold
+         into a "⋯" sheet. The header keeps only identity + floor + zen. */
+      .tool-dock {
+        position: absolute; bottom: max(10px, env(safe-area-inset-bottom)); left: 50%;
+        transform: translateX(-50%);
+        display: none; align-items: center; gap: 4px; padding: 6px;
+        background: rgba(30,33,28,0.92); border: 1px solid rgba(216,208,189,0.25);
+        border-radius: 14px; z-index: 25;
+        max-width: calc(100vw - 16px); overflow-x: auto; scrollbar-width: none;
+        box-shadow: 0 4px 16px rgba(0,0,0,0.35);
+      }
+      .tool-dock::-webkit-scrollbar { display: none; }
+      .tool-dock .tool-btn {
+        width: 44px; height: 44px; font-size: 19px; flex-shrink: 0;
+        background: rgba(216,208,189,0.06); border-radius: 10px;
+      }
+      .tool-dock .header-sep { height: 28px; flex-shrink: 0; }
+      .game.zen .tool-dock, .game.zen .more-sheet { display: none; }
+
+      .more-sheet {
+        position: absolute; left: 50%; transform: translateX(-50%); bottom: 78px;
+        background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
+        padding: 6px; z-index: 26; display: none; flex-direction: column; gap: 2px;
+        min-width: 230px; max-height: 60vh; overflow-y: auto;
+        box-shadow: 0 4px 16px rgba(0,0,0,0.35);
+      }
+      .more-sheet.open { display: flex; }
+      .more-sheet .header-btn { text-align: left; }
+
+      /* Chat collapses to a bubble on small screens */
+      .chat-bubble {
+        display: none; align-items: center; gap: 7px; padding: 9px 15px;
+        background: rgba(30,33,28,0.9); border: 1px solid rgba(216,208,189,0.25);
+        border-radius: 999px; color: #DCD4C1; font-size: 13px; cursor: pointer;
+      }
+      .chat-wrap.collapsed .chat-messages, .chat-wrap.collapsed .chat-input-row { display: none; }
+      .chat-wrap.collapsed .chat-bubble { display: flex; }
+      .chat-collapse { display: none; background: none; border: none; cursor: pointer;
+        color: var(--muted); font-size: 14px; padding: 2px 4px; align-self: center; }
+
+      @media (max-width: 900px) {
+        .game-header { min-height: 40px; padding: 4px 8px; gap: 6px; }
+        .table-name { max-width: 96px; font-size: 14px; }
+        /* Header sheds everything that is not identity/navigation */
+        .hd-desktop, .hd-desktop-sep { display: none !important; }
+        #tools { display: none; }
+        .tool-dock { display: flex; }
+        .chat-wrap { bottom: 76px; }
+        .chat-collapse { display: block; }
+        .notif { top: 46px; }
+        .tool-btn[title]:hover::after { display: none; }
+      }
     </style>
 
     <div class="game">
       <div class="game-header">
         <div class="game-header-left">
           <button class="header-btn" id="back-btn">← VTT</button>
-          <div class="header-sep"></div>
+          <div class="header-sep hd-desktop-sep"></div>
           <span class="table-name">${esc(table.name)}</span>
-          <div class="header-sep"></div>
+          <div class="header-sep hd-desktop-sep"></div>
           <select class="header-btn" id="floor-select" title="Active floor"
                   style="max-width:150px;font-weight:600;display:none"></select>
-          <div class="header-sep" id="floor-sep" style="display:none"></div>
-          <div class="toolbar-group" id="tools"></div>
-          ${isAdmin ? `<div class="header-sep" id="mode-sep"></div>
+          <div class="header-sep hd-desktop-sep" id="floor-sep" style="display:none"></div>
+          <div class="toolbar-group hd-desktop" id="tools"></div>
+          ${isAdmin ? `<div class="header-sep hd-desktop-sep" id="mode-sep"></div>
           <button class="header-btn" id="mode-btn" title="Toggle Build mode (B)">🔨 Build</button>` : ''}
-          ${isAdmin ? `<div class="header-sep"></div>
-          <button class="header-btn" id="snap-btn">Snap ✓</button>
-          <button class="header-btn" id="grid-btn">Grid ✓</button>` : ''}
-          ${isAdmin ? `<button class="header-btn" id="fog-toggle-btn">Fog ✓</button>
-          <button class="header-btn" id="share-measure-btn" title="Share measurements with players">Share ✗</button>
-          <button class="header-btn" id="focus-btn" title="Focus every display on your current view (one time)">🎯 Focus</button>` : ''}
+          ${isAdmin ? `<div class="header-sep hd-desktop-sep"></div>
+          <button class="header-btn hd-desktop" id="snap-btn">Snap ✓</button>
+          <button class="header-btn hd-desktop" id="grid-btn">Grid ✓</button>` : ''}
+          ${isAdmin ? `<button class="header-btn hd-desktop" id="fog-toggle-btn">Fog ✓</button>
+          <button class="header-btn hd-desktop" id="share-measure-btn" title="Share measurements with players">Share ✗</button>
+          <button class="header-btn hd-desktop" id="focus-btn" title="Focus every display on your current view (one time)">🎯 Focus</button>` : ''}
         </div>
         <div class="game-header-right">
-          ${isAdmin ? `<button class="header-btn" id="add-token-btn">+ Token</button>
-          <button class="header-btn" id="clear-fog-btn">Clear Fog</button>
-          <button class="header-btn" id="share-btn" title="Invite users to this map">👥 Share</button>` : ''}
+          ${isAdmin ? `<button class="header-btn hd-desktop" id="add-token-btn">+ Token</button>
+          <button class="header-btn hd-desktop" id="clear-fog-btn">Clear Fog</button>
+          <button class="header-btn hd-desktop" id="share-btn" title="Invite users to this map">👥 Share</button>` : ''}
           <button class="header-btn" id="music-btn" title="Music player">🎵</button>
           <button class="header-btn" id="sidebar-btn">Tokens ≡</button>
           <button class="header-btn" id="zen-btn" title="Fullscreen — hide menus (Esc to exit)">⛶</button>
-          <span style="font-size:12px;color:var(--muted)">${esc(user.username)}</span>
         </div>
       </div>
 
@@ -297,6 +351,23 @@ export function renderMap(
         <canvas id="canvas-main"></canvas>
         <canvas id="canvas-fog"></canvas>
         <canvas id="canvas-ui"></canvas>
+
+        <!-- Mobile/tablet floating tool dock (hidden ≥901px; populated by renderToolbar) -->
+        <div class="tool-dock" id="tool-dock"></div>
+        <div class="more-sheet" id="more-sheet">
+          ${isAdmin ? `
+          <button class="header-btn" id="sheet-mode">🔨 Build Mode</button>
+          <button class="header-btn" id="sheet-snap">Snap ✓</button>
+          <button class="header-btn" id="sheet-grid">Grid ✓</button>
+          <button class="header-btn" id="sheet-fog">Fog ✓</button>
+          <button class="header-btn" id="sheet-share-measure">Share Measurements ✗</button>
+          <button class="header-btn" id="sheet-focus">🎯 Focus Displays</button>
+          <button class="header-btn" id="sheet-add-token">+ Add Token</button>
+          <button class="header-btn" id="sheet-clear-fog">Clear Fog</button>
+          <button class="header-btn" id="sheet-share">👥 Invite Players</button>` : ''}
+          <button class="header-btn" id="sheet-music">🎵 Music</button>
+          <button class="header-btn" id="sheet-tokens">≡ Tokens</button>
+        </div>
 
         <div class="music-panel" id="music-panel">
           <div class="sidebar-section" style="display:flex;align-items:center;justify-content:space-between;">
@@ -333,10 +404,12 @@ export function renderMap(
       </div>
 
       <div class="chat-wrap" id="chat-wrap">
+        <button class="chat-bubble" id="chat-bubble" title="Open chat">💬 Chat</button>
         <div class="chat-messages" id="chat-messages"></div>
         <div class="chat-input-row">
           <input class="chat-input" id="chat-input" placeholder="Chat…" />
           <button class="chat-send" id="chat-send">→</button>
+          <button class="chat-collapse" id="chat-collapse" title="Collapse chat">▾</button>
         </div>
       </div>
 
@@ -1419,8 +1492,60 @@ export function renderMap(
     group.querySelectorAll('[data-action="add-prop"]').forEach(btn => {
       btn.addEventListener('click', () => openPropPicker())
     })
+    renderToolDock()
   }
   renderToolbar()
+
+  /** Mobile/tablet floating dock: primary tools + ⋯ for the rest.
+   *  Same markup as the header cluster — the media query does the layout. */
+  function renderToolDock() {
+    const dock = root.querySelector('#tool-dock') as HTMLElement | null
+    if (!dock) return
+    const sep = '<div class="header-sep"></div>'
+    const play = [
+      toolBtn('select', '↖', 'Select/Move'),
+      toolBtn('line', '╱', 'Measure Line'),
+      toolBtn('circle', '◯', 'Measure Circle'),
+      toolBtn('square', '▭', 'Measure Square'),
+      toolBtn('cone', '◤', 'Measure Cone'),
+    ]
+    const build = [
+      toolBtn('wall-select', '⬚', 'Select/Move'),
+      toolBtn('wall', '╱', 'Draw Wall'),
+      toolBtn('wall-erase', '⌫', 'Erase Wall'),
+      sep,
+      toolBtn('door', '🚪', 'Place Door'),
+      toolBtn('window', '🪟', 'Place Window'),
+      sep,
+      toolBtn('stairs', '🪜', 'Place Stairs'),
+      toolBtn('teleporter', '✨', 'Place Teleporter'),
+      sep,
+      toolBtn('grid-setup', '▦', 'Grid Setup'),
+      sep,
+      `<button data-action="add-prop" title="Place a prop (tree, furniture…)">🌳</button>`,
+    ]
+    const gmExtras = state.mode === 'build' ? [] : [
+      sep,
+      toolBtn('fog-reveal', '👁', 'Reveal Fog'),
+      toolBtn('fog-erase', '🌑', 'Erase Revealed'),
+      sep,
+      `<button data-action="add-prop" title="Place a prop (tree, furniture…)">🌳</button>`,
+    ]
+    dock.innerHTML = (state.mode === 'build' ? build : [...play, ...gmExtras]).join('')
+      + sep + `<button data-action="more" title="More tools">⋯</button>`
+    dock.querySelectorAll('[data-tool]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        state.tool = (btn as HTMLElement).dataset.tool as ToolType
+        renderToolbar()
+      })
+    })
+    dock.querySelectorAll('[data-action="add-prop"]').forEach(btn => {
+      btn.addEventListener('click', () => openPropPicker())
+    })
+    dock.querySelector('[data-action="more"]')?.addEventListener('click', () => {
+      sheet?.classList.toggle('open')
+    })
+  }
 
   /** Switch build ⇄ play. Cancels any active gesture and swaps the toolbar. */
   function setMode(mode: PageMode) {
@@ -1555,6 +1680,65 @@ export function renderMap(
     } catch (e: any) { showNotif('Error: ' + e.message) }
   }
   root.querySelector('#add-token-btn')?.addEventListener('click', addTokenFn)
+
+  // ── Mobile "⋯" sheet: mirror the desktop header actions ────────────────────
+  const sheet = root.querySelector('#more-sheet') as HTMLElement | null
+  const sheetMode = root.querySelector('#sheet-mode')
+  sheetMode?.addEventListener('click', () => {
+    setMode(state.mode === 'build' ? 'play' : 'build')
+    sheet?.classList.remove('open')
+  })
+  root.querySelector('#sheet-snap')?.addEventListener('click', () => { state.snap = !state.snap; updateHeaderToggles(); syncSheetLabels() })
+  root.querySelector('#sheet-grid')?.addEventListener('click', () => { state.gridVisible = !state.gridVisible; updateHeaderToggles(); render(); syncSheetLabels() })
+  root.querySelector('#sheet-fog')?.addEventListener('click', () => { state.fogEnabled = !state.fogEnabled; updateHeaderToggles(); render(); syncSheetLabels() })
+  root.querySelector('#sheet-share-measure')?.addEventListener('click', () => {
+    state.shareMeasure = !state.shareMeasure
+    if (!state.shareMeasure) {
+      state.sharedMeasure = null
+      socket.send('measure_update', { measure: null, floor_id: state.floor?.id })
+    }
+    updateHeaderToggles()
+    syncSheetLabels()
+  })
+  root.querySelector('#sheet-focus')?.addEventListener('click', () => {
+    socket.send('camera_focus', {
+      x: state.camera.x, y: state.camera.y, zoom: state.camera.zoom,
+      floor_id: state.floor?.id,
+    })
+    showNotif('Your view has been sent to everyone')
+    sheet?.classList.remove('open')
+  })
+  root.querySelector('#sheet-add-token')?.addEventListener('click', () => { sheet?.classList.remove('open'); void addTokenFn() })
+  root.querySelector('#sheet-clear-fog')?.addEventListener('click', () => { sheet?.classList.remove('open'); root.querySelector('#clear-fog-btn')?.dispatchEvent(new Event('click')) })
+  root.querySelector('#sheet-share')?.addEventListener('click', () => { sheet?.classList.remove('open'); root.querySelector('#share-btn')?.dispatchEvent(new Event('click')) })
+  root.querySelector('#sheet-music')?.addEventListener('click', () => { sheet?.classList.remove('open'); root.querySelector('#music-btn')?.dispatchEvent(new Event('click')) })
+  root.querySelector('#sheet-tokens')?.addEventListener('click', () => { sheet?.classList.remove('open'); root.querySelector('#sidebar-btn')?.dispatchEvent(new Event('click')) })
+
+  /** Keep the sheet's toggle labels in sync with state (⋯ reopens fresh). */
+  function syncSheetLabels() {
+    const set = (sel: string, label: string, on: boolean) => {
+      const el = root.querySelector(sel)
+      if (el) el.textContent = `${label} ${on ? '✓' : '✗'}`
+    }
+    set('#sheet-snap', 'Snap', state.snap)
+    set('#sheet-grid', 'Grid', state.gridVisible)
+    if (isAdmin) set('#sheet-fog', 'Fog', state.fogEnabled)
+    if (isAdmin) set('#sheet-share-measure', 'Share Measurements', state.shareMeasure)
+  }
+  syncSheetLabels()
+
+  // Tap the map: close an open sheet (the dock stays)
+  wrap.addEventListener('pointerdown', () => sheet?.classList.remove('open'))
+
+  // Chat collapse (mobile-first: starts collapsed ≤900px)
+  const chatWrap = root.querySelector('#chat-wrap') as HTMLElement | null
+  const isNarrow = () => window.matchMedia('(max-width: 900px)').matches
+  if (chatWrap && isNarrow()) chatWrap.classList.add('collapsed')
+  root.querySelector('#chat-bubble')?.addEventListener('click', () => {
+    chatWrap?.classList.remove('collapsed')
+    root.querySelector<HTMLInputElement>('#chat-input')?.focus()
+  })
+  root.querySelector('#chat-collapse')?.addEventListener('click', () => chatWrap?.classList.add('collapsed'))
   root.querySelector('#add-token-sidebar')?.addEventListener('click', addTokenFn)
 
   // Canvas mouse events
