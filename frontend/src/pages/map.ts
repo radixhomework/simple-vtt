@@ -2030,7 +2030,7 @@ export function renderMap(
     if (obj.wall) selectWallHit(obj.wall, shiftKey, wx, wy)
     else if (obj.portal) selectPortalHit(obj.portal, shiftKey, wx, wy)
     else if (obj.stair) selectStairHit(obj.stair, shiftKey, wx, wy)
-    else if (obj.prop) selectPropHit(obj.prop, wx, wy)
+    else if (obj.prop) selectPropHit(obj.prop, shiftKey, wx, wy)
     render()
   }
 
