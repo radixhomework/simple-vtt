@@ -4,8 +4,7 @@
  * center in world px, rotated around it, scaled to `size` px regardless of
  * the source resolution. Purely visual: they never block sight/movement.
  */
-import type { Camera } from '../types'
-import type { Prop } from '../types'
+import type { Camera, Prop } from '../types'
 
 /** Decoded-image cache keyed by asset path (bounded by the map's needs). */
 const imageCache = new Map<string, HTMLImageElement>()

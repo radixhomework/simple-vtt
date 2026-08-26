@@ -18,7 +18,7 @@ import { drawTiledMap, resetTileCache } from '../canvas/tiles'
 import { screenToWorld, worldToScreen, snapToGrid, zoomAround } from '../canvas/camera'
 import { portalWalls, portalSightWalls, pathCrossesWall, pointOnWall } from '../canvas/los'
 import { loadMode, saveMode, drawWallsOverlay, drawMarquee, drawWallGhost, pickWall, wallsInRect, pickPortalBuild, pickPortalGrab, portalsInRect, drawPortalsBuild, type PageMode } from '../canvas/build'
-import { drawProps, drawPropSelection, pickProp, pickPropHandle, preloadPropImage, clearPropImageCache, type PropHandle } from '../canvas/props'
+import { drawProps, drawPropSelection, pickProp, pickPropHandle, preloadPropImage, clearPropImageCache } from '../canvas/props'
 import type { WallSegment } from '../canvas/los'
 import type {
   User, Table, Token, FogPoint, Portal, Camera, ToolType, MeasureState, TableSettings,
@@ -2065,34 +2065,59 @@ export function renderMap(
   /** Left-press hit-test for props (both modes, DM). Returns true if the
    *  press is consumed by prop interaction. */
   function propMouseDown(wx: number, wy: number, shiftKey: boolean): boolean {
-    if (!isAdmin || !pendingPropAsset) {
-      if (isAdmin && selectedProp) {
-        const handle = pickPropHandle(selectedProp, wx, wy, state.camera)
-        if (handle === 'rotate' || handle === 'ne' || handle === 'se' || handle === 'sw' || handle === 'nw') {
-          propDrag = handle === 'rotate' ? 'rotate' : 'resize'
-          propDragStart = { x: wx, y: wy }
-          propGeometryStart = { x: selectedProp.x, y: selectedProp.y, size: selectedProp.size, rotation: selectedProp.rotation }
-          return true
-        }
-      }
-      const hit = isAdmin ? pickProp(state.props, wx, wy) : null
-      if (hit && isAdmin) {
-        if (!shiftKey) state.selectedId = null
-        selectedProp = hit
-        propDrag = 'move'
-        propDragStart = { x: wx, y: wy }
-        propGeometryStart = { x: hit.x, y: hit.y, size: hit.size, rotation: hit.rotation }
-        render()
-        return true
-      }
-      if (selectedProp && !shiftKey) {
-        selectedProp = null
-        render()
-      }
-      return false
+    if (pendingPropAsset) {
+      placeProp(wx, wy)
+      return true
     }
-    placeProp(wx, wy)
+    if (!isAdmin) return false
+    if (grabSelectedPropHandle(wx, wy)) return true
+    const hit = pickProp(state.props, wx, wy)
+    if (hit) {
+      beginPropDrag(hit, wx, wy, shiftKey)
+      return true
+    }
+    if (selectedProp && !shiftKey) {
+      selectedProp = null
+      render()
+    }
+    return false
+  }
+
+  /** A selected prop's rotate/resize handle was pressed: start that drag. */
+  function grabSelectedPropHandle(wx: number, wy: number): boolean {
+    if (!selectedProp) return false
+    const handle = pickPropHandle(selectedProp, wx, wy, state.camera)
+    if (!handle || handle === 'body') return false
+    propDrag = handle === 'rotate' ? 'rotate' : 'resize'
+    propDragStart = { x: wx, y: wy }
+    propGeometryStart = { x: selectedProp.x, y: selectedProp.y, size: selectedProp.size, rotation: selectedProp.rotation }
     return true
+  }
+
+  /** A prop body was pressed: select it and start a move drag. */
+  function beginPropDrag(hit: Prop, wx: number, wy: number, shiftKey: boolean) {
+    void shiftKey // selection is exclusive for props (single-object handles)
+    state.selectedId = null
+    selectedProp = hit
+    propDrag = 'move'
+    propDragStart = { x: wx, y: wy }
+    propGeometryStart = { x: hit.x, y: hit.y, size: hit.size, rotation: hit.rotation }
+    render()
+  }
+
+  /** Play-mode left press over props (DM): handles of the selected prop,
+   *  else body-pick when no token is on it. Returns true when consumed. */
+  function playModePropPress(wx: number, wy: number): boolean {
+    if (grabSelectedPropHandle(wx, wy)) return true
+    if (state.tool !== 'select') return false
+    const tokenHit = pickToken(wx, wy, state.tokens, state.table.grid_size ?? 70)
+    const propHitHere = tokenHit ? null : pickProp(state.props, wx, wy)
+    if (propHitHere) {
+      beginPropDrag(propHitHere, wx, wy, false)
+      return true
+    }
+    if (!tokenHit && selectedProp) { selectedProp = null; render() }
+    return false
   }
 
   /** Live prop drag preview (no server round-trip until release). */
@@ -2242,33 +2267,11 @@ export function renderMap(
 
       // Props first when a placement is pending, else DM handle/pick —
       // but a token standing on a prop still drags (tokens are above).
-      if (pendingPropAsset && isAdmin) {
+      if (isAdmin && pendingPropAsset) {
         placeProp(wx, wy)
         return
       }
-      if (isAdmin && selectedProp) {
-        const handle = pickPropHandle(selectedProp, wx, wy, state.camera)
-        if (handle && handle !== 'body') {
-          propDrag = handle === 'rotate' ? 'rotate' : 'resize'
-          propDragStart = { x: wx, y: wy }
-          propGeometryStart = { x: selectedProp.x, y: selectedProp.y, size: selectedProp.size, rotation: selectedProp.rotation }
-          return
-        }
-      }
-      if (state.tool === 'select') {
-        const tokenHit = pickToken(wx, wy, state.tokens, state.table.grid_size ?? 70)
-        const propHitHere = !tokenHit && isAdmin ? pickProp(state.props, wx, wy) : null
-        if (propHitHere) {
-          state.selectedId = null
-          selectedProp = propHitHere
-          propDrag = 'move'
-          propDragStart = { x: wx, y: wy }
-          propGeometryStart = { x: propHitHere.x, y: propHitHere.y, size: propHitHere.size, rotation: propHitHere.rotation }
-          render()
-          return
-        }
-        if (!tokenHit && selectedProp) { selectedProp = null; render() }
-      }
+      if (isAdmin && playModePropPress(wx, wy)) return
 
       // Select tool: tokens win over doors/stairs — a token standing on a
       // door must stay grabbable. Doors are only toggled on empty clicks.
