@@ -1982,14 +1982,32 @@ export function renderMap(
   /** wall-select tool: pick a wall, portal, stair/teleporter, or prop (drag
    *  body = move, drag endpoint = edit, Alt+drag = rotate the group) or
    *  start a marquee on empty space. */
+  function clearBuildSelection() {
+    selectedWalls.clear(); selectedPortals.clear(); selectedStairs.clear(); selectedProps.clear()
+  }
+
+  /** Resolve one build press into { wall | portal | stair | prop }, picking
+   *  walls → portals → stairs → props in priority order. */
+  function pickBuildObject(wx: number, wy: number, tol: number): {
+    wall?: { wall: WallRecord; grab: 'body' | 'a' | 'b' }
+    portal?: { portal: Portal; grab: 'body' | 'a' | 'b' }
+    stair?: Stairs
+    prop?: Prop
+  } {
+    const wall = pickWall(state.wallRecords, wx, wy, tol)
+    if (wall) return { wall }
+    const portal = pickPortalGrab(floorPortals(), wx, wy, tol)
+    if (portal) return { portal }
+    const stair = pickStair(wx, wy, floorStairs(), state.table.grid_size ?? 70)
+    if (stair) return { stair }
+    return { prop: pickProp(state.props, wx, wy) ?? undefined }
+  }
+
   function selectWallAt(sx: number, sy: number, wx: number, wy: number, tol: number, shiftKey: boolean, altKey = false) {
-    const hit = pickWall(state.wallRecords, wx, wy, tol)
-    const portalHit = hit ? null : pickPortalGrab(floorPortals(), wx, wy, tol)
-    const stairHit = !hit && !portalHit ? pickStair(wx, wy, floorStairs(), state.table.grid_size ?? 70) : null
-    const propPick = !hit && !portalHit && !stairHit ? pickProp(state.props, wx, wy) : null
-    if (!hit && !portalHit && !stairHit && !propPick) {
+    const obj = pickBuildObject(wx, wy, tol)
+    if (!obj.wall && !obj.portal && !obj.stair && !obj.prop) {
       // Empty press: start a marquee (shift keeps the current selection)
-      if (!shiftKey) { selectedWalls.clear(); selectedPortals.clear(); selectedStairs.clear(); selectedProps.clear() }
+      if (!shiftKey) clearBuildSelection()
       buildDrag = 'marquee'
       marqueeStart = { x: sx, y: sy }
       marqueeEnd = { x: sx, y: sy }
@@ -1999,20 +2017,20 @@ export function renderMap(
     if (altKey) {
       // Alt+press: rotate the linked group under the cursor (explicit links
       // only — a loose selection never rotates as one)
-      selectedWalls.clear(); selectedPortals.clear(); selectedStairs.clear(); selectedProps.clear()
-      if (hit) selectedWalls.add(hit.wall.id)
-      if (portalHit) selectedPortals.add(portalHit.portal.id)
-      if (stairHit) selectedStairs.add(stairHit.id)
-      if (propPick) selectedProps.add(propPick.id)
+      clearBuildSelection()
+      if (obj.wall) selectedWalls.add(obj.wall.wall.id)
+      if (obj.portal) selectedPortals.add(obj.portal.portal.id)
+      if (obj.stair) selectedStairs.add(obj.stair.id)
+      if (obj.prop) selectedProps.add(obj.prop.id)
       expandSelectionToLinked()
       startGroupRotate(wx, wy)
       render()
       return
     }
-    if (hit) selectWallHit(hit, shiftKey, wx, wy)
-    else if (portalHit) selectPortalHit(portalHit, shiftKey, wx, wy)
-    else if (stairHit) selectStairHit(stairHit, shiftKey, wx, wy)
-    else if (propPick) selectPropHit(propPick, shiftKey, wx, wy)
+    if (obj.wall) selectWallHit(obj.wall, shiftKey, wx, wy)
+    else if (obj.portal) selectPortalHit(obj.portal, shiftKey, wx, wy)
+    else if (obj.stair) selectStairHit(obj.stair, shiftKey, wx, wy)
+    else if (obj.prop) selectPropHit(obj.prop, wx, wy)
     render()
   }
 
