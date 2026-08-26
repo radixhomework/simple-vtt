@@ -66,7 +66,12 @@ export function clearMapImageCache(keepPath: string): void {
   }
 }
 
-/** Stairs marker: a spiral linking this floor to another level. */
+/** Stairs/teleporter marker radius as a fraction of a grid square.
+ *  Shared by drawStairs and pickStair so the drop-trigger circle IS the
+ *  circle players see — a token teleports only when its CENTER is inside
+ *  the drawn ring. */
+export const STAIR_MARKER_FRACTION = 0.375
+
 export function drawStairs(
   ctx: CanvasRenderingContext2D,
   stairs: Stairs[],
@@ -77,8 +82,9 @@ export function drawStairs(
 ) {
   for (const st of stairs) {
     const [sx, sy] = worldToScreen(st.from_x, st.from_y, cam)
-    // Visible marker spans 0.75 grid square (pickup radius is separate)
-    const r = Math.max(5, 0.75 * gridSize * cam.zoom * 0.5)
+    // Drawn ring and pickup circle share STAIR_MARKER_FRACTION — what you
+    // see is exactly what triggers.
+    const r = Math.max(5, STAIR_MARKER_FRACTION * gridSize * cam.zoom)
     const isTeleporter = st.to_floor === st.from_floor
     ctx.save()
     if (isTeleporter) {
