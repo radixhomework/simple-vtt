@@ -18,11 +18,12 @@ import { drawTiledMap, resetTileCache } from '../canvas/tiles'
 import { screenToWorld, worldToScreen, snapToGrid, zoomAround } from '../canvas/camera'
 import { portalWalls, portalSightWalls, pathCrossesWall, pointOnWall } from '../canvas/los'
 import { loadMode, saveMode, drawWallsOverlay, drawMarquee, drawWallGhost, pickWall, wallsInRect, pickPortalBuild, pickPortalGrab, portalsInRect, drawPortalsBuild, type PageMode } from '../canvas/build'
+import { drawProps, drawPropSelection, pickProp, pickPropHandle, preloadPropImage, clearPropImageCache, type PropHandle } from '../canvas/props'
 import type { WallSegment } from '../canvas/los'
 import type {
   User, Table, Token, FogPoint, Portal, Camera, ToolType, MeasureState, TableSettings,
   TableStatePayload, TokenMovePayload, TokenUpdatePayload, TokenDeletePayload, FogUpdatePayload,
-  MeasureUpdatePayload, MusicStatePayload, Asset, Floor, FloorLite, Stairs, MapMember, WallRecord,
+  MeasureUpdatePayload, MusicStatePayload, Asset, Floor, FloorLite, Stairs, MapMember, WallRecord, Prop,
 } from '../types'
 import { DEFAULT_TABLE_SETTINGS } from '../types'
 
@@ -39,6 +40,8 @@ interface GameState {
   walls: WallSegment[]
   /** Build-mode wall rows (persisted; the source of `walls` above). */
   wallRecords: WallRecord[]
+  /** Decorative props on the active floor (players see them too). */
+  props: Prop[]
   /** Sight blockers: static walls + closed doors only (windows are transparent) */
   sightWalls: WallSegment[]
   settings: TableSettings
@@ -372,6 +375,7 @@ export function renderMap(
     portals: [],
     walls: [],
     wallRecords: [] as WallRecord[],
+    props: [] as Prop[],
     sightWalls: [],
     settings: { ...DEFAULT_TABLE_SETTINGS },
     camera: { x: 0, y: 0, zoom: 1 },
@@ -475,6 +479,21 @@ export function renderMap(
       .catch(() => { /* transient network error: keep current walls */ })
   }
 
+  /** Apply prop rows delivered by table_state (already floor-scoped). */
+  function applyProps(rows: Prop[]) {
+    state.props = rows
+    rows.forEach(p => preloadPropImage(p.asset_path, render))
+  }
+
+  /** Fetch the active floor's props (props_update). */
+  function refreshProps() {
+    const fid = state.floor?.id
+    if (!fid) return
+    api.listProps(state.table.id, fid)
+      .then(rows => { applyProps(rows); render() })
+      .catch(() => { /* keep current props on transient errors */ })
+  }
+
   // Load map image (also re-run when a floor switch brings a new map path).
   // Tiled floors never load the full bitmap: the overview tile serves the
   // fog's greyscale phase and the pyramid renders the map itself.
@@ -556,6 +575,8 @@ export function renderMap(
       if (state.gridVisible) {
         drawGrid(mainCtx, state.camera, state.table.grid_size ?? 70, w, h)
       }
+      // Props: scenery between grid and tokens (both modes; purely visual)
+      drawProps(mainCtx, state.props, state.camera)
       // Build mode: boost grid visibility for alignment work, dim tokens
       // (placement context only — not interactive) and draw the walls
       // overlay through the fog so walls act as editing handles.
@@ -637,6 +658,10 @@ export function renderMap(
       // Play-mode token marquee (admin)
       if (state.mode !== 'build' && state.marquee?.active) {
         drawMarquee(uiCtx, state.marquee.x0, state.marquee.y0, state.marquee.x1, state.marquee.y1)
+      }
+      // Prop selection (DM, both modes) — handles for move/rotate/resize
+      if (selectedProp && isAdmin) {
+        drawPropSelection(uiCtx, selectedProp, state.camera)
       }
       // Multi-selection rings (admin, play mode)
       if (state.mode !== 'build' && isAdmin && state.selectedIds.size > 1) {
@@ -932,6 +957,7 @@ export function renderMap(
         state.fog = p.fog ?? []
         state.portals = p.portals ?? []
         state.stairs = p.stairs ?? []
+        if (p.props) applyProps(p.props)
         if (p.walls) applyWallRecords(p.walls)
         markExploredDirty()
         const floorChanged = !!p.floor && p.floor.id !== oldFloorId
@@ -984,6 +1010,11 @@ export function renderMap(
       case 'walls_update': {
         // Any wall mutation: refetch rows for this floor (cheap: one GET)
         refreshWalls()
+        break
+      }
+      case 'props_update': {
+        // Any prop mutation: refetch the floor's props (cheap: one GET)
+        refreshProps()
         break
       }
       case 'settings_update': {
@@ -1345,7 +1376,7 @@ export function renderMap(
       toolBtn('square', '▭', 'Measure Square (Q)'),
       toolBtn('cone', '◤', 'Measure Cone (N)'),
     ]
-    if (isAdmin) play.push(sep, toolBtn('fog-reveal', '👁', 'Reveal Fog (R)'), toolBtn('fog-erase', '🌑', 'Erase Revealed (E)'))
+    if (isAdmin) play.push(sep, toolBtn('fog-reveal', '👁', 'Reveal Fog (R)'), toolBtn('fog-erase', '🌑', 'Erase Revealed (E)'), sep, `<button data-action="add-prop" title="Place a prop (tree, furniture…)">🌳</button>`)
     const build = [
       toolBtn('wall-select', '⬚', 'Select/Move Walls (W)'),
       toolBtn('wall', '╱', 'Draw Wall (D)'),
@@ -1358,6 +1389,8 @@ export function renderMap(
       toolBtn('teleporter', '✨', 'Place Teleporter (P)'),
       sep,
       toolBtn('grid-setup', '▦', 'Grid Setup (G)'),
+      sep,
+      `<button data-action="add-prop" title="Place a prop (tree, furniture…)">🌳</button>`,
     ]
     group.innerHTML = (state.mode === 'build' ? build : play).join('')
     group.querySelectorAll('[data-tool]').forEach(btn => {
@@ -1365,6 +1398,9 @@ export function renderMap(
         state.tool = (btn as HTMLElement).dataset.tool as ToolType
         renderToolbar()
       })
+    })
+    group.querySelectorAll('[data-action="add-prop"]').forEach(btn => {
+      btn.addEventListener('click', () => openPropPicker())
     })
   }
   renderToolbar()
@@ -1968,7 +2004,134 @@ export function renderMap(
     render()
   }
 
-  // ── Grid setup (M1.1) ───────────────────────────────────────────────────────
+  // ── Props (decorative assets) — DM-editable in BOTH modes ───────────────────
+
+  /** Currently selected prop (DM only). */
+  let selectedProp: Prop | null = null
+  /** What a prop drag is doing right now. */
+  let propDrag: 'none' | 'move' | 'rotate' | 'resize' | 'place' = 'none'
+  /** Asset chosen in the library, awaiting a placement click. */
+  let pendingPropAsset: { path: string; name: string } | null = null
+  /** Drag bookkeeping (world px). */
+  let propDragStart = { x: 0, y: 0 }
+  let propGeometryStart = { x: 0, y: 0, size: 70, rotation: 0 }
+
+  /** Open the image library to pick a prop asset; next canvas click places it. */
+  function openPropPicker() {
+    api.listAssets('image')
+      .then(assets => {
+        if (assets.length === 0) { showNotif('Upload images first (Assets page)'); return }
+        const picker = document.createElement('div')
+        picker.id = 'prop-picker'
+        picker.style.cssText = 'position:absolute;top:64px;left:16px;z-index:60;background:var(--bg-card,#232622);border:1px solid var(--border,#3a3d36);border-radius:10px;padding:12px;max-width:300px;max-height:50vh;overflow:auto;font-size:13px;color:var(--text,#e8e4d8)'
+        picker.innerHTML = `<div style="font-weight:600;margin-bottom:8px">🌳 Place a prop</div>` +
+          assets.map((a, i) => `<div data-i="${i}" style="display:flex;align-items:center;gap:8px;padding:4px;cursor:pointer;border-radius:6px"><img src="${a.path}" style="width:32px;height:32px;object-fit:contain"><span>${a.name}</span></div>`).join('') +
+          `<button id="prop-picker-close" style="width:100%;margin-top:8px;padding:5px">Cancel</button>`
+        wrap.appendChild(picker)
+        picker.querySelectorAll('[data-i]').forEach(el => {
+          el.addEventListener('click', () => {
+            const a = assets[Number((el as HTMLElement).dataset.i)]
+            pendingPropAsset = { path: a.path, name: a.name }
+            picker.remove()
+            showNotif(`Click the map to place ${a.name}`)
+          })
+        })
+        picker.querySelector('#prop-picker-close')?.addEventListener('click', () => picker.remove())
+      })
+      .catch(() => showNotif('Could not load assets'))
+  }
+
+  /** Place the pending asset at a world point. */
+  function placeProp(wx: number, wy: number) {
+    if (!pendingPropAsset || !state.floor) return
+    const grid = state.table.grid_size ?? 70
+    api.createProp(state.table.id, {
+      floor_id: state.floor.id,
+      asset_path: pendingPropAsset.path,
+      name: pendingPropAsset.name,
+      x: wx, y: wy,
+      size: grid,
+      rotation: 0, z: 0, opacity: 1,
+    })
+      .then(p => {
+        pendingPropAsset = null
+        selectedProp = p
+        showNotif(`${p.name} placed`)
+        refreshProps()
+      })
+      .catch(() => showNotif('Prop placement failed'))
+  }
+
+  /** Left-press hit-test for props (both modes, DM). Returns true if the
+   *  press is consumed by prop interaction. */
+  function propMouseDown(wx: number, wy: number, shiftKey: boolean): boolean {
+    if (!isAdmin || !pendingPropAsset) {
+      if (isAdmin && selectedProp) {
+        const handle = pickPropHandle(selectedProp, wx, wy, state.camera)
+        if (handle === 'rotate' || handle === 'ne' || handle === 'se' || handle === 'sw' || handle === 'nw') {
+          propDrag = handle === 'rotate' ? 'rotate' : 'resize'
+          propDragStart = { x: wx, y: wy }
+          propGeometryStart = { x: selectedProp.x, y: selectedProp.y, size: selectedProp.size, rotation: selectedProp.rotation }
+          return true
+        }
+      }
+      const hit = isAdmin ? pickProp(state.props, wx, wy) : null
+      if (hit && isAdmin) {
+        if (!shiftKey) state.selectedId = null
+        selectedProp = hit
+        propDrag = 'move'
+        propDragStart = { x: wx, y: wy }
+        propGeometryStart = { x: hit.x, y: hit.y, size: hit.size, rotation: hit.rotation }
+        render()
+        return true
+      }
+      if (selectedProp && !shiftKey) {
+        selectedProp = null
+        render()
+      }
+      return false
+    }
+    placeProp(wx, wy)
+    return true
+  }
+
+  /** Live prop drag preview (no server round-trip until release). */
+  function propMouseMove(wx: number, wy: number) {
+    if (propDrag === 'none' || !selectedProp) return
+    const dx = wx - propDragStart.x
+    const dy = wy - propDragStart.y
+    if (propDrag === 'move') {
+      const nx = state.snap ? snapToGrid(propGeometryStart.x + dx, state.table.grid_size ?? 70) : propGeometryStart.x + dx
+      const ny = state.snap ? snapToGrid(propGeometryStart.y + dy, state.table.grid_size ?? 70) : propGeometryStart.y + dy
+      selectedProp.x = nx
+      selectedProp.y = ny
+    } else if (propDrag === 'rotate') {
+      // Angle from center to cursor, minus the initial grab angle offset
+      const a0 = Math.atan2(propDragStart.y - selectedProp.y, propDragStart.x - selectedProp.x)
+      const a1 = Math.atan2(wy - selectedProp.y, wx - selectedProp.x)
+      let deg = propGeometryStart.rotation + ((a1 - a0) * 180) / Math.PI
+      if (deg > 180) deg -= 360
+      if (deg < -180) deg += 360
+      selectedProp.rotation = Math.round(deg)
+    } else if (propDrag === 'resize') {
+      // New size = distance from center to cursor ×2 (square)
+      const d = Math.hypot(wx - selectedProp.x, wy - selectedProp.y)
+      selectedProp.size = state.snap
+        ? Math.max(state.table.grid_size ?? 70, Math.round(d * 2 / (state.table.grid_size ?? 70)) * (state.table.grid_size ?? 70))
+        : Math.max(8, d * 2)
+    }
+    render()
+  }
+
+  /** Commit the drag: one PATCH with the final geometry. */
+  function propMouseUp() {
+    if (propDrag === 'none' || !selectedProp) return
+    const p = selectedProp
+    propDrag = 'none'
+    api.updateProp(state.table.id, p.id, { x: p.x, y: p.y, size: p.size, rotation: p.rotation })
+      .then(() => { /* props_update push refreshes everyone */ })
+      .catch(() => showNotif('Prop update failed'))
+  }
 
   /** Floating panel adjusting grid size + map offset live; Save persists. */
   function openGridSetup() {
@@ -2054,6 +2217,9 @@ export function renderMap(
       // Right/middle mouse still pans (handled above) so navigation is
       // always available while building.
       if (state.mode === 'build') {
+        // Props stay interactive in build mode too (pending placement,
+        // handles, picking) — before the wall tools.
+        if (isAdmin && propMouseDown(wx, wy, e.shiftKey)) return
         if (isAdmin) buildMouseDown(e.offsetX, e.offsetY, wx, wy, e.shiftKey)
         return
       }
@@ -2072,6 +2238,36 @@ export function renderMap(
           socket.send('measure_update', { measure: { ...state.measure }, floor_id: state.floor?.id })
         }
         return
+      }
+
+      // Props first when a placement is pending, else DM handle/pick —
+      // but a token standing on a prop still drags (tokens are above).
+      if (pendingPropAsset && isAdmin) {
+        placeProp(wx, wy)
+        return
+      }
+      if (isAdmin && selectedProp) {
+        const handle = pickPropHandle(selectedProp, wx, wy, state.camera)
+        if (handle && handle !== 'body') {
+          propDrag = handle === 'rotate' ? 'rotate' : 'resize'
+          propDragStart = { x: wx, y: wy }
+          propGeometryStart = { x: selectedProp.x, y: selectedProp.y, size: selectedProp.size, rotation: selectedProp.rotation }
+          return
+        }
+      }
+      if (state.tool === 'select') {
+        const tokenHit = pickToken(wx, wy, state.tokens, state.table.grid_size ?? 70)
+        const propHitHere = !tokenHit && isAdmin ? pickProp(state.props, wx, wy) : null
+        if (propHitHere) {
+          state.selectedId = null
+          selectedProp = propHitHere
+          propDrag = 'move'
+          propDragStart = { x: wx, y: wy }
+          propGeometryStart = { x: propHitHere.x, y: propHitHere.y, size: propHitHere.size, rotation: propHitHere.rotation }
+          render()
+          return
+        }
+        if (!tokenHit && selectedProp) { selectedProp = null; render() }
       }
 
       // Select tool: tokens win over doors/stairs — a token standing on a
@@ -2444,6 +2640,13 @@ export function renderMap(
       return
     }
 
+    // Prop drag (move/rotate/resize) — live preview
+    if (propDrag !== 'none' && selectedProp) {
+      const [pwx, pwy] = screenToWorld(e.offsetX, e.offsetY, state.camera)
+      propMouseMove(pwx, pwy)
+      return
+    }
+
     if (state.dragging && state.selectedId) {
       dragInputTo(e.offsetX, e.offsetY)
       return
@@ -2486,6 +2689,12 @@ export function renderMap(
     // Play-mode marquee: select tokens inside the rect
     if (state.marquee?.active && e.button === 0) {
       finishMarquee()
+      return
+    }
+
+    // Prop drag commit: one PATCH with the final geometry
+    if (propDrag !== 'none' && selectedProp) {
+      propMouseUp()
       return
     }
 
@@ -2837,7 +3046,7 @@ export function renderMap(
     }
     playModeToolKeys(key)
     if (e.key === 'Escape') handleEscapeKey()
-    if (e.key === 'Delete' && state.selectedId && isAdmin) handleDeleteKey()
+    if (e.key === 'Delete' && isAdmin && (state.selectedId || selectedProp)) handleDeleteKey()
   }
 
   /** Escape: exit zen, deselect, cancel measuring (shared broadcast). */
@@ -2846,6 +3055,8 @@ export function renderMap(
     state.selectedId = null
     state.selectedIds.clear()
     state.marquee = null
+    selectedProp = null
+    pendingPropAsset = null
     renderQuickActions()
     state.measure.active = false
     if (state.shareMeasure) socket.send('measure_update', { measure: null, floor_id: state.floor?.id })
@@ -2854,6 +3065,15 @@ export function renderMap(
 
   /** Delete: remove the selected token (admin, with confirm). */
   function handleDeleteKey(): void {
+    // Prop (DM, both modes) — single confirm-less delete, like build walls
+    if (selectedProp && isAdmin) {
+      const p = selectedProp
+      selectedProp = null
+      api.deleteProp(state.table.id, p.id)
+        .then(() => { state.props = state.props.filter(x => x.id !== p.id); render() })
+        .catch(() => showNotif('Prop delete failed'))
+      return
+    }
     // Build mode: delete every selected wall + portal + stair (undoable)
     if (state.mode === 'build' && isAdmin && (selectedWalls.size > 0 || selectedPortals.size > 0 || selectedStairs.size > 0)) {
       pushUndo()
@@ -2900,6 +3120,7 @@ export function renderMap(
     audio.removeAttribute('src')
     // Release the decoded tile bitmaps and the fog overview
     resetTileCache()
+    clearPropImageCache()
     state.fogOverview?.close()
     state.fogOverview = null
     resetVisionCache()

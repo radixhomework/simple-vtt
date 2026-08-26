@@ -15,6 +15,7 @@ import { tokensRouter } from './routes/tokens'
 import { settingsRouter } from './routes/settings'
 import { portalsRouter } from './routes/portals'
 import { wallsRouter } from './routes/walls'
+import { propsRouter } from './routes/props'
 import { assetsRouter } from './routes/assets'
 import { setupWebSocket } from './hub'
 import { apiLimiter } from './ratelimit'
@@ -62,6 +63,7 @@ app.use('/api', tokensRouter)
 app.use('/api', settingsRouter)
 app.use('/api', portalsRouter)
 app.use('/api', wallsRouter)
+app.use('/api', propsRouter)
 app.use('/api', assetsRouter)
 
 // Version information (backend package.json; the frontend ships its own)
