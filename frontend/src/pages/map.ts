@@ -618,7 +618,7 @@ export function renderMap(
         // Stairs + teleporters as build handles — on the UI layer so they
         // render through the fog canvas (walls/portals already do on main,
         // but main sits under fog; markers must stay fully visible).
-        drawStairs(uiCtx, state.stairs, state.floors, state.camera, state.table.grid_size ?? 70, true)
+        drawStairs(uiCtx, floorStairs(), state.floors, state.camera, state.table.grid_size ?? 70, true, selectedStairs)
         if (buildDrag === 'draw') drawWallGhost(uiCtx, drawStart.x, drawStart.y, drawEnd.x, drawEnd.y, state.camera)
         if (buildDrag === 'marquee') drawMarquee(uiCtx, marqueeStart.x, marqueeStart.y, marqueeEnd.x, marqueeEnd.y)
         // Teleporter placement: pending source marker
@@ -1513,6 +1513,8 @@ export function renderMap(
   /** Selected portal ids (build mode) — doors/windows join the same
    *  selection system as walls: marquee, group move, endpoint edit. */
   const selectedPortals = new Set<string>()
+  /** Selected stair/teleporter ids (build mode). */
+  const selectedStairs = new Set<string>()
   /** What the left button is doing in build mode. */
   let buildDrag: 'none' | 'draw' | 'marquee' | 'move' | 'endpoint' = 'none'
   /** Draw start (world) + current ghost end. */
@@ -1529,17 +1531,19 @@ export function renderMap(
   /** Start positions of the selected group (world px) for live previews. */
   let groupStartPositions = new Map<string, { ax: number; ay: number; bx: number; by: number }>()
   let portalGroupStarts = new Map<string, { x1: number; y1: number; x2: number; y2: number }>()
+  let stairGroupStarts = new Map<string, { x: number; y: number }>()
 
   const buildTol = () => Math.max(8 / state.camera.zoom, (state.table.grid_size ?? 70) * 0.12)
   const buildSnap = (v: number) => (state.snap ? snapToGrid(v, state.table.grid_size ?? 70) : v)
 
   // ── Build undo/redo (M1.4) ───────────────────────────────────────────────────
-  /** Build snapshot = walls + portals of the active floor. Restore is a
+  /** Build snapshot = walls + portals + stairs of the active floor. Restore is a
    *  single atomic server replace (build-state PUT) that keeps snapshot
    *  ids, so undo/redo is race-free and never duplicates rows. */
   interface BuildSnapshot {
     walls: WallRecord[]
     portals: Portal[]
+    stairs: Stairs[]
   }
   const undoStack: BuildSnapshot[] = []
   const redoStack: BuildSnapshot[] = []
@@ -1552,10 +1556,18 @@ export function renderMap(
     return fid ? state.portals.filter(p => p.floor_id === fid) : state.portals
   }
 
+  /** Stairs whose SOURCE leaves this floor (their counterparts show on the
+   *  target floor). For build selection we want the current floor's set. */
+  function floorStairs(): Stairs[] {
+    const fid = state.floor?.id
+    return fid ? state.stairs.filter(s => s.from_floor === fid) : state.stairs
+  }
+
   function snapshotBuild(): BuildSnapshot {
     return {
       walls: state.wallRecords.map(w => ({ ...w })),
       portals: floorPortals().map(p => ({ ...p })),
+      stairs: floorStairs().map(s => ({ ...s })),
     }
   }
 
@@ -1590,6 +1602,7 @@ export function renderMap(
       .catch(() => showNotif('Undo failed'))
     selectedWalls.clear()
     selectedPortals.clear()
+    selectedStairs.clear()
     render()
   }
 
@@ -1644,8 +1657,17 @@ export function renderMap(
     uiCanvas.style.cursor = 'grabbing'
   }
 
-  /** wall-erase tool: delete the wall (or portal) under the cursor. */
+  /** wall-erase tool: delete the wall, portal, or stair under the cursor. */
   function eraseWallAt(wx: number, wy: number, tol: number) {
+    const stair = pickStair(wx, wy, floorStairs(), state.table.grid_size ?? 70)
+    if (stair) {
+      pushUndo()
+      api.deleteStair(stair.id).catch(() => showNotif('Delete failed'))
+      state.stairs = state.stairs.filter(s => s.id !== stair.id)
+      selectedStairs.delete(stair.id)
+      render()
+      return
+    }
     const portal = pickPortalBuild(floorPortals(), wx, wy, tol)
     if (portal) {
       pushUndo()
@@ -1666,14 +1688,15 @@ export function renderMap(
     render()
   }
 
-  /** wall-select tool: pick a wall or portal (drag body = move, drag
-   *  endpoint = edit) or start a marquee on empty space. */
+  /** wall-select tool: pick a wall, portal, or stair/teleporter (drag
+   *  body = move, drag endpoint = edit) or start a marquee on empty space. */
   function selectWallAt(sx: number, sy: number, wx: number, wy: number, tol: number, shiftKey: boolean) {
     const hit = pickWall(state.wallRecords, wx, wy, tol)
     const portalHit = hit ? null : pickPortalGrab(floorPortals(), wx, wy, tol)
-    if (!hit && !portalHit) {
+    const stairHit = !hit && !portalHit ? pickStair(wx, wy, floorStairs(), state.table.grid_size ?? 70) : null
+    if (!hit && !portalHit && !stairHit) {
       // Empty press: start a marquee (shift keeps the current selection)
-      if (!shiftKey) { selectedWalls.clear(); selectedPortals.clear() }
+      if (!shiftKey) { selectedWalls.clear(); selectedPortals.clear(); selectedStairs.clear() }
       buildDrag = 'marquee'
       marqueeStart = { x: sx, y: sy }
       marqueeEnd = { x: sx, y: sy }
@@ -1682,7 +1705,24 @@ export function renderMap(
     }
     if (hit) selectWallHit(hit, shiftKey, wx, wy)
     else if (portalHit) selectPortalHit(portalHit, shiftKey, wx, wy)
+    else if (stairHit) selectStairHit(stairHit, shiftKey, wx, wy)
     render()
+  }
+
+  /** A stair/teleporter was clicked: select it and start a source drag.
+   *  Cross-floor stairs keep their to_x/to_y (arrival) untouched — moving
+   *  the source is the build operation; teleporters shift their
+   *  destination by the same delta so the pair stays a fixed hop. */
+  function selectStairHit(st: Stairs, shiftKey: boolean, wx: number, wy: number) {
+    if (!shiftKey && !selectedStairs.has(st.id)) { selectedWalls.clear(); selectedPortals.clear(); selectedStairs.clear() }
+    selectedStairs.add(st.id)
+    pendingDragSnapshot = snapshotBuild()
+    buildDrag = 'move'
+    moveOrigin = { x: wx, y: wy }
+    moveLast = { ...moveOrigin }
+    stairGroupStarts = new Map(floorStairs()
+      .filter(s => selectedStairs.has(s.id))
+      .map(s => [s.id, { x: s.from_x, y: s.from_y }]))
   }
 
   /** A wall was clicked: add to selection and start the right drag. */
@@ -1724,6 +1764,9 @@ export function renderMap(
     portalGroupStarts = new Map(floorPortals()
       .filter(p => selectedPortals.has(p.id))
       .map(p => [p.id, { x1: p.x1, y1: p.y1, x2: p.x2, y2: p.y2 }]))
+    stairGroupStarts = new Map(floorStairs()
+      .filter(s => selectedStairs.has(s.id))
+      .map(s => [s.id, { x: s.from_x, y: s.from_y }]))
   }
 
   function buildMouseMove(sx: number, sy: number) {
@@ -1761,6 +1804,13 @@ export function renderMap(
       if (!portalGroupStarts.has(p.id)) continue
       p.x1 += dx; p.y1 += dy
       p.x2 += dx; p.y2 += dy
+    }
+    for (const s of floorStairs()) {
+      if (!stairGroupStarts.has(s.id)) continue
+      s.from_x += dx; s.from_y += dy
+      // Teleporters: keep the hop vector constant so the pair moves rigidly.
+      // Cross-floor stairs: to_x/to_y live on ANOTHER floor — untouched.
+      if (s.to_floor === s.from_floor) { s.to_x += dx; s.to_y += dy }
     }
     recomputeWallsPreview()
     render()
@@ -1834,13 +1884,18 @@ export function renderMap(
     // walls_update push refreshes every client including us
   }
 
-  /** Finish a marquee: select every wall AND portal intersecting the rect. */
+  /** Finish a marquee: select every wall, portal AND stair intersecting the rect. */
   function commitMarquee() {
     buildDrag = 'none'
     const [wx0, wy0] = screenToWorld(marqueeStart.x, marqueeStart.y, state.camera)
     const [wx1, wy1] = screenToWorld(marqueeEnd.x, marqueeEnd.y, state.camera)
     for (const h of wallsInRect(state.wallRecords, wx0, wy0, wx1, wy1)) selectedWalls.add(h.id)
     for (const p of portalsInRect(floorPortals(), wx0, wy0, wx1, wy1)) selectedPortals.add(p.id)
+    const minX = Math.min(wx0, wx1), maxX = Math.max(wx0, wx1)
+    const minY = Math.min(wy0, wy1), maxY = Math.max(wy0, wy1)
+    for (const s of floorStairs()) {
+      if (s.from_x >= minX && s.from_x <= maxX && s.from_y >= minY && s.from_y <= maxY) selectedStairs.add(s.id)
+    }
     render()
   }
 
@@ -1868,6 +1923,24 @@ export function renderMap(
       p.x1 = start.x1; p.y1 = start.y1; p.x2 = start.x2; p.y2 = start.y2
       api.updatePortalGeometry(state.table.id, p.id, { x1: start.x1 + dx, y1: start.y1 + dy, x2: start.x2 + dx, y2: start.y2 + dy })
         .catch(() => showNotif('Portal move failed'))
+    }
+    for (const s of floorStairs()) {
+      const start = stairGroupStarts.get(s.id)
+      if (!start) continue
+      const isTeleporter = s.to_floor === s.from_floor
+      // The preview already advanced from/to by the full delta — the
+      // destination to SEND is the previewed value (old target + delta).
+      const patch: Partial<Stairs> = { from_x: start.x + dx, from_y: start.y + dy }
+      if (isTeleporter) {
+        patch.to_x = s.to_x
+        patch.to_y = s.to_y
+        // restore local mirror; the table_state push re-applies authoritative values
+        s.to_x -= dx; s.to_y -= dy
+      }
+      // Restore local source; the table_state push re-applies the moved state
+      s.from_x = start.x; s.from_y = start.y
+      api.updateStair(state.table.id, s.id, patch)
+        .catch(() => showNotif('Stair move failed'))
     }
     recomputeWallsPreview()
     render()
@@ -2781,8 +2854,8 @@ export function renderMap(
 
   /** Delete: remove the selected token (admin, with confirm). */
   function handleDeleteKey(): void {
-    // Build mode: delete every selected wall + portal (undoable)
-    if (state.mode === 'build' && isAdmin && (selectedWalls.size > 0 || selectedPortals.size > 0)) {
+    // Build mode: delete every selected wall + portal + stair (undoable)
+    if (state.mode === 'build' && isAdmin && (selectedWalls.size > 0 || selectedPortals.size > 0 || selectedStairs.size > 0)) {
       pushUndo()
       for (const id of selectedWalls) {
         api.deleteWall(id).catch(() => {})
@@ -2792,8 +2865,13 @@ export function renderMap(
         api.deletePortal(state.table.id, id).catch(() => {})
         state.portals = state.portals.filter(p => p.id !== id)
       }
+      for (const id of selectedStairs) {
+        api.deleteStair(id).catch(() => {})
+        state.stairs = state.stairs.filter(s => s.id !== id)
+      }
       selectedWalls.clear()
       selectedPortals.clear()
+      selectedStairs.clear()
       recomputeWalls()
       render()
       return

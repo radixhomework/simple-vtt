@@ -556,20 +556,37 @@ tablesRouter.delete('/stairs/:id', authMiddleware, (req, res) => {
   res.sendStatus(204)
 })
 
-/** Change a stair's destination floor (arrival point keeps its coordinates). */
+/** Edit a stair/teleporter: change destination floor (arrival keeps its
+ *  point unless new coords given — same-floor targets are teleporters and
+ *  legal) and/or move the source/destination points (build mode). */
 tablesRouter.patch('/tables/:id/stairs/:stairId', authMiddleware, (req, res) => {
   if (!requireMapDM(req, res)) return
-  const { to_floor } = req.body as { to_floor: string }
+  const b = req.body as Record<string, unknown>
   const stair = db.prepare('SELECT id, table_id, from_floor, from_x, from_y, to_floor, to_x, to_y, radius FROM stairs WHERE id=? AND table_id=?')
     .get(req.params.stairId, req.params.id) as Record<string, unknown> | undefined
   if (!stair) { res.status(404).json({ error: 'not found' }); return }
-  const floors = floorsOf(req.params.id)
-  const target = floors.find(f => f.id === to_floor)
-  if (!target || to_floor === stair.from_floor) {
-    res.status(400).json({ error: 'destination must be a different floor of this table' })
-    return
+
+  let { to_floor, to_x, to_y } = stair
+  if (b.to_floor !== undefined) {
+    const target = floorsOf(req.params.id).find(f => f.id === b.to_floor)
+    if (!target) { res.status(400).json({ error: 'destination must be a floor of this table' }); return }
+    to_floor = target.id as string
+    // Same-floor destination = teleporter (legal). Arrival defaults to the
+    // source point; explicit to_x/to_y override it.
+    if (to_x === undefined || b.to_x === undefined) to_x = b.to_x !== undefined ? Number(b.to_x) : stair.from_x
+    if (to_y === undefined || b.to_y !== undefined) to_y = b.to_y !== undefined ? Number(b.to_y) : stair.from_y
   }
-  db.prepare('UPDATE stairs SET to_floor=?, to_x=from_x, to_y=from_y WHERE id=?').run(to_floor, req.params.stairId)
+  const from_x = b.from_x !== undefined ? Number(b.from_x) : stair.from_x
+  const from_y = b.from_y !== undefined ? Number(b.from_y) : stair.from_y
+  if (b.to_x !== undefined) to_x = Number(b.to_x)
+  if (b.to_y !== undefined) to_y = Number(b.to_y)
+  if (![from_x, from_y, to_x, to_y].every(Number.isFinite)) {
+    res.status(400).json({ error: 'finite coordinates required' }); return
+  }
+
+  db.prepare('UPDATE stairs SET from_x=?, from_y=?, to_floor=?, to_x=?, to_y=? WHERE id=?')
+    .run(from_x, from_y, to_floor, to_x, to_y, req.params.stairId)
+  pushTableStateToTable(req.params.id)
   const fresh = db.prepare('SELECT id, table_id, from_floor, from_x, from_y, to_floor, to_x, to_y, radius FROM stairs WHERE id=?')
     .get(req.params.stairId)
   res.json(fresh)
