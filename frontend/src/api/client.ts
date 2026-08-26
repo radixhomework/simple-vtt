@@ -143,6 +143,12 @@ export const api = {
     request<{ moved: number }>('PATCH', `/tables/${tableId}/walls/move`, { ids, dx, dy }),
   deleteWall: (wallId: string) => request<void>('DELETE', `/walls/${wallId}`),
 
+  // Portals (build mode placement)
+  createPortal: (tableId: string, p: { floor_id: string; x1: number; y1: number; x2: number; y2: number; kind: 'door' | 'window'; closed?: boolean }) =>
+    request<Portal>('POST', `/tables/${tableId}/portals`, p),
+  deletePortal: (tableId: string, portalId: string) =>
+    request<void>('DELETE', `/tables/${tableId}/portals/${portalId}`),
+
   // Assets (shared image + audio library, deduplicated server-side)
   listAssets: (kind: 'image' | 'audio') => request<Asset[]>('GET', `/assets?kind=${kind}`),
   deleteAsset: (id: string) => request<void>('DELETE', `/assets/${id}`),

@@ -129,3 +129,51 @@ export function drawWallGhost(ctx: CanvasRenderingContext2D, ax: number, ay: num
   ctx.stroke()
   ctx.restore()
 }
+
+/** Portal record view for build tools (subset of Portal). */
+export interface PortalLike {
+  id: string
+  x1: number
+  y1: number
+  x2: number
+  y2: number
+  kind: 'door' | 'window'
+  closed: boolean
+}
+
+/** Portal whose segment is within `tol` world px of (x, y). */
+export function pickPortalBuild(portals: PortalLike[], x: number, y: number, tol: number): PortalLike | null {
+  let best: PortalLike | null = null
+  let bestD = tol
+  for (const p of portals) {
+    const d = distToSegment(x, y, p.x1, p.y1, p.x2, p.y2)
+    if (d <= bestD) { best = p; bestD = d }
+  }
+  return best
+}
+
+/** Build-mode portals overlay: every portal, thicker and brighter than the
+ *  play-mode rendering, through fog — editing handles. */
+export function drawPortalsBuild(ctx: CanvasRenderingContext2D, portals: PortalLike[], cam: Camera): void {
+  ctx.save()
+  ctx.lineCap = 'round'
+  for (const p of portals) {
+    const [sx1, sy1] = worldToScreen(p.x1, p.y1, cam)
+    const [sx2, sy2] = worldToScreen(p.x2, p.y2, cam)
+    ctx.beginPath()
+    ctx.moveTo(sx1, sy1)
+    ctx.lineTo(sx2, sy2)
+    ctx.strokeStyle = p.kind === 'window' ? '#4fc3f7' : '#ffb74d'
+    ctx.lineWidth = p.closed ? 6 : 4
+    ctx.globalAlpha = 0.95
+    ctx.stroke()
+    if (!p.closed) {
+      // open door: gap marker
+      ctx.beginPath()
+      ctx.arc((sx1 + sx2) / 2, (sy1 + sy2) / 2, 3, 0, Math.PI * 2)
+      ctx.fillStyle = '#ffd54f'
+      ctx.fill()
+    }
+  }
+  ctx.restore()
+}

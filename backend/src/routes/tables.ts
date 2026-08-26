@@ -507,6 +507,8 @@ tablesRouter.put('/floors/:id', authMiddleware, (req, res) => {
   }
   db.prepare('UPDATE floors SET name=?, grid_size=?, map_offset_x=?, map_offset_y=? WHERE id=?')
     .run(merged.name, merged.grid_size, merged.map_offset_x, merged.map_offset_y, floor.id)
+  // Grid/offset changes affect every client's rendering — resync them.
+  pushTableStateToTable(floor.table_id)
   res.json(getFloor(floor.id))
 })
 
