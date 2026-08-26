@@ -100,6 +100,12 @@ export function floorLabel(f: { level: number; name: string }): string {
   return f.name ? `#${f.level} ${f.name}` : `Floor ${f.level}`
 }
 
+/** Toolbar action button (non-tool: place prop, ⋯ more) styled exactly
+ *  like a .tool-btn; `armed` highlights a pending interaction. */
+function actionBtn(action: string, label: string, title: string, armed = false): string {
+  return `<button class="tool-btn${armed ? ' active' : ''}" data-action="${action}" title="${title}">${label}</button>`
+}
+
 export function renderMap(
   root: HTMLElement,
   user: User,
@@ -1464,6 +1470,17 @@ export function renderMap(
   /** Render the toolbar for the active mode. Build tools only exist in
    *  build mode; play tools only in play mode — they never share a
    *  toolbar or a gesture. */
+  // ── Props interaction state (declared early: renderToolbar reads it at init) ──
+  /** Currently selected prop (DM only). */
+  let selectedProp: Prop | null = null
+  /** What a prop drag is doing right now. */
+  let propDrag: 'none' | 'move' | 'rotate' | 'resize' | 'place' = 'none'
+  /** Asset chosen in the library, awaiting a placement click. */
+  let pendingPropAsset: { path: string; name: string } | null = null
+  /** Drag bookkeeping (world px). */
+  let propDragStart = { x: 0, y: 0 }
+  let propGeometryStart = { x: 0, y: 0, size: 70, rotation: 0 }
+
   function toolBtn(tool: ToolType, label: string, title: string): string {
     const active = state.tool === tool ? ' active' : ''
     return `<button class="tool-btn${active}" data-tool="${tool}" title="${title}">${label}</button>`
@@ -1479,7 +1496,7 @@ export function renderMap(
       toolBtn('square', '▭', 'Measure Square (Q)'),
       toolBtn('cone', '◤', 'Measure Cone (N)'),
     ]
-    if (isAdmin) play.push(sep, toolBtn('fog-reveal', '👁', 'Reveal Fog (R)'), toolBtn('fog-erase', '🌑', 'Erase Revealed (E)'), sep, `<button data-action="add-prop" title="Place a prop (tree, furniture…)">🌳</button>`)
+    if (isAdmin) play.push(sep, toolBtn('fog-reveal', '👁', 'Reveal Fog (R)'), toolBtn('fog-erase', '🌑', 'Erase Revealed (E)'), sep, actionBtn('add-prop', '🌳', 'Place a prop (tree, furniture…)', !!pendingPropAsset))
     const build = [
       toolBtn('wall-select', '⬚', 'Select/Move Walls (W)'),
       toolBtn('wall', '╱', 'Draw Wall (D)'),
@@ -1493,7 +1510,7 @@ export function renderMap(
       sep,
       toolBtn('grid-setup', '▦', 'Grid Setup (G)'),
       sep,
-      `<button data-action="add-prop" title="Place a prop (tree, furniture…)">🌳</button>`,
+      actionBtn('add-prop', '🌳', 'Place a prop (tree, furniture…)', !!pendingPropAsset),
     ]
     group.innerHTML = (state.mode === 'build' ? build : play).join('')
     group.querySelectorAll('[data-tool]').forEach(btn => {
@@ -1535,17 +1552,17 @@ export function renderMap(
       sep,
       toolBtn('grid-setup', '▦', 'Grid Setup'),
       sep,
-      `<button data-action="add-prop" title="Place a prop (tree, furniture…)">🌳</button>`,
+      actionBtn('add-prop', '🌳', 'Place a prop (tree, furniture…)', !!pendingPropAsset),
     ]
     const gmExtras = state.mode === 'build' ? [] : [
       sep,
       toolBtn('fog-reveal', '👁', 'Reveal Fog'),
       toolBtn('fog-erase', '🌑', 'Erase Revealed'),
       sep,
-      `<button data-action="add-prop" title="Place a prop (tree, furniture…)">🌳</button>`,
+      actionBtn('add-prop', '🌳', 'Place a prop (tree, furniture…)', !!pendingPropAsset),
     ]
     dock.innerHTML = (state.mode === 'build' ? build : [...play, ...gmExtras]).join('')
-      + sep + `<button data-action="more" title="More tools">⋯</button>`
+      + sep + actionBtn('more', '⋯', 'More tools')
     dock.querySelectorAll('[data-tool]').forEach(btn => {
       btn.addEventListener('click', () => {
         state.tool = (btn as HTMLElement).dataset.tool as ToolType
@@ -2431,16 +2448,6 @@ export function renderMap(
 
   // ── Props (decorative assets) — DM-editable in BOTH modes ───────────────────
 
-  /** Currently selected prop (DM only). */
-  let selectedProp: Prop | null = null
-  /** What a prop drag is doing right now. */
-  let propDrag: 'none' | 'move' | 'rotate' | 'resize' | 'place' = 'none'
-  /** Asset chosen in the library, awaiting a placement click. */
-  let pendingPropAsset: { path: string; name: string } | null = null
-  /** Drag bookkeeping (world px). */
-  let propDragStart = { x: 0, y: 0 }
-  let propGeometryStart = { x: 0, y: 0, size: 70, rotation: 0 }
-
   /** Open the image library to pick a prop asset; next canvas click places it. */
   function openPropPicker() {
     api.listAssets('image')
@@ -2448,10 +2455,11 @@ export function renderMap(
         if (assets.length === 0) { showNotif('Upload images first (Assets page)'); return }
         const picker = document.createElement('div')
         picker.id = 'prop-picker'
-        picker.style.cssText = 'position:absolute;top:64px;left:16px;z-index:60;background:var(--bg-card,#232622);border:1px solid var(--border,#3a3d36);border-radius:10px;padding:12px;max-width:300px;max-height:50vh;overflow:auto;font-size:13px;color:var(--text,#e8e4d8)'
+        // Light parchment panel matching the app chrome (was dark-theme)
+        picker.style.cssText = 'position:absolute;top:64px;left:16px;z-index:60;background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:12px;max-width:300px;max-height:50vh;overflow:auto;font-size:13px;color:var(--text);box-shadow:0 4px 16px rgba(30,33,28,0.25)'
         picker.innerHTML = `<div style="font-weight:600;margin-bottom:8px">🌳 Place a prop</div>` +
-          assets.map((a, i) => `<div data-i="${i}" style="display:flex;align-items:center;gap:8px;padding:4px;cursor:pointer;border-radius:6px"><img src="${a.path}" style="width:32px;height:32px;object-fit:contain"><span>${a.name}</span></div>`).join('') +
-          `<button id="prop-picker-close" style="width:100%;margin-top:8px;padding:5px">Cancel</button>`
+          assets.map((a, i) => `<div data-i="${i}" style="display:flex;align-items:center;gap:8px;padding:4px 6px;cursor:pointer;border-radius:6px"><img src="${a.path}" style="width:32px;height:32px;object-fit:contain"><span>${a.name}</span></div>`).join('') +
+          `<button class="header-btn" id="prop-picker-close" style="width:100%;margin-top:8px">Cancel</button>`
         wrap.appendChild(picker)
         picker.querySelectorAll('[data-i]').forEach(el => {
           el.addEventListener('click', () => {
@@ -2459,6 +2467,7 @@ export function renderMap(
             pendingPropAsset = { path: a.path, name: a.name }
             picker.remove()
             showNotif(`Click the map to place ${a.name}`)
+            renderToolbar()
           })
         })
         picker.querySelector('#prop-picker-close')?.addEventListener('click', () => picker.remove())
@@ -2480,6 +2489,7 @@ export function renderMap(
     })
       .then(p => {
         pendingPropAsset = null
+        renderToolbar()
         selectedProp = p
         showNotif(`${p.name} placed`)
         refreshProps()
@@ -3501,6 +3511,7 @@ export function renderMap(
     state.marquee = null
     selectedProp = null
     pendingPropAsset = null
+    renderToolbar()
     selectedWalls.clear()
     selectedPortals.clear()
     selectedStairs.clear()
