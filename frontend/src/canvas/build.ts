@@ -164,8 +164,14 @@ export function pickPortalGrab<T extends PortalLike>(portals: T[], x: number, y:
     if (Math.hypot(x - p.x1, y - p.y1) <= tol) return { portal: p, grab: 'a' }
     if (Math.hypot(x - p.x2, y - p.y2) <= tol) return { portal: p, grab: 'b' }
   }
-  const hit = pickPortalBuild(portals, x, y, tol)
-  return hit ? { portal: hit, grab: 'body' } : null
+  // Body fallback: re-find within the generic list (pickPortalBuild loses T)
+  let best: T | null = null
+  let bestD = tol
+  for (const p of portals) {
+    const d = distToSegment(x, y, p.x1, p.y1, p.x2, p.y2)
+    if (d <= bestD) { best = p; bestD = d }
+  }
+  return best ? { portal: best, grab: 'body' } : null
 }
 
 /** Portals whose segment intersects the world rect (marquee). */
