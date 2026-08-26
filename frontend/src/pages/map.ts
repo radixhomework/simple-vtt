@@ -1982,23 +1982,29 @@ export function renderMap(
       return
     }
     playModeToolKeys(key)
-    if (e.key === 'Escape') {
-      if (state.zen) exitZen()
+    if (e.key === 'Escape') handleEscapeKey()
+    if (e.key === 'Delete' && state.selectedId && isAdmin) handleDeleteKey()
+  }
+
+  /** Escape: exit zen, deselect, cancel measuring (shared broadcast). */
+  function handleEscapeKey(): void {
+    if (state.zen) exitZen()
+    state.selectedId = null
+    state.measure.active = false
+    if (state.shareMeasure) socket.send('measure_update', { measure: null, floor_id: state.floor?.id })
+    refreshSidebar(); renderTokenEditor(); render()
+  }
+
+  /** Delete: remove the selected token (admin, with confirm). */
+  function handleDeleteKey(): void {
+    const token = state.tokens.find(t => t.id === state.selectedId)
+    if (token && confirm(`Delete ${token.name}?`)) {
+      api.deleteToken(state.table.id, token.id)
+      socket.send('token_delete', { token_id: token.id })
+      state.tokens = state.tokens.filter(t => t.id !== token.id)
       state.selectedId = null
-      state.measure.active = false
-      if (state.shareMeasure) socket.send('measure_update', { measure: null, floor_id: state.floor?.id })
+      markExploredDirty()
       refreshSidebar(); renderTokenEditor(); render()
-    }
-    if (e.key === 'Delete' && state.selectedId && isAdmin) {
-      const token = state.tokens.find(t => t.id === state.selectedId)
-      if (token && confirm(`Delete ${token.name}?`)) {
-        api.deleteToken(state.table.id, token.id)
-        socket.send('token_delete', { token_id: token.id })
-        state.tokens = state.tokens.filter(t => t.id !== token.id)
-        state.selectedId = null
-        markExploredDirty()
-        refreshSidebar(); renderTokenEditor(); render()
-      }
     }
   }
   document.addEventListener('keydown', onKeydown)
