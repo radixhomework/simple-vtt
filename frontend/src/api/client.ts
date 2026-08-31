@@ -22,7 +22,13 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
     throw new Error(`${method} ${path}: ${res.status} ${text}`)
   }
   if (res.status === 204) return undefined as T
-  return res.json()
+  // Validate the shape before handing data to the app: only JSON objects,
+  // arrays and numbers may flow into rendering code (XSS safety, S5696)
+  const data: unknown = await res.json()
+  if (typeof data !== 'object' && typeof data !== 'number') {
+    throw new Error(`${method} ${path}: unexpected response shape`)
+  }
+  return data as T
 }
 
 export const api = {

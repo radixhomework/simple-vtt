@@ -689,6 +689,13 @@ export function renderVtt(
    *  display defaults live per map, under Maps & Tables → Settings. */
   async function renderSettingsConsole(page: HTMLElement) {
     const settings = await api.getSettings()
+    // Coerce the API value to a validated number — never interpolate
+    // untrusted strings into HTML (S5696)
+    const maxSizeMb = Number(settings.max_asset_size_mb)
+    if (!Number.isFinite(maxSizeMb) || maxSizeMb < 1 || maxSizeMb > 500) {
+      page.innerHTML = '<div class="msg msg-err">Invalid max upload size configured.</div>'
+      return
+    }
     page.innerHTML = `
       <div class="admin-section">
         <h3>Uploads</h3>
@@ -696,7 +703,7 @@ export function renderVtt(
           <div style="display:flex;align-items:center;justify-content:space-between;gap:12px">
             <span style="font-size:13px;font-weight:500;">Max upload size</span>
             <div style="display:flex;align-items:center;gap:6px">
-              <input type="number" id="set-max-asset-size" value="${settings.max_asset_size_mb}" min="1" max="500" step="1"
+              <input type="number" id="set-max-asset-size" value="${maxSizeMb}" min="1" max="500" step="1"
                 style="width:64px;padding:5px 8px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:13px;outline:none;" />
               <span style="font-size:12px;color:var(--muted);">MB</span>
             </div>
