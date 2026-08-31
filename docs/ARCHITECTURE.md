@@ -1,4 +1,4 @@
-# Architecture Notes — RHW Simple VTT
+# Architecture Notes — Simple VTT
 
 How the codebase fits together, for contributors (and the AI agents that
 help them). User-facing guides: [`ADMIN_GUIDE.md`](ADMIN_GUIDE.md) ·

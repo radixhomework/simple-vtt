@@ -1,4 +1,4 @@
-# Player Guide — RHW Simple VTT
+# Player Guide — Simple VTT
 
 Welcome! This guide covers everything a **player** can do. Your game master
 (admin) controls the maps, fog of war and monsters — you just play.

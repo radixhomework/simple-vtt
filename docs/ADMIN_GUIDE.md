@@ -1,4 +1,4 @@
-# Admin Guide — RHW Simple VTT
+# Admin Guide — Simple VTT
 
 This guide covers the **admin** role: the admin console, map-side GM tools
 and operational notes. Deployment instructions live in

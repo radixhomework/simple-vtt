@@ -1,7 +1,7 @@
 # UVTT Props Extension
 
 **Status:** extension to the Universal VTT (`.uvtt` / `.dd2vtt`) format
-**Implemented by:** RHW Simple VTT (import + export)
+**Implemented by:** Simple VTT (import + export)
 
 The standard UVTT format carries a map image, grid resolution, walls
 (`line_of_sight`) and portals (doors/windows). It has **no concept of

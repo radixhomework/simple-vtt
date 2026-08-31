@@ -32,8 +32,6 @@ export const api = {
 
   me: () => request<User>('GET', '/me'),
 
-  getVersion: () => request<{ version: string; name: string }>('GET', '/version'),
-
   changePassword: (currentPassword: string, newPassword: string) =>
     request<{ ok: boolean }>('POST', '/auth/password', { current_password: currentPassword, new_password: newPassword }),
 
@@ -168,7 +166,10 @@ export const api = {
 
   // Assets (shared image + audio library, deduplicated server-side)
   listAssets: (kind: 'image' | 'audio') => request<Asset[]>('GET', `/assets?kind=${kind}`),
-  deleteAsset: (id: string) => request<void>('DELETE', `/assets/${id}`),
+  deleteAsset: (id: string, force = false) =>
+    request<void>('DELETE', `/assets/${id}${force ? '?force=1' : ''}`),
+  deleteAssetFolder: (folder: string) =>
+    request<{ deleted: number }>('DELETE', `/assets-folder/${encodeURIComponent(folder)}`),
   updateAsset: (id: string, data: { folder?: string; name?: string }) => request<Asset>('PUT', `/assets/${id}`, data),
 
   async uploadAsset(file: File, kind: 'image' | 'audio'): Promise<Asset> {

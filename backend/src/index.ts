@@ -66,15 +66,6 @@ app.use('/api', wallsRouter)
 app.use('/api', propsRouter)
 app.use('/api', assetsRouter)
 
-// Version information (backend package.json; the frontend ships its own)
-const pkg = (() => {
-  try { return JSON.parse(fs.readFileSync(path.join(process.cwd(), 'package.json'), 'utf8')) as { version?: string } }
-  catch { return {} }
-})()
-app.get('/api/version', (_req, res) => {
-  res.json({ version: pkg.version ?? '0.0.0', name: 'RHW Simple VTT' })
-})
-
 // Unknown API paths must return JSON 404, not the SPA fallback below
 app.use('/api', (_req, res) => { res.status(404).json({ error: 'not found' }) })
 
@@ -108,5 +99,5 @@ setupWebSocket(wss)
 
 const port = parseInt(process.env.PORT || '8080', 10)
 server.listen(port, () => {
-  console.log(`RHW Simple VTT listening on :${port}`)
+  console.log(`Simple VTT listening on :${port}`)
 })

@@ -47,10 +47,11 @@ const uploadsDir = () => process.env.UPLOADS_DIR || path.join(process.cwd(), 'up
 assetsRouter.get('/assets', authMiddleware, (req, res) => {
   const kind = req.query.kind
   if (kind !== 'image' && kind !== 'audio') { res.status(400).json({ error: 'kind must be image or audio' }); return }
-  res.json(db.prepare('SELECT id, kind, name, path, size, folder FROM assets WHERE kind=? ORDER BY folder, rowid').all(kind))
+  res.json(db.prepare('SELECT id, kind, name, path, size, folder FROM assets WHERE kind=? ORDER BY folder COLLATE NOCASE, name COLLATE NOCASE, rowid').all(kind))
 })
 
 assetsRouter.post('/assets', authMiddleware, adminOnly, assetUpload, (req, res) => {
+  try {
   if (!req.file) { res.status(400).json({ error: 'no file' }); return }
   const kind = req.body.kind
   if (kind !== 'image' && kind !== 'audio') { res.status(400).json({ error: 'kind must be image or audio' }); return }
@@ -60,8 +61,18 @@ assetsRouter.post('/assets', authMiddleware, adminOnly, assetUpload, (req, res) 
   if (!extOk) { res.status(400).json({ error: `unsupported ${kind} type` }); return }
   const folder = String(req.body.folder ?? '').slice(0, 100)
 
-  // Deduplicate on content: the same file is stored once, whatever its name
-  const hash = crypto.createHash('sha256').update(req.file.buffer).digest('hex')
+  // Duplicate detection keys on folder + original file name (not content):
+  // re-uploading the same path replaces the entry instead of reporting a
+  // duplicate. Content is still deduplicated on disk by hashing the bytes.
+  const contentHash = crypto.createHash('sha256').update(req.file.buffer).digest('hex')
+  const folderForHash = String(req.body.folder ?? '').slice(0, 100)
+  const hash = crypto.createHash('sha256')
+    .update(contentHash)
+    .update('\u0000')
+    .update(folderForHash)
+    .update('\u0000')
+    .update(original)
+    .digest('hex')
   const existing = db.prepare('SELECT id, kind, name, path, size, folder FROM assets WHERE kind=? AND hash=?')
     .get(kind, hash) as { id: string; kind: string; name: string; path: string; size: number; folder: string } | undefined
   if (existing) {
@@ -70,11 +81,12 @@ assetsRouter.post('/assets', authMiddleware, adminOnly, assetUpload, (req, res) 
   }
 
   const id = newId()
-  const filename = `asset_${id}${ext}`
+  const storedName = `asset_${contentHash.slice(0, 24)}${ext}`
   fs.mkdirSync(uploadsDir(), { recursive: true })
-  fs.writeFileSync(path.join(uploadsDir(), filename), req.file.buffer)
+  const diskPath = path.join(uploadsDir(), storedName)
+  if (!fs.existsSync(diskPath)) fs.writeFileSync(diskPath, req.file.buffer)
   const name = path.basename(original, ext)
-  const url = `/uploads/${filename}`
+  const url = `/uploads/${storedName}`
   db.prepare('INSERT INTO assets (id, kind, name, hash, path, size, folder) VALUES (?,?,?,?,?,?,?)')
     .run(id, kind, name, hash, url, req.file.size, folder)
 
@@ -82,6 +94,11 @@ assetsRouter.post('/assets', authMiddleware, adminOnly, assetUpload, (req, res) 
   if (kind === 'audio') musicLibraryChanged()
 
   res.status(201).json({ id, kind, name, path: url, size: req.file.size, folder })
+  } catch (e: unknown) {
+    // Log server-side: upload failures used to be silent here
+    console.error('[assets] upload failed:', e)
+    res.status(500).json({ error: e instanceof Error ? e.message : 'upload failed' })
+  }
 })
 
 /** Move an asset to another folder (empty string = root). */
@@ -123,18 +140,51 @@ assetsRouter.delete('/assets/:id', authMiddleware, adminOnly, (req, res) => {
     { id: string; kind: string; path: string } | undefined
   if (!row) { res.status(404).json({ error: 'not found' }); return }
 
-  // Images still referenced by a token cannot be removed
+  // Images referenced by tokens: refuse unless force=1, which unreferences
+  // them (tokens fall back to their color+initials) instead of refusing
+  const force = req.query.force === '1'
   if (row.kind === 'image') {
     const inUse = db.prepare('SELECT COUNT(*) AS n FROM tokens WHERE icon_path=?').get(row.path) as { n: number }
-    if (inUse.n > 0) { res.status(409).json({ error: 'image is used by a token' }); return }
+    if (inUse.n > 0 && !force) { res.status(409).json({ error: 'image is used by a token' }); return }
+    if (inUse.n > 0) {
+      db.prepare('UPDATE tokens SET icon_path=\'\' WHERE icon_path=?').run(row.path)
+    }
   }
 
   db.prepare('DELETE FROM assets WHERE id=?').run(req.params.id)
-  // best-effort file removal
-  fs.unlink(path.join(uploadsDir(), path.basename(row.path)), () => {})
+  // Best-effort file removal: other asset rows may share the same
+  // content-addressed file, so only unlink it when nothing references it
+  const shared = db.prepare('SELECT COUNT(*) AS n FROM assets WHERE path=?').get(row.path) as { n: number }
+  if (shared.n === 0) fs.unlink(path.join(uploadsDir(), path.basename(row.path)), () => {})
 
   // Audio: rebuild every table's music queue (stops playback if current)
   if (row.kind === 'audio') musicLibraryChanged()
 
   res.sendStatus(204)
+})
+
+/** Delete an entire folder (empty string is not deletable — it is the root). */
+assetsRouter.delete('/assets-folder/:folder', authMiddleware, adminOnly, (req, res) => {
+  const folder = req.params.folder
+  if (!folder) { res.status(400).json({ error: 'cannot delete the root' }); return }
+  const rows = db.prepare('SELECT id, kind, path FROM assets WHERE folder=?').all(folder) as
+    Array<{ id: string; kind: string; path: string }>
+  if (rows.length === 0) { res.status(404).json({ error: 'folder not found' }); return }
+
+  const unlinkIfUnshared = (pathUrl: string) => {
+    const shared = db.prepare('SELECT COUNT(*) AS n FROM assets WHERE path=?').get(pathUrl) as { n: number }
+    if (shared.n === 0) fs.unlink(path.join(uploadsDir(), path.basename(pathUrl)), () => {})
+  }
+
+  db.transaction(() => {
+    for (const row of rows) {
+      db.prepare('DELETE FROM assets WHERE id=?').run(row.id)
+      unlinkIfUnshared(row.path)
+    }
+  })()
+
+  // Rebuild music queues when music was removed
+  if (rows.some(r => r.kind === 'audio')) musicLibraryChanged()
+
+  res.json({ deleted: rows.length })
 })

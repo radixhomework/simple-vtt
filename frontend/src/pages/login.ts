@@ -14,11 +14,10 @@ export function renderLogin(root: HTMLElement, onLogin: (user: User) => void) {
         padding: 40px 48px; width: 360px; box-shadow: 0 8px 32px rgba(30,33,28,0.25);
       }
       .login-logo {
-        display: flex; align-items: center; gap: 12px;
-        font-family: var(--font-title); font-size: 25px; font-weight: 700;
-        color: var(--text); margin-bottom: 32px;
+        display: flex; align-items: center; justify-content: center;
+        gap: 12px; margin-bottom: 32px;
       }
-      .login-logo svg { flex-shrink: 0; }
+      .login-logo img { flex-shrink: 0; display: block; }
       .login-field { margin-bottom: 16px; }
       .login-field label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.05em; }
       .login-field input {
@@ -39,12 +38,7 @@ export function renderLogin(root: HTMLElement, onLogin: (user: User) => void) {
     <div class="login-wrap">
       <div class="login-box">
         <div class="login-logo">
-          <svg width="32" height="32" viewBox="0 0 64 64" fill="none">
-            <rect width="64" height="64" rx="8" fill="#1E211C"/>
-            <polygon points="32,8 56,48 8,48" stroke="#9A7656" stroke-width="3" fill="none"/>
-            <circle cx="32" cy="32" r="6" fill="#9A7656"/>
-          </svg>
-          RHW Simple VTT
+          <img src="/wordmark.png" alt="Simple VTT" style="max-width:240px;height:auto;object-fit:contain" />
         </div>
         <form id="login-form">
           <div class="login-field">

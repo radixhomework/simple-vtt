@@ -114,12 +114,8 @@ export function renderVtt(
       <div class="lobby">
         <div class="lobby-header">
           <div class="lobby-title">
-            <svg width="28" height="28" viewBox="0 0 64 64" fill="none">
-              <rect width="64" height="64" rx="8" fill="#1E211C"/>
-              <polygon points="32,8 56,48 8,48" stroke="#9A7656" stroke-width="3" fill="none"/>
-              <circle cx="32" cy="32" r="6" fill="#9A7656"/>
-            </svg>
-            RHW Simple VTT
+            <img src="/logo.png" alt="Simple VTT logo" style="height:32px;width:auto;object-fit:contain" />
+            Simple VTT
           </div>
           <div class="lobby-user">
             <span>${esc(user.username)}</span>
@@ -155,8 +151,7 @@ export function renderVtt(
             ${isAdmin ? `
             <button class="admin-tab" data-page="users">👥 Users</button>
             <button class="admin-tab" data-page="assets">📦 Assets</button>
-            <button class="admin-tab" data-page="settings">⚙ Settings</button>
-            <span id="version-info" style="margin-left:auto;align-self:center;font-size:11px;color:var(--muted)"></span>` : ''}
+            <button class="admin-tab" data-page="settings">⚙ Settings</button>` : ''}
           </div>
           <div id="admin-page"></div>
           </div>
@@ -190,16 +185,6 @@ export function renderVtt(
         msg.className = 'msg msg-err'
       }
     })
-
-    // Version line (admin): frontend (build-time) + backend (API)
-    if (isAdmin) {
-      api.getVersion()
-        .then(v => {
-          const el = root.querySelector('#version-info')
-          if (el) el.textContent = `frontend v${__APP_VERSION__} · backend v${v.version}`
-        })
-        .catch(() => {})
-    }
 
     // Console tabs (users only see Maps & Tables)
     root.querySelectorAll('[data-page]').forEach(btn => {
@@ -753,6 +738,7 @@ export function renderVtt(
     ])
     const all = [...images, ...audios]
     const folders = [...new Set(all.map(a => a.folder).filter(Boolean))].sort()
+    const totalSize = all.reduce((sum, a) => sum + (a.size || 0), 0)
 
     const folderSelect = (a: Asset) => `
       <select data-folder="${esc(a.id)}">
@@ -764,7 +750,7 @@ export function renderVtt(
       const list = kind === 'image' ? images : audios
       if (list.length === 0) return '<div class="empty-state">Nothing uploaded yet.</div>'
       const groups = new Map<string, Asset[]>()
-      for (const a of list) {
+      for (const a of [...list].sort((x, y) => x.name.localeCompare(y.name, undefined, { sensitivity: 'base' }))) {
         if (!groups.has(a.folder)) groups.set(a.folder, [])
         groups.get(a.folder)!.push(a)
       }
@@ -772,8 +758,11 @@ export function renderVtt(
       for (const folder of [...groups.keys()].sort((a, b) => a.localeCompare(b))) {
         const key = `${kind}:${folder}`
         const open = expandedFolders.has(key)
+        const delBtn = folder === ''
+          ? ''
+          : `<button class="btn btn-danger btn-sm" data-del-folder="${esc(folder)}" style="margin-left:10px">Delete folder</button>`
         rows.push(`<tr class="folder-head" data-fold="${esc(key)}">
-          <td colspan="4" style="color:var(--brand);font-weight:600;border-bottom:1px solid var(--border)"><span class="fold-arrow">${open ? '▾' : '▸'}</span>📁 ${folder === '' ? 'Root' : esc(folder)} (${groups.get(folder)!.length})</td>
+          <td colspan="4" style="color:var(--brand);font-weight:600;border-bottom:1px solid var(--border)"><span class="fold-arrow">${open ? '▾' : '▸'}</span>📁 ${folder === '' ? 'Root' : esc(folder)} (${groups.get(folder)!.length})${delBtn}</td>
         </tr>`)
         for (const a of groups.get(folder)!) {
           rows.push(`
@@ -819,8 +808,10 @@ export function renderVtt(
         <div class="msg" id="asset-msg"></div>
       </div>
 
+      <div class="msg" style="margin-bottom:12px">Library total: <strong>${formatSize(totalSize)}</strong> across ${all.length} assets</div>
+
       <div class="admin-section">
-        <h3>Token Images (${images.length})</h3>
+        <h3>Token Images (${images.length} · ${formatSize(images.reduce((sum, a) => sum + (a.size || 0), 0))})</h3>
         <table class="data-table">
           <thead><tr><th>Name</th><th>Size</th><th>Folder</th><th></th></tr></thead>
           <tbody>${assetRows('image')}</tbody>
@@ -828,7 +819,7 @@ export function renderVtt(
       </div>
 
       <div class="admin-section">
-        <h3>Music (${audios.length})</h3>
+        <h3>Music (${audios.length} · ${formatSize(audios.reduce((sum, a) => sum + (a.size || 0), 0))})</h3>
         <table class="data-table">
           <thead><tr><th>Name</th><th>Size</th><th>Folder</th><th></th></tr></thead>
           <tbody>${assetRows('audio')}</tbody>
@@ -864,13 +855,16 @@ export function renderVtt(
           if (folder && asset.folder !== folder) await api.updateAsset(asset.id, { folder })
           if (asset.existing) duplicates++; else uploaded++
         } catch (e: any) {
+          // Log to the browser console so latecomers can inspect failures
+          console.error(`[assets] upload failed: ${file.name}`, e)
           errors.push(`${file.name}: ${e.message || 'failed'}`)
         }
       }
+      // Persist the summary until the next upload: no auto-clear to miss
       const summary = [uploaded > 0 ? `${uploaded} uploaded` : '', duplicates > 0 ? `${duplicates} duplicate${duplicates > 1 ? 's' : ''} skipped` : '', errors.length > 0 ? `${errors.length} failed` : ''].filter(Boolean).join(' · ')
       msg.textContent = summary || 'Nothing to upload'
       msg.className = errors.length > 0 ? 'msg msg-err' : 'msg msg-ok'
-      if (errors.length > 0) msg.title = errors.join('\n')
+      if (errors.length > 0) msg.title = errors.join('\n') + '\n(see browser console for details)'
       if (uploaded > 0 || duplicates > 0) setTimeout(refresh, 500)
     })
 
@@ -880,6 +874,53 @@ export function renderVtt(
         const folder = (el as HTMLSelectElement).value
         try {
           await api.updateAsset(id, { folder })
+          refresh()
+        } catch (e: any) {
+          msg.textContent = e.message; msg.className = 'msg msg-err'
+        }
+      })
+    })
+
+    // Asset search: filter rows live. A folder header stays visible when
+    // the folder name or any contained asset matches; matching folders
+    // unfold so their hits are visible.
+    const searchInput = page.querySelector('#asset-search') as HTMLInputElement | null
+    searchInput?.addEventListener('input', () => {
+      const q = searchInput.value.trim().toLowerCase()
+      const table = page.querySelector('table.data-table')
+      if (!table) return
+      table.querySelectorAll('tbody').forEach(tbody => {
+        const folderState = new Map<string, boolean>()
+        tbody.querySelectorAll('tr.folder-row').forEach(row => {
+          const key = (row as HTMLElement).dataset.group!
+          const text = row.textContent!.toLowerCase()
+          const match = q === '' || text.includes(q)
+          ;(row as HTMLElement).hidden = q !== '' ? !match : !expandedFolders.has(key)
+          if (match && q !== '') folderState.set(key, true)
+        })
+        tbody.querySelectorAll('tr.folder-head').forEach(head => {
+          const key = (head as HTMLElement).dataset.fold!
+          const kind = key.split(':')[0]
+          const folderName = key.slice(kind.length + 1).toLowerCase()
+          const anyHit = folderState.get(key) === true
+          const folderHit = q !== '' && folderName.includes(q)
+          const visible = q === '' || anyHit || folderHit
+          ;(head as HTMLElement).style.display = visible ? '' : 'none'
+          if (anyHit || folderHit) {
+            tbody.querySelectorAll(`tr.folder-row[data-group="${CSS.escape(key)}"]`).forEach(r => { (r as HTMLElement).hidden = false })
+          }
+        })
+      })
+    })
+
+    page.querySelectorAll('[data-del-folder]').forEach(el => {
+      el.addEventListener('click', async (e) => {
+        e.stopPropagation() // do not toggle the fold
+        const folder = (el as HTMLElement).dataset.delFolder!
+        const count = all.filter(a => a.folder === folder).length
+        if (!confirm(`Delete folder "${folder}" and its ${count} asset${count > 1 ? 's' : ''}? (Token icons are unreferenced, not deleted)`)) return
+        try {
+          await api.deleteAssetFolder(folder)
           refresh()
         } catch (e: any) {
           msg.textContent = e.message; msg.className = 'msg msg-err'
@@ -910,7 +951,20 @@ export function renderVtt(
           await api.deleteAsset(id)
           refresh()
         } catch (e: any) {
-          msg.textContent = e.message || 'Delete failed'; msg.className = 'msg msg-err'
+          if (e.message && e.message.includes('used by a token')) {
+            // Offer force delete: unreferencing is safe (tokens fall back
+            // to their colored circle + initials)
+            if (confirm('This image is used by one or more tokens.\n\nDelete anyway? Tokens will lose this image (they keep their color and initials).')) {
+              try {
+                await api.deleteAsset(id, true)
+                refresh()
+              } catch (e2: any) {
+                msg.textContent = e2.message || 'Delete failed'; msg.className = 'msg msg-err'
+              }
+            }
+          } else {
+            msg.textContent = e.message || 'Delete failed'; msg.className = 'msg msg-err'
+          }
         }
       })
     })

@@ -342,6 +342,7 @@ export function renderMap(
     <div class="game">
       <div class="game-header">
         <div class="game-header-left">
+          <img src="/logo.png" alt="Simple VTT" title="Back to maps" style="height:28px;width:auto;object-fit:contain;flex-shrink:0;cursor:pointer" id="logo-home" />
           <button class="header-btn" id="back-btn">← VTT</button>
           <div class="header-sep hd-desktop-sep"></div>
           <span class="table-name">${esc(table.name)}</span>
@@ -871,6 +872,10 @@ export function renderMap(
   let imageAssets: Asset[] = []
   let imageAssetsLoaded = false
 
+  /** 'Folder/Name' display label, alphabetical. */
+  const assetLabel = (a: Asset) => (a.folder ? `${a.folder}/${a.name}` : a.name)
+  const byLabel = (a: Asset, b: Asset) => assetLabel(a).localeCompare(assetLabel(b), undefined, { sensitivity: 'base' })
+
   function renderTokenEditor() {
     const editorEl = root.querySelector('#token-editor') as HTMLElement
     if (!isAdmin) { editorEl.innerHTML = ''; return }
@@ -908,9 +913,10 @@ export function renderMap(
         </label>
         <div class="field" style="margin-top:8px"><label>Vision Radius (sq)</label><input type="number" id="te-vrad" value="${token.vision_radius}" min="1" max="60" /></div>
         <div class="field"><label>Shared image</label>
-          <select id="te-icon-pick">
+          <input type="text" id="te-icon-search" placeholder="Search (folder/name)…" style="width:100%;padding:6px 9px;margin-bottom:5px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:12px;outline:none" />
+          <select id="te-icon-pick" size="6" style="width:100%">
             <option value="">— none / custom —</option>
-            ${imageAssets.map(a => `<option value="${esc(a.path)}" ${token.icon_path === a.path ? 'selected' : ''}>${esc(a.name)}</option>`).join('')}
+            ${[...imageAssets].sort(byLabel).map(a => `<option value="${esc(a.path)}" ${token.icon_path === a.path ? 'selected' : ''}>${esc(assetLabel(a))}</option>`).join('')}
           </select>
         </div>
         <div class="field"><label>Icon URL / path</label><input type="text" id="te-icon" value="${esc(token.icon_path)}" /></div>
@@ -923,6 +929,17 @@ export function renderMap(
       </div>
     `
 
+    const refreshIconOptions = (q: string) => {
+      const pick = root.querySelector('#te-icon-pick') as HTMLSelectElement | null
+      if (!pick) return
+      const needle = q.trim().toLowerCase()
+      const matches = [...imageAssets].sort(byLabel).filter(a => !needle || assetLabel(a).toLowerCase().includes(needle))
+      pick.innerHTML = `<option value="">— none / custom —</option>` +
+        matches.map(a => `<option value="${esc(a.path)}" ${token.icon_path === a.path ? 'selected' : ''}>${esc(assetLabel(a))}</option>`).join('')
+    }
+    root.querySelector('#te-icon-search')?.addEventListener('input', (e) => {
+      refreshIconOptions((e.target as HTMLInputElement).value)
+    })
     root.querySelector('#te-icon-pick')?.addEventListener('change', (e) => {
       const path = (e.target as HTMLSelectElement).value
       const iconInput = root.querySelector('#te-icon') as HTMLInputElement
@@ -1408,6 +1425,9 @@ export function renderMap(
   }
 
   // Header buttons
+  root.querySelector('#logo-home')?.addEventListener('click', () => {
+    onBack()
+  })
   root.querySelector('#back-btn')!.addEventListener('click', () => {
     onBack() // route() unmounts the page, which runs teardown
   })
@@ -2498,28 +2518,72 @@ export function renderMap(
 
   // ── Props (decorative assets) — DM-editable in BOTH modes ───────────────────
 
-  /** Open the image library to pick a prop asset; next canvas click places it. */
+  /** Open the image library to pick a prop asset; next canvas click places it.
+   *  Folders are listed folded (easier to scan); a search box filters by
+   *  folder/name across all assets. */
   function openPropPicker() {
     api.listAssets('image')
-      .then(assets => {
-        if (assets.length === 0) { showNotif('Upload images first (Assets page)'); return }
+      .then(allAssets => {
+        if (allAssets.length === 0) { showNotif('Upload images first (Assets page)'); return }
+        const label = (a: { folder: string; name: string }) => (a.folder ? `${a.folder}/${a.name}` : a.name)
+        const sorted = [...allAssets].sort((a, b) => label(a).localeCompare(label(b), undefined, { sensitivity: 'base' }))
+
         const picker = document.createElement('div')
         picker.id = 'prop-picker'
         // Light parchment panel matching the app chrome (was dark-theme)
-        picker.style.cssText = 'position:absolute;top:64px;left:16px;z-index:60;background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:12px;max-width:300px;max-height:50vh;overflow:auto;font-size:13px;color:var(--text);box-shadow:0 4px 16px rgba(30,33,28,0.25)'
-        picker.innerHTML = `<div style="font-weight:600;margin-bottom:8px">🌳 Place a prop</div>` +
-          assets.map((a, i) => `<div data-i="${i}" style="display:flex;align-items:center;gap:8px;padding:4px 6px;cursor:pointer;border-radius:6px"><img src="${a.path}" style="width:32px;height:32px;object-fit:contain"><span>${a.name}</span></div>`).join('') +
-          `<button class="header-btn" id="prop-picker-close" style="width:100%;margin-top:8px">Cancel</button>`
-        wrap.appendChild(picker)
-        picker.querySelectorAll('[data-i]').forEach(el => {
-          el.addEventListener('click', () => {
-            const a = assets[Number((el as HTMLElement).dataset.i)]
-            pendingPropAsset = { path: a.path, name: a.name }
-            picker.remove()
-            showNotif(`Click the map to place ${a.name}`)
-            renderToolbar()
+        picker.style.cssText = 'position:absolute;top:64px;left:16px;z-index:60;background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:12px;max-width:320px;max-height:60vh;overflow:auto;font-size:13px;color:var(--text);box-shadow:0 4px 16px rgba(30,33,28,0.25)'
+
+        const renderList = () => {
+          const q = (picker.querySelector('#prop-search') as HTMLInputElement | null)?.value.trim().toLowerCase() ?? ''
+          const visible = q ? sorted.filter(a => label(a).toLowerCase().includes(q)) : sorted
+          const byFolder = new Map<string, typeof sorted>()
+          for (const a of visible) {
+            const f = a.folder || ''
+            if (!byFolder.has(f)) byFolder.set(f, [])
+            byFolder.get(f)!.push(a)
+          }
+          const folders = [...byFolder.keys()].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }))
+          const q2 = q // captured for closure
+          const openAll = q2 !== '' // search unfolds everything
+          let html = ''
+          for (const folder of folders) {
+            const items = byFolder.get(folder)!
+            const foldKey = `pf:${folder}`
+            html += `<div class="prop-folder" data-fold="${esc(foldKey)}" style="display:flex;align-items:center;justify-content:space-between;padding:4px 6px;cursor:pointer;color:var(--brand);font-weight:600;user-select:none"><span><span class="prop-arrow">${openAll || (picker.dataset as Record<string, string>)[foldKey] === 'open' ? '▾' : '▸'}</span> 📁 ${folder === '' ? 'Root' : esc(folder)} (${items.length})</span></div>`
+            html += `<div data-folder-body="${esc(foldKey)}" ${openAll || (picker.dataset as Record<string, string>)[foldKey] === 'open' ? '' : 'hidden'}>` +
+              items.map(a => `<div data-i="${esc(a.id)}" style="display:flex;align-items:center;gap:8px;padding:4px 6px;cursor:pointer;border-radius:6px"><img src="${a.path}" style="width:32px;height:32px;object-fit:contain"><span>${esc(a.name)}</span></div>`).join('') +
+              `</div>`
+          }
+          if (visible.length === 0) html = '<div style="padding:8px;color:var(--muted)">No asset matches.</div>'
+          const listHost = picker.querySelector('#prop-list') as HTMLElement
+          listHost.innerHTML = html
+          listHost.querySelectorAll('.prop-folder').forEach(el => {
+            el.addEventListener('click', () => {
+              const key = (el as HTMLElement).dataset.fold!
+              const ds = picker.dataset as Record<string, string>
+              ds[key] = ds[key] === 'open' ? '' : 'open'
+              renderList()
+            })
           })
-        })
+          listHost.querySelectorAll('[data-i]').forEach(el => {
+            el.addEventListener('click', () => {
+              const a = sorted.find(x => x.id === (el as HTMLElement).dataset.i)
+              if (!a) return
+              pendingPropAsset = { path: a.path, name: a.name }
+              picker.remove()
+              showNotif(`Click the map to place ${a.name}`)
+              renderToolbar()
+            })
+          })
+        }
+
+        picker.innerHTML = `<div style="font-weight:600;margin-bottom:8px">🌳 Place a prop</div>
+          <input type="text" id="prop-search" placeholder="Search (folder/name)…" style="width:100%;padding:6px 9px;margin-bottom:8px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:13px;outline:none" />
+          <div id="prop-list"></div>
+          <button class="header-btn" id="prop-picker-close" style="width:100%;margin-top:8px">Cancel</button>`
+        wrap.appendChild(picker)
+        renderList()
+        picker.querySelector('#prop-search')?.addEventListener('input', renderList)
         picker.querySelector('#prop-picker-close')?.addEventListener('click', () => picker.remove())
       })
       .catch(() => showNotif('Could not load assets'))

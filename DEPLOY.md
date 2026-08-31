@@ -1,6 +1,6 @@
-# Deploying RHW Simple VTT
+# Deploying Simple VTT
 
-RHW Simple VTT ships as a single Docker image containing the Node.js backend
+Simple VTT ships as a single Docker image containing the Node.js backend
 (REST + WebSocket) and the compiled frontend. State (SQLite database and
 uploaded files) lives in a Docker volume.
 
