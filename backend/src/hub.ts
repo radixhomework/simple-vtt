@@ -478,9 +478,17 @@ function handleMessage(client: Client, raw: string) {
         })
         break
       } else if (action === 'add' && Array.isArray(points)) {
-        const insert = db.prepare('INSERT INTO fog_points (id, table_id, x, y, radius, floor_id) VALUES (?,?,?,?,?,?)')
+        // Keep client-generated ids: brush strokes then erase by id
+        // incrementally instead of resending the whole survivors array
+        const insert = db.prepare('INSERT OR IGNORE INTO fog_points (id, table_id, x, y, radius, floor_id) VALUES (?,?,?,?,?,?)')
         for (const p of points) {
-          insert.run(newId(), client.tableId, p.x, p.y, p.radius ?? 3, floorId)
+          insert.run(typeof p.id === 'string' && p.id ? p.id : newId(), client.tableId, p.x, p.y, p.radius ?? 3, floorId)
+        }
+      } else if (action === 'remove_ids' && Array.isArray(payload.ids)) {
+        const ids = (payload.ids as unknown[]).filter((x): x is string => typeof x === 'string')
+        if (ids.length > 0) {
+          const del = db.prepare('DELETE FROM fog_points WHERE table_id=? AND id=?')
+          for (const id of ids) del.run(client.tableId, id)
         }
       }
       // Only viewers of that floor care; others ignore the points (their

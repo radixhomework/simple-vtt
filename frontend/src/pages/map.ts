@@ -67,8 +67,8 @@ interface GameState {
   gridVisible: boolean
   fogEnabled: boolean
   zen: boolean
-  /** In-progress reveal/erase drag zone (world coords), null when idle */
-  fogDrag: { x0: number; y0: number; x1: number; y1: number } | null
+  /** In-progress reveal/erase brush stroke: last stamped world position */
+  fogDrag: { lastX: number; lastY: number } | null
   measure: MeasureState
   sharedMeasure: MeasureState | null
   shareMeasure: boolean
@@ -736,18 +736,21 @@ export function renderMap(
 
       // UI canvas: shared (admin) measurement, then the local measuring tool
       uiCtx.clearRect(0, 0, w, h)
-      if (state.fogDrag && isAdmin) {
-        const z = state.fogDrag
-        const [ax, ay] = worldToScreen(Math.min(z.x0, z.x1), Math.min(z.y0, z.y1), state.camera)
-        const [bx, by] = worldToScreen(Math.max(z.x0, z.x1), Math.max(z.y0, z.y1), state.camera)
+      if (fogCursor && isAdmin && (state.tool === 'fog-reveal' || state.tool === 'fog-erase')) {
+        // Brush-size circle at the cursor (native cursor hidden while a
+        // fog tool is active) — the tip is brushSizePx wide on screen
+        const r = Math.max(2, brushSizePx / 2)
+        const reveal = state.tool === 'fog-reveal'
         uiCtx.save()
-        uiCtx.strokeStyle = state.tool === 'fog-reveal' ? PALETTE.moss : PALETTE.rose
-        uiCtx.fillStyle = state.tool === 'fog-reveal' ? 'rgba(77,89,71,0.15)' : 'rgba(138,94,97,0.15)'
-        uiCtx.lineWidth = 1.5
-        uiCtx.setLineDash([6, 4])
-        uiCtx.fillRect(ax, ay, bx - ax, by - ay)
-        uiCtx.strokeRect(ax, ay, bx - ax, by - ay)
-        uiCtx.setLineDash([])
+        uiCtx.beginPath()
+        uiCtx.arc(fogCursor.x, fogCursor.y, r, 0, Math.PI * 2)
+        uiCtx.strokeStyle = reveal ? PALETTE.moss : PALETTE.rose
+        uiCtx.lineWidth = 1
+        uiCtx.stroke()
+        uiCtx.beginPath()
+        uiCtx.arc(fogCursor.x, fogCursor.y, 1.5, 0, Math.PI * 2)
+        uiCtx.fillStyle = reveal ? PALETTE.moss : PALETTE.rose
+        uiCtx.fill()
         uiCtx.restore()
       }
       if (state.mode === 'build' && isAdmin) {
@@ -1216,10 +1219,14 @@ export function renderMap(
       case 'fog_update': {
         const p = msg.payload as FogUpdatePayload
         if (p.action === 'clear_all') {
-          // clear_all may carry the surviving points (erase tool)
+          // clear_all may carry the surviving points (reset-style wipes)
           state.fog = p.points ?? []
         } else if (p.action === 'add') {
           state.fog.push(...p.points)
+        } else if ((p as FogUpdatePayload & { ids?: string[] }).ids) {
+          // Incremental erase: splice out exactly these points
+          const ids = new Set((p as FogUpdatePayload & { ids: string[] }).ids)
+          state.fog = state.fog.filter(pt => !ids.has(pt.id))
         }
         markExploredDirty()
         render()
@@ -1559,7 +1566,13 @@ export function renderMap(
       toolBtn('square', '▭', 'Measure Square (Q)'),
       toolBtn('cone', '◤', 'Measure Cone (N)'),
     ]
-    if (isAdmin) play.push(sep, toolBtn('fog-reveal', '👁', 'Reveal Fog (R)'), toolBtn('fog-erase', '🌑', 'Erase Revealed (E)'), sep, actionBtn('add-prop', '🌳', 'Place a prop (tree, furniture…)', !!pendingPropAsset))
+    if (isAdmin) {
+      play.push(sep, toolBtn('fog-reveal', '👁', 'Reveal Fog (R)'), toolBtn('fog-erase', '🌑', 'Erase Revealed (E)'))
+      if (state.tool === 'fog-reveal' || state.tool === 'fog-erase') {
+        play.push(`<input type="range" id="fog-brush-size" min="1" max="256" step="1" value="${brushSizePx}" title="Brush size (px)" style="width:90px;accent-color:var(--brand);align-self:center" /><span id="fog-brush-readout" style="font-size:11px;color:var(--muted);align-self:center">${brushSizePx}px</span>`)
+      }
+      play.push(sep, actionBtn('add-prop', '🌳', 'Place a prop (tree, furniture…)', !!pendingPropAsset))
+    }
     const build = [
       toolBtn('wall-select', '⬚', 'Select/Move Walls (W)'),
       toolBtn('wall', '╱', 'Draw Wall (D)'),
@@ -1576,6 +1589,11 @@ export function renderMap(
       actionBtn('add-prop', '🌳', 'Place a prop (tree, furniture…)', !!pendingPropAsset),
     ]
     group.innerHTML = (state.mode === 'build' ? build : play).join('')
+    group.querySelector('#fog-brush-size')?.addEventListener('input', (e) => {
+      setBrushSizePx(parseFloat((e.target as HTMLInputElement).value))
+      const readout = group.querySelector('#fog-brush-readout')
+      if (readout) readout.textContent = `${brushSizePx}px`
+    })
     group.querySelectorAll('[data-tool]').forEach(btn => {
       btn.addEventListener('click', () => {
         state.tool = (btn as HTMLElement).dataset.tool as ToolType
@@ -2861,12 +2879,15 @@ export function renderMap(
         return
       }
       if (state.tool === 'fog-reveal' && isAdmin) {
-        // Click = instant reveal; drag = zone (committed on release)
-        state.fogDrag = { x0: wx, y0: wy, x1: wx, y1: wy }
+        // Brush stroke: the press point paints immediately, dragging keeps
+        // painting along the cursor path (like token vision updating)
+        addFogPoint(wx, wy)
+        state.fogDrag = { lastX: wx, lastY: wy }
         return
       }
       if (state.tool === 'fog-erase' && isAdmin) {
-        state.fogDrag = { x0: wx, y0: wy, x1: wx, y1: wy }
+        removeFogPoint(wx, wy)
+        state.fogDrag = { lastX: wx, lastY: wy }
         return
       }
       if (state.tool !== 'select') {
@@ -2918,15 +2939,10 @@ export function renderMap(
         }
         refreshSidebar()
         if (isAdmin) renderTokenEditor()
-      } else if (isAdmin && e.shiftKey) {
-        // Shift+drag on empty: additive marquee over the current selection
-        state.marquee = { active: true, x0: e.offsetX, y0: e.offsetY, x1: e.offsetX, y1: e.offsetY, additive: true }
-      } else if (isAdmin) {
-        // Drag on empty: marquee selection (replaces)
-        state.marquee = { active: true, x0: e.offsetX, y0: e.offsetY, x1: e.offsetX, y1: e.offsetY, additive: false }
       } else {
-        // No token under the cursor: portal click (threshold = 30% of a
-        // grid cell) — open/close shortcut for every role, permission-checked
+        // No token under the cursor: portal click FIRST (threshold = 30% of
+        // a grid cell) — open/close shortcut for every role, permission-
+        // checked. Only when no portal is hit do admins start a marquee.
         const portalHit = pickPortal(wx, wy, state.portals, (state.table.grid_size ?? 70) * 0.3)
         if (portalHit) {
           if (mayTogglePortal(portalHit)) togglePortal(portalHit)
@@ -2934,13 +2950,25 @@ export function renderMap(
           return
         }
 
-        state.selectedId = null
-        state.selectedIds.clear()
-        refreshSidebar()
-        if (isAdmin) renderTokenEditor()
+        if (isAdmin && e.shiftKey) {
+          // Shift+drag on empty: additive marquee over the current selection
+          state.marquee = { active: true, x0: e.offsetX, y0: e.offsetY, x1: e.offsetX, y1: e.offsetY, additive: true }
+        } else if (isAdmin) {
+          // Drag on empty: marquee selection (replaces)
+          state.marquee = { active: true, x0: e.offsetX, y0: e.offsetY, x1: e.offsetX, y1: e.offsetY, additive: false }
+        } else {
+          state.selectedId = null
+          state.selectedIds.clear()
+          refreshSidebar()
+          if (isAdmin) renderTokenEditor()
+        }
       }
       render()
     }
+  })
+
+  uiCanvas.addEventListener('mouseleave', () => {
+    if (fogCursor) { fogCursor = null; render() }
   })
 
   // ── Shared input logic (mouse + touch) ───────────────────────────────────────
@@ -3265,6 +3293,14 @@ export function renderMap(
   }
 
   uiCanvas.addEventListener('mousemove', (e) => {
+    if (isAdmin && (state.tool === 'fog-reveal' || state.tool === 'fog-erase')) {
+      fogCursor = { x: e.offsetX, y: e.offsetY }
+      uiCanvas.style.cursor = 'none'
+      render() // keep the brush circle glued to the cursor
+    } else if (uiCanvas.style.cursor === 'none') {
+      fogCursor = null
+      uiCanvas.style.cursor = 'crosshair'
+    }
     if (state.panning) {
       panTo(e.offsetX, e.offsetY)
       return
@@ -3274,9 +3310,7 @@ export function renderMap(
 
     if (state.fogDrag) {
       const [wx, wy] = screenToWorld(e.offsetX, e.offsetY, state.camera)
-      state.fogDrag.x1 = wx
-      state.fogDrag.y1 = wy
-      render()
+      brushStrokeTo(wx, wy)
       return
     }
 
@@ -3340,7 +3374,7 @@ export function renderMap(
     }
 
     if (state.fogDrag && isAdmin) {
-      commitFogDrag()
+      endFogBrush()
       return
     }
 
@@ -3517,8 +3551,8 @@ export function renderMap(
     const [wx, wy] = screenToWorld(x, y, state.camera)
 
     // Active tools first (same behaviour as a left click)
-    if (state.tool === 'fog-reveal' && isAdmin) { state.fogDrag = { x0: wx, y0: wy, x1: wx, y1: wy }; touchMode = 'fog'; return }
-    if (state.tool === 'fog-erase' && isAdmin) { state.fogDrag = { x0: wx, y0: wy, x1: wx, y1: wy }; touchMode = 'fog'; return }
+    if (state.tool === 'fog-reveal' && isAdmin) { addFogPoint(wx, wy); state.fogDrag = { lastX: wx, lastY: wy }; touchMode = 'fog'; return }
+    if (state.tool === 'fog-erase' && isAdmin) { removeFogPoint(wx, wy); state.fogDrag = { lastX: wx, lastY: wy }; touchMode = 'fog'; return }
     if (state.tool !== 'select') {
       state.measure = { active: true, tool: state.tool, startX: wx, startY: wy, endX: wx, endY: wy }
       if (isAdmin && state.shareMeasure) {
@@ -3608,9 +3642,7 @@ export function renderMap(
       if (!t) return
       const [x, y] = touchPos(t)
       const [wx, wy] = screenToWorld(x, y, state.camera)
-      state.fogDrag.x1 = wx
-      state.fogDrag.y1 = wy
-      render()
+      brushStrokeTo(wx, wy)
       return
     }
 
@@ -3657,7 +3689,7 @@ export function renderMap(
 
     if (touchMode === 'token') finishTokenDrag()
     if (touchMode === 'measure') finishMeasure()
-    if (touchMode === 'fog' && state.fogDrag && isAdmin) commitFogDrag()
+    if (touchMode === 'fog' && state.fogDrag && isAdmin) endFogBrush()
 
     const dt = Date.now() - touchStartTime
     const moved = Math.hypot(touchLastX - touchStartX, touchLastY - touchStartY)
@@ -3966,63 +3998,86 @@ export function renderMap(
   }
 
   // Fog helpers
-  /** Commit a reveal/erase drag: a tiny drag counts as a click, anything
-   *  larger applies to the rectangular zone. */
-  function commitFogDrag() {
-    const z = state.fogDrag
-    state.fogDrag = null
-    if (!z) return
+  let eraseDirty = false
+  let lastEraseSend = 0
+  /** Cursor position over the canvas (screen px) — drives the brush-size circle. */
+  let fogCursor: { x: number; y: number } | null = null
+  /** Reveal/erase brush tip in SCREEN pixels (1 = hairline). */
+  let brushSizePx = parseFloat(localStorage.getItem('fogBrushPx') ?? '1') || 1
+  function setBrushSizePx(v: number) {
+    brushSizePx = Math.max(1, Math.min(256, v))
+    localStorage.setItem('fogBrushPx', String(brushSizePx))
+  }
+  /** Brush tip radius in world units at the current zoom. */
+  function brushRadiusWorld(): number {
+    return brushSizePx / 2 / state.camera.zoom
+  }
+
+  /** Advance the reveal/erase brush stroke to a new cursor position,
+   *  stamping reveal points (or erasing) along the path at brush-radius
+   *  spacing — the fog updates live as the cursor moves, like token
+   *  vision while dragging a token. */
+  function brushStrokeTo(wx: number, wy: number) {
+    if (!state.fogDrag) return
     const gridSize = state.table.grid_size ?? 70
-    const moved = Math.hypot(z.x1 - z.x0, z.y1 - z.y0)
-    if (moved * state.camera.zoom < 6) {
-      // Effectively a click — keep the original per-point behavior
-      if (state.tool === 'fog-reveal') addFogPoint(z.x0, z.y0)
-      else removeFogPoint(z.x0, z.y0)
-      return
-    }
-    const x0 = Math.min(z.x0, z.x1), x1 = Math.max(z.x0, z.x1)
-    const y0 = Math.min(z.y0, z.y1), y1 = Math.max(z.y0, z.y1)
-    if (state.tool === 'fog-reveal') revealRect(x0, y0, x1, y1, gridSize)
-    else eraseRect(x0, y0, x1, y1, gridSize)
-  }
-
-  /** Reveal a rectangular zone: stamp a overlapping grid of reveal points
-   *  inside it (one atomic WS message). */
-  function revealRect(x0: number, y0: number, x1: number, y1: number, gridSize: number) {
-    const radius = 3
-    const step = radius * gridSize * 1.2
-    const points: FogPoint[] = []
-    for (let y = y0 + step / 2; y < y1; y += step) {
-      for (let x = x0 + step / 2; x < x1; x += step) {
-        points.push({ id: '', table_id: table.id, x, y, radius, floor_id: state.floor?.id })
-        if (points.length >= 400) break
+    const radiusWorld = brushRadiusWorld()
+    // Heavily overlapping dabs (half-radius spacing) so the stroke paints
+    // continuously instead of jumping in visible steps
+    const step = Math.max(radiusWorld * 0.5, 1 / state.camera.zoom)
+    let dx = wx - state.fogDrag.lastX
+    let dy = wy - state.fogDrag.lastY
+    let dist = Math.hypot(dx, dy)
+    if (dist < step * 0.4) return
+    if (state.tool === 'fog-reveal') {
+      dx = (dx / dist) * step
+      dy = (dy / dist) * step
+      const radiusGrid = radiusWorld / gridSize
+      const batch: FogPoint[] = []
+      while (dist >= step) {
+        state.fogDrag.lastX += dx
+        state.fogDrag.lastY += dy
+        dist -= step
+        batch.push({ id: newPointId(), table_id: table.id, x: state.fogDrag.lastX, y: state.fogDrag.lastY, radius: radiusGrid, floor_id: state.floor?.id })
       }
-      if (points.length >= 400) break
+      if (batch.length > 0) {
+        socket.send('fog_update', { action: 'add', points: batch, floor_id: state.floor?.id })
+        state.fog.push(...batch)
+        markExploredDirty()
+      }
+    } else {
+      // Erase: drop reveal points near the cursor path segment (id-based,
+      // sent incrementally so other clients erase smoothly)
+      const er = brushRadiusWorld()
+      const vx = wx - state.fogDrag.lastX, vy = wy - state.fogDrag.lastY
+      const lenSq = vx * vx + vy * vy
+      const removedIds: string[] = []
+      const fd = state.fogDrag!
+      state.fog = state.fog.filter(p => {
+        const t = lenSq === 0 ? 0 : Math.max(0, Math.min(1, ((p.x - fd.lastX) * vx + (p.y - fd.lastY) * vy) / lenSq))
+        const hit = Math.hypot(p.x - (fd.lastX + t * vx), p.y - (fd.lastY + t * vy)) <= er
+        if (hit && p.id) removedIds.push(p.id)
+        return !hit
+      })
+      state.fogDrag.lastX = wx
+      state.fogDrag.lastY = wy
+      if (removedIds.length > 0) {
+        socket.send('fog_update', { action: 'remove_ids', ids: removedIds, floor_id: state.floor?.id })
+        markExploredDirty()
+      }
     }
-    if (points.length === 0) {
-      // Zone smaller than one step: a single centered point still covers it
-      points.push({ id: '', table_id: table.id, x: (x0 + x1) / 2, y: (y0 + y1) / 2, radius, floor_id: state.floor?.id })
-    }
-    socket.send('fog_update', { action: 'add', points, floor_id: state.floor?.id })
-    state.fog.push(...points)
-    markExploredDirty()
     render()
   }
 
-  /** Erase revealed fog inside a rectangular zone (points whose circle
-   *  intersects the rect), one atomic clear+re-add. */
-  function eraseRect(x0: number, y0: number, x1: number, y1: number, gridSize: number) {
-    state.fog = state.fog.filter(p => {
-      const r = p.radius * gridSize
-      return !(p.x + r > x0 && p.x - r < x1 && p.y + r > y0 && p.y - r < y1)
-    })
-    socket.send('fog_update', { action: 'clear_all', points: state.fog, floor_id: state.floor?.id })
-    markExploredDirty()
+  /** End the brush stroke. */
+  function endFogBrush() {
+    state.fogDrag = null
     render()
   }
+
+  const newPointId = () => crypto.randomUUID().replace(/-/g, '').slice(0, 16)
 
   function addFogPoint(wx: number, wy: number) {
-    const point: FogPoint = { id: '', table_id: table.id, x: wx, y: wy, radius: 3, floor_id: state.floor?.id }
+    const point: FogPoint = { id: newPointId(), table_id: table.id, x: wx, y: wy, radius: brushRadiusWorld() / (state.table.grid_size ?? 70), floor_id: state.floor?.id }
     socket.send('fog_update', { action: 'add', points: [point], floor_id: state.floor?.id })
     state.fog.push(point)
     markExploredDirty()
@@ -4030,9 +4085,12 @@ export function renderMap(
   }
 
   function removeFogPoint(wx: number, wy: number) {
-    state.fog = state.fog.filter(p => Math.hypot(p.x - wx, p.y - wy) > p.radius * (state.table.grid_size ?? 70))
-    // One atomic clear+re-add so other clients never see an empty flash
-    socket.send('fog_update', { action: 'clear_all', points: state.fog, floor_id: state.floor?.id })
+    const er = brushRadiusWorld()
+    const removedIds = state.fog.filter(p => Math.hypot(p.x - wx, p.y - wy) <= er && p.id).map(p => p.id)
+    state.fog = state.fog.filter(p => Math.hypot(p.x - wx, p.y - wy) > er)
+    if (removedIds.length > 0) {
+      socket.send('fog_update', { action: 'remove_ids', ids: removedIds, floor_id: state.floor?.id })
+    }
     markExploredDirty()
     render()
   }
