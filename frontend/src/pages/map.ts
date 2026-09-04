@@ -4003,7 +4003,8 @@ export function renderMap(
   /** Cursor position over the canvas (screen px) — drives the brush-size circle. */
   let fogCursor: { x: number; y: number } | null = null
   /** Reveal/erase brush tip in SCREEN pixels (1 = hairline). */
-  let brushSizePx = parseFloat(localStorage.getItem('fogBrushPx') ?? '1') || 1
+  const savedBrush = parseFloat(localStorage.getItem('fogBrushPx') ?? '')
+  let brushSizePx = Number.isFinite(savedBrush) && savedBrush >= 1 && savedBrush <= 256 ? savedBrush : 100
   function setBrushSizePx(v: number) {
     brushSizePx = Math.max(1, Math.min(256, v))
     localStorage.setItem('fogBrushPx', String(brushSizePx))
