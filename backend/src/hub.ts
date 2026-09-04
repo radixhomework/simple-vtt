@@ -242,14 +242,14 @@ function sendTableState(client: Client) {
   // (or vanished floors) land on the configured default level, clamped to
   // the table's floor range.
   const floors = db.prepare(
-    'SELECT id, table_id, level, name FROM floors WHERE table_id=? ORDER BY level, rowid'
+    'SELECT id, table_id, level, name, revealed FROM floors WHERE table_id=? ORDER BY level, rowid'
   ).all(client.tableId) as Array<{ id: string; table_id: string; level: number; name: string }>
   const defaultFloor = floors.find(f => f.id === table.default_floor_id) ?? floors[0]
   const floorId = floors.some(f => f.id === client.activeFloorId) ? client.activeFloorId! : defaultFloor?.id ?? null
   client.activeFloorId = floorId
   const floor = floorId
     ? db.prepare(
-        'SELECT id, table_id, level, name, map_image_path, grid_size, uvt_metadata, map_offset_x, map_offset_y, img_width, img_height, tiles_path FROM floors WHERE id=?'
+        'SELECT id, table_id, level, name, map_image_path, grid_size, uvt_metadata, map_offset_x, map_offset_y, img_width, img_height, tiles_path, revealed FROM floors WHERE id=?'
       ).get(floorId) as {
         id: string; table_id: string; map_image_path: string; tiles_path: string
         img_width: number; img_height: number
@@ -446,6 +446,37 @@ function handleMessage(client: Client, raw: string) {
             insert.run(newId(), client.tableId, p.x, p.y, p.radius ?? 3, floorId)
           }
         }
+        // Authoritative resync for EVERY client of the table: the raw
+        // per-floor broadcast only reaches viewers of that floor, so a
+        // stale client (other floor, half-dead socket that missed the
+        // message) would keep showing cleared fog.
+        tables.get(client.tableId)?.forEach(c => sendTableState(c))
+        break
+      } else if (action === 'reset') {
+        // Back to arrival state: no manual reveals, explored memory cleared,
+        // any full-reveal flag removed. Clients wipe their local explored
+        // bitmaps on the fog_reset notice.
+        db.prepare('DELETE FROM fog_points WHERE table_id=? AND floor_id=?').run(client.tableId, floorId)
+        db.prepare('UPDATE floors SET revealed=0 WHERE id=?').run(floorId)
+        pushTableStateToTable(client.tableId)
+        tables.get(client.tableId)?.forEach(c => {
+          if (c !== client && c.ws.readyState === WebSocket.OPEN) {
+            c.ws.send(JSON.stringify({ type: 'fog_reset', payload: { floor_id: floorId } }))
+          }
+        })
+        break
+      } else if (action === 'reveal_all') {
+        // Remove ALL fog from the floor: marked fully revealed, manual
+        // points wiped. New joiners get the flag via table_state.
+        db.prepare('UPDATE floors SET revealed=1 WHERE id=?').run(floorId)
+        db.prepare('DELETE FROM fog_points WHERE table_id=? AND floor_id=?').run(client.tableId, floorId)
+        pushTableStateToTable(client.tableId)
+        tables.get(client.tableId)?.forEach(c => {
+          if (c !== client && c.ws.readyState === WebSocket.OPEN) {
+            c.ws.send(JSON.stringify({ type: 'fog_revealed', payload: { floor_id: floorId } }))
+          }
+        })
+        break
       } else if (action === 'add' && Array.isArray(points)) {
         const insert = db.prepare('INSERT INTO fog_points (id, table_id, x, y, radius, floor_id) VALUES (?,?,?,?,?,?)')
         for (const p of points) {

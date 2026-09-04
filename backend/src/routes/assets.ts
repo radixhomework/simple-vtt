@@ -14,6 +14,7 @@ import { db } from '../db'
 import { authMiddleware, adminOnly } from '../auth'
 import { musicLibraryChanged } from '../hub'
 import { decodeUploadFilename } from '../filename'
+import { param } from '../mapaccess'
 import { loadSettings } from '../settings'
 
 export const assetsRouter = Router()
@@ -103,7 +104,7 @@ assetsRouter.post('/assets', authMiddleware, adminOnly, assetUpload, (req, res) 
 
 /** Move an asset to another folder (empty string = root). */
 assetsRouter.put('/assets/:id', authMiddleware, adminOnly, (req, res) => {
-  const row = db.prepare('SELECT id, kind FROM assets WHERE id=?').get(req.params.id) as
+  const row = db.prepare('SELECT id, kind FROM assets WHERE id=?').get(param(req, 'id')) as
     { id: string; kind: string } | undefined
   if (!row) { res.status(404).json({ error: 'not found' }); return }
 
@@ -123,7 +124,7 @@ assetsRouter.put('/assets/:id', authMiddleware, adminOnly, (req, res) => {
   }
   if (sets.length === 0) { res.status(400).json({ error: 'nothing to update' }); return }
 
-  values.push(req.params.id)
+  values.push(param(req, 'id'))
   db.prepare(`UPDATE assets SET ${sets.join(', ')} WHERE id=?`).run(...values)
 
   // Renamed audio: push a fresh music state so every open music panel
@@ -131,12 +132,12 @@ assetsRouter.put('/assets/:id', authMiddleware, adminOnly, (req, res) => {
   if (body.name !== undefined && row.kind === 'audio') musicLibraryChanged()
 
   const fresh = db.prepare('SELECT id, kind, name, path, size, folder FROM assets WHERE id=?')
-    .get(req.params.id)
+    .get(param(req, 'id'))
   res.json(fresh)
 })
 
 assetsRouter.delete('/assets/:id', authMiddleware, adminOnly, (req, res) => {
-  const row = db.prepare('SELECT id, kind, path FROM assets WHERE id=?').get(req.params.id) as
+  const row = db.prepare('SELECT id, kind, path FROM assets WHERE id=?').get(param(req, 'id')) as
     { id: string; kind: string; path: string } | undefined
   if (!row) { res.status(404).json({ error: 'not found' }); return }
 
@@ -151,7 +152,7 @@ assetsRouter.delete('/assets/:id', authMiddleware, adminOnly, (req, res) => {
     }
   }
 
-  db.prepare('DELETE FROM assets WHERE id=?').run(req.params.id)
+  db.prepare('DELETE FROM assets WHERE id=?').run(param(req, 'id'))
   // Best-effort file removal: other asset rows may share the same
   // content-addressed file, so only unlink it when nothing references it
   const shared = db.prepare('SELECT COUNT(*) AS n FROM assets WHERE path=?').get(row.path) as { n: number }
@@ -165,7 +166,7 @@ assetsRouter.delete('/assets/:id', authMiddleware, adminOnly, (req, res) => {
 
 /** Delete an entire folder (empty string is not deletable — it is the root). */
 assetsRouter.delete('/assets-folder/:folder', authMiddleware, adminOnly, (req, res) => {
-  const folder = req.params.folder
+  const folder = param(req, 'folder')
   if (!folder) { res.status(400).json({ error: 'cannot delete the root' }); return }
   const rows = db.prepare('SELECT id, kind, path FROM assets WHERE folder=?').all(folder) as
     Array<{ id: string; kind: string; path: string }>

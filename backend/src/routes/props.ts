@@ -10,7 +10,7 @@ import { Router } from 'express'
 import { randomUUID } from 'node:crypto'
 import { db } from '../db'
 import { authMiddleware } from '../auth'
-import { requireMapDM } from '../mapaccess'
+import { requireMapDM, param } from '../mapaccess'
 import { broadcastToTable } from '../hub'
 
 export const propsRouter = Router()
@@ -32,10 +32,10 @@ function num(v: unknown, fallback: number, min: number, max: number): number {
 
 /** Create a prop (DM). asset_path must exist in the shared library. */
 propsRouter.post('/tables/:id/props', authMiddleware, (req, res) => {
-  if (!requireMapDM(req, res, req.params.id)) return
+  if (!requireMapDM(req, res, param(req, 'id'))) return
   const b = req.body as Record<string, unknown>
   const floorId = typeof b.floor_id === 'string' ? b.floor_id : ''
-  const floor = db.prepare('SELECT id FROM floors WHERE id=? AND table_id=?').get(floorId, req.params.id)
+  const floor = db.prepare('SELECT id FROM floors WHERE id=? AND table_id=?').get(floorId, param(req, 'id'))
   if (!floor) { res.status(404).json({ error: 'floor not found' }); return }
   const assetPath = typeof b.asset_path === 'string' ? b.asset_path : ''
   if (!assetPath.startsWith('/uploads/')) { res.status(400).json({ error: 'asset_path must be an uploads path' }); return }
@@ -46,7 +46,7 @@ propsRouter.post('/tables/:id/props', authMiddleware, (req, res) => {
   db.prepare(`INSERT INTO props (id, table_id, floor_id, asset_path, name, x, y, size, rotation, z, opacity)
               VALUES (?,?,?,?,?,?,?,?,?,?,?)`)
     .run(
-      id, req.params.id, floorId, assetPath,
+      id, param(req, 'id'), floorId, assetPath,
       typeof b.name === 'string' ? b.name.slice(0, 60) : '',
       x, y,
       num(b.size, 70, 4, 10000),
@@ -55,7 +55,7 @@ propsRouter.post('/tables/:id/props', authMiddleware, (req, res) => {
       num(b.opacity, 1, 0.05, 1),
     )
   const row = db.prepare(`SELECT ${PROP_COLS} FROM props WHERE id=?`).get(id)
-  pushProps(req.params.id)
+  pushProps(param(req, 'id'))
   res.status(201).json(row)
 })
 
@@ -63,16 +63,16 @@ propsRouter.post('/tables/:id/props', authMiddleware, (req, res) => {
 propsRouter.get('/tables/:id/props', authMiddleware, (req, res) => {
   const floorId = typeof req.query.floor_id === 'string' ? req.query.floor_id : ''
   const rows = floorId
-    ? db.prepare(`SELECT ${PROP_COLS} FROM props WHERE table_id=? AND floor_id=? ORDER BY z, rowid`).all(req.params.id, floorId)
-    : db.prepare(`SELECT ${PROP_COLS} FROM props WHERE table_id=? ORDER BY floor_id, z, rowid`).all(req.params.id)
+    ? db.prepare(`SELECT ${PROP_COLS} FROM props WHERE table_id=? AND floor_id=? ORDER BY z, rowid`).all(param(req, 'id'), floorId)
+    : db.prepare(`SELECT ${PROP_COLS} FROM props WHERE table_id=? ORDER BY floor_id, z, rowid`).all(param(req, 'id'))
   res.json(rows)
 })
 
 /** Patch a prop (DM): any of geometry/name/opacity. */
 propsRouter.patch('/tables/:id/props/:propId', authMiddleware, (req, res) => {
-  if (!requireMapDM(req, res, req.params.id)) return
+  if (!requireMapDM(req, res, param(req, 'id'))) return
   const existing = db.prepare(`SELECT ${PROP_COLS} FROM props WHERE id=? AND table_id=?`)
-    .get(req.params.propId, req.params.id) as Record<string, unknown> | undefined
+    .get(param(req, 'propId'), param(req, 'id')) as Record<string, unknown> | undefined
   if (!existing) { res.status(404).json({ error: 'not found' }); return }
   const b = req.body as Record<string, unknown>
   const merged = {
@@ -86,17 +86,17 @@ propsRouter.patch('/tables/:id/props/:propId', authMiddleware, (req, res) => {
     opacity: b.opacity !== undefined ? num(b.opacity, existing.opacity as number, 0.05, 1) : existing.opacity,
   }
   db.prepare('UPDATE props SET asset_path=?, name=?, x=?, y=?, size=?, rotation=?, z=?, opacity=? WHERE id=?')
-    .run(merged.asset_path, merged.name, merged.x, merged.y, merged.size, merged.rotation, merged.z, merged.opacity, req.params.propId)
-  const row = db.prepare(`SELECT ${PROP_COLS} FROM props WHERE id=?`).get(req.params.propId)
-  pushProps(req.params.id)
+    .run(merged.asset_path, merged.name, merged.x, merged.y, merged.size, merged.rotation, merged.z, merged.opacity, param(req, 'propId'))
+  const row = db.prepare(`SELECT ${PROP_COLS} FROM props WHERE id=?`).get(param(req, 'propId'))
+  pushProps(param(req, 'id'))
   res.json(row)
 })
 
 propsRouter.delete('/tables/:id/props/:propId', authMiddleware, (req, res) => {
-  if (!requireMapDM(req, res, req.params.id)) return
-  const existing = db.prepare('SELECT id FROM props WHERE id=? AND table_id=?').get(req.params.propId, req.params.id)
+  if (!requireMapDM(req, res, param(req, 'id'))) return
+  const existing = db.prepare('SELECT id FROM props WHERE id=? AND table_id=?').get(param(req, 'propId'), param(req, 'id'))
   if (!existing) { res.sendStatus(204); return }
-  db.prepare('DELETE FROM props WHERE id=?').run(req.params.propId)
-  pushProps(req.params.id)
+  db.prepare('DELETE FROM props WHERE id=?').run(param(req, 'propId'))
+  pushProps(param(req, 'id'))
   res.sendStatus(204)
 })

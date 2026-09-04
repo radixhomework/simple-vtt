@@ -10,7 +10,7 @@ import { Router } from 'express'
 import { randomUUID } from 'node:crypto'
 import { db } from '../db'
 import { authMiddleware } from '../auth'
-import { isMapDM, requireMapDM } from '../mapaccess'
+import { isMapDM, requireMapDM, param } from '../mapaccess'
 import { broadcastToTable, pushTableStateToTable } from '../hub'
 import { loadTableSettings } from '../settings'
 
@@ -37,44 +37,46 @@ function playerMayOpen(role: string, tableId: string, kind: string, locked: bool
 
 portalsRouter.get('/tables/:id/portals', authMiddleware, (req, res) => {
   const rows = db.prepare(`SELECT ${PORTAL_COLS} FROM portals WHERE table_id=?`)
-    .all(req.params.id) as Record<string, unknown>[]
+    .all(param(req, 'id')) as Record<string, unknown>[]
   res.json(rows.map(normalize))
 })
 
 /** Build mode: place a door or window (admin only). */
 portalsRouter.post('/tables/:id/portals', authMiddleware, (req, res) => {
-  if (!requireMapDM(req, res, req.params.id)) return
+  if (!requireMapDM(req, res, param(req, 'id'))) return
   const b = req.body as { x1: number; y1: number; x2: number; y2: number; kind?: string; floor_id?: string; closed?: boolean }
   const nums = [b.x1, b.y1, b.x2, b.y2].map(Number)
   if (nums.some(n => !Number.isFinite(n))) { res.status(400).json({ error: 'x1/y1/x2/y2 required' }); return }
   const kind = b.kind === 'window' ? 'window' : 'door'
-  const floor = db.prepare('SELECT id FROM floors WHERE id=? AND table_id=?').get(String(b.floor_id ?? ''), req.params.id)
+  const floor = db.prepare('SELECT id FROM floors WHERE id=? AND table_id=?').get(String(b.floor_id ?? ''), param(req, 'id'))
   if (!floor) { res.status(404).json({ error: 'floor not found' }); return }
   const id = randomUUID().replace(/-/g, '').slice(0, 16)
   db.prepare('INSERT INTO portals (id, table_id, x1, y1, x2, y2, closed, floor_id, kind, locked) VALUES (?,?,?,?,?,?,?,?,?,0)')
-    .run(id, req.params.id, b.x1, b.y1, b.x2, b.y2, b.closed === false ? 0 : 1, String(b.floor_id), kind)
+    .run(id, param(req, 'id'), b.x1, b.y1, b.x2, b.y2, b.closed === false ? 0 : 1, String(b.floor_id), kind)
   const row = db.prepare(`SELECT ${PORTAL_COLS} FROM portals WHERE id=?`).get(id) as Record<string, unknown>
-  pushTableStateToTable(req.params.id)
+  pushTableStateToTable(param(req, 'id'))
   res.status(201).json(normalize(row))
 })
 
 /** Build mode: delete a portal (admin only). */
 portalsRouter.delete('/tables/:id/portals/:portalId', authMiddleware, (req, res) => {
-  if (!requireMapDM(req, res, req.params.id)) return
+  if (!requireMapDM(req, res, param(req, 'id'))) return
   const existing = db.prepare(`SELECT ${PORTAL_COLS} FROM portals WHERE id=? AND table_id=?`)
-    .get(req.params.portalId, req.params.id) as Record<string, unknown> | undefined
+    .get(param(req, 'portalId'), param(req, 'id')) as Record<string, unknown> | undefined
   if (!existing) { res.status(404).json({ error: 'not found' }); return }
-  db.prepare('DELETE FROM portals WHERE id=?').run(req.params.portalId)
-  pushTableStateToTable(req.params.id)
+  db.prepare('DELETE FROM portals WHERE id=?').run(param(req, 'portalId'))
+  pushTableStateToTable(param(req, 'id'))
   res.sendStatus(204)
 })
 
 portalsRouter.patch('/tables/:id/portals/:portalId', authMiddleware, (req, res) => {
+  const id = param(req, 'id')
+  const portalId = param(req, 'portalId')
   const existing = db.prepare(`SELECT ${PORTAL_COLS} FROM portals WHERE id=? AND table_id=?`)
-    .get(req.params.portalId, req.params.id) as Record<string, unknown> | undefined
+    .get(portalId, id) as Record<string, unknown> | undefined
   if (!existing) { res.status(404).json({ error: 'not found' }); return }
 
-  const isAdmin = isMapDM(res.locals.user, req.params.id, res.locals.role)
+  const isAdmin = isMapDM(res.locals.user, param(req, 'id'), res.locals.role)
   const kind = String(existing.kind) || 'door'
 
   const locked = existing.locked === 1 || existing.locked === true
@@ -84,17 +86,17 @@ portalsRouter.patch('/tables/:id/portals/:portalId', authMiddleware, (req, res) 
   if (newKind !== undefined) {
     if (!isAdmin) { res.status(403).json({ error: 'forbidden' }); return }
     if (newKind !== 'door' && newKind !== 'window') { res.status(400).json({ error: 'kind must be door or window' }); return }
-    db.prepare('UPDATE portals SET kind=? WHERE id=?').run(newKind, req.params.portalId)
+    db.prepare('UPDATE portals SET kind=? WHERE id=?').run(newKind, portalId)
   }
   if (req.body.locked !== undefined) {
     if (!isAdmin) { res.status(403).json({ error: 'forbidden' }); return }
-    db.prepare('UPDATE portals SET locked=? WHERE id=?').run(req.body.locked ? 1 : 0, req.params.portalId)
+    db.prepare('UPDATE portals SET locked=? WHERE id=?').run(req.body.locked ? 1 : 0, portalId)
   }
 
   // Open/close: admins always; players when allowed for the kind and not locked
   if (req.body.closed !== undefined) {
-    if (!playerMayOpen(res.locals.role, req.params.id, kind, locked)) { res.status(403).json({ error: 'forbidden' }); return }
-    db.prepare('UPDATE portals SET closed=? WHERE id=?').run(req.body.closed ? 1 : 0, req.params.portalId)
+    if (!playerMayOpen(res.locals.role, id, kind, locked)) { res.status(403).json({ error: 'forbidden' }); return }
+    db.prepare('UPDATE portals SET closed=? WHERE id=?').run(req.body.closed ? 1 : 0, portalId)
   }
 
   // Geometry edit (build mode): move/resize the door/window. Admin-only.
@@ -103,14 +105,14 @@ portalsRouter.patch('/tables/:id/portals/:portalId', authMiddleware, (req, res) 
     const x1 = Number(req.body.x1 ?? existing.x1), y1 = Number(req.body.y1 ?? existing.y1)
     const x2 = Number(req.body.x2 ?? existing.x2), y2 = Number(req.body.y2 ?? existing.y2)
     if (![x1, y1, x2, y2].every(Number.isFinite)) { res.status(400).json({ error: 'finite x1/y1/x2/y2 required' }); return }
-    db.prepare('UPDATE portals SET x1=?, y1=?, x2=?, y2=? WHERE id=?').run(x1, y1, x2, y2, req.params.portalId)
+    db.prepare('UPDATE portals SET x1=?, y1=?, x2=?, y2=? WHERE id=?').run(x1, y1, x2, y2, param(req, 'portalId'))
     // Geometry feeds LOS/movement walls on every client — full resync.
-    pushTableStateToTable(req.params.id)
+    pushTableStateToTable(param(req, 'id'))
   }
 
   const row = db.prepare(`SELECT ${PORTAL_COLS} FROM portals WHERE id=?`)
-    .get(req.params.portalId) as Record<string, unknown>
+    .get(portalId) as Record<string, unknown>
   const portal = normalize(row)
-  broadcastToTable(req.params.id, { type: 'portal_toggle', payload: { portal } })
+  broadcastToTable(param(req, 'id'), { type: 'portal_toggle', payload: { portal } })
   res.json(portal)
 })

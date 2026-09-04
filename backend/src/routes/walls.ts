@@ -9,7 +9,7 @@ import { Router } from 'express'
 import { randomUUID } from 'node:crypto'
 import { db } from '../db'
 import { authMiddleware } from '../auth'
-import { requireMapDM } from '../mapaccess'
+import { requireMapDM, param } from '../mapaccess'
 import { broadcastToTable, pushTableStateToTable } from '../hub'
 
 export const wallsRouter = Router()
@@ -31,9 +31,9 @@ function pushWalls(tableId: string) {
 }
 
 wallsRouter.post('/tables/:id/walls', authMiddleware, (req, res) => {
-  if (!requireMapDM(req, res, req.params.id)) return
+  if (!requireMapDM(req, res, param(req, 'id'))) return
   const floorId = String(req.body.floor_id ?? '')
-  const floor = db.prepare('SELECT id FROM floors WHERE id=? AND table_id=?').get(floorId, req.params.id)
+  const floor = db.prepare('SELECT id FROM floors WHERE id=? AND table_id=?').get(floorId, param(req, 'id'))
   if (!floor) { res.status(404).json({ error: 'floor not found' }); return }
 
   const single = coerceWallBody(req.body)
@@ -52,24 +52,24 @@ wallsRouter.post('/tables/:id/walls', authMiddleware, (req, res) => {
   db.transaction(() => {
     for (const w of items) {
       const id = newId()
-      insert.run(id, req.params.id, floorId, w.ax, w.ay, w.bx, w.by)
+      insert.run(id, param(req, 'id'), floorId, w.ax, w.ay, w.bx, w.by)
       createdIds.push(id)
     }
   })()
   const rows = createdIds.length === 1
     ? [db.prepare(`SELECT ${WALL_COLS} FROM walls WHERE id=?`).get(createdIds[0])]
-    : db.prepare(`SELECT ${WALL_COLS} FROM walls WHERE table_id=? AND floor_id=?`).all(req.params.id, floorId)
-  pushWalls(req.params.id)
+    : db.prepare(`SELECT ${WALL_COLS} FROM walls WHERE table_id=? AND floor_id=?`).all(param(req, 'id'), floorId)
+  pushWalls(param(req, 'id'))
   res.status(201).json(rows)
 })
 
 wallsRouter.put('/walls/:id', authMiddleware, (req, res) => {
-  const existing = db.prepare(`SELECT ${WALL_COLS} FROM walls WHERE id=?`).get(req.params.id) as Record<string, unknown> | undefined
+  const existing = db.prepare(`SELECT ${WALL_COLS} FROM walls WHERE id=?`).get(param(req, 'id')) as Record<string, unknown> | undefined
   if (!existing) { res.status(404).json({ error: 'not found' }); return }
   if (!requireMapDM(req, res, String(existing.table_id))) return
   const w = coerceWallBody(req.body)
   if (!w) { res.status(400).json({ error: 'ax/ay/bx/by required' }); return }
-  db.prepare('UPDATE walls SET ax=?, ay=?, bx=?, by=? WHERE id=?').run(w.ax, w.ay, w.bx, w.by, req.params.id)
+  db.prepare('UPDATE walls SET ax=?, ay=?, bx=?, by=? WHERE id=?').run(w.ax, w.ay, w.bx, w.by, param(req, 'id'))
   pushWalls(String(existing.table_id))
   res.json({ ...existing, ...w })
 })
@@ -77,7 +77,7 @@ wallsRouter.put('/walls/:id', authMiddleware, (req, res) => {
 /** Batch move: translate a set of walls by (dx, dy) world px — the group
  *  drag from build mode. Atomic; one broadcast at the end. */
 wallsRouter.patch('/tables/:id/walls/move', authMiddleware, (req, res) => {
-  if (!requireMapDM(req, res, req.params.id)) return
+  if (!requireMapDM(req, res, param(req, 'id'))) return
   const ids = Array.isArray(req.body.ids) ? req.body.ids.map(String) : []
   const dx = Number(req.body.dx), dy = Number(req.body.dy)
   if (ids.length === 0 || !Number.isFinite(dx) || !Number.isFinite(dy)) {
@@ -85,23 +85,23 @@ wallsRouter.patch('/tables/:id/walls/move', authMiddleware, (req, res) => {
   }
   const update = db.prepare('UPDATE walls SET ax=ax+?, ay=ay+?, bx=bx+?, by=by+? WHERE id=? AND table_id=?')
   db.transaction(() => {
-    for (const id of ids) update.run(dx, dy, dx, dy, id, req.params.id)
+    for (const id of ids) update.run(dx, dy, dx, dy, id, param(req, 'id'))
   })()
-  pushWalls(req.params.id)
+  pushWalls(param(req, 'id'))
   res.json({ moved: ids.length })
 })
 
 wallsRouter.delete('/walls/:id', authMiddleware, (req, res) => {
-  const existing = db.prepare(`SELECT ${WALL_COLS} FROM walls WHERE id=?`).get(req.params.id) as Record<string, unknown> | undefined
+  const existing = db.prepare(`SELECT ${WALL_COLS} FROM walls WHERE id=?`).get(param(req, 'id')) as Record<string, unknown> | undefined
   if (!existing) { res.status(404).json({ error: 'not found' }); return }
   if (!requireMapDM(req, res, String(existing.table_id))) return
-  db.prepare('DELETE FROM walls WHERE id=?').run(req.params.id)
+  db.prepare('DELETE FROM walls WHERE id=?').run(param(req, 'id'))
   pushWalls(String(existing.table_id))
   res.sendStatus(204)
 })
 
 wallsRouter.get('/tables/:id/walls', authMiddleware, (req, res) => {
-  const rows = db.prepare(`SELECT ${WALL_COLS} FROM walls WHERE table_id=?`).all(req.params.id)
+  const rows = db.prepare(`SELECT ${WALL_COLS} FROM walls WHERE table_id=?`).all(param(req, 'id'))
   res.json(rows)
 })
 
@@ -112,8 +112,8 @@ wallsRouter.get('/tables/:id/walls', authMiddleware, (req, res) => {
  *  Unlink: clears group membership for the listed ids. One transaction,
  *  then walls_update + props_update + table_state push. */
 wallsRouter.put('/tables/:id/floors/:floorId/link', authMiddleware, (req, res) => {
-  if (!requireMapDM(req, res, req.params.id)) return
-  const floor = db.prepare('SELECT id FROM floors WHERE id=? AND table_id=?').get(req.params.floorId, req.params.id)
+  if (!requireMapDM(req, res, param(req, 'id'))) return
+  const floor = db.prepare('SELECT id FROM floors WHERE id=? AND table_id=?').get(param(req, 'floorId'), param(req, 'id'))
   if (!floor) { res.status(404).json({ error: 'floor not found' }); return }
 
   const wallIds = (Array.isArray(req.body.wallIds) ? req.body.wallIds : []) as unknown[]
@@ -127,12 +127,12 @@ wallsRouter.put('/tables/:id/floors/:floorId/link', authMiddleware, (req, res) =
   const upWall = db.prepare('UPDATE walls SET group_id=? WHERE id=? AND table_id=? AND floor_id=?')
   const upProp = db.prepare('UPDATE props SET group_id=? WHERE id=? AND table_id=? AND floor_id=?')
   db.transaction(() => {
-    for (const id of wids) upWall.run(groupId, id, req.params.id, req.params.floorId)
-    for (const id of pids) upProp.run(groupId, id, req.params.id, req.params.floorId)
+    for (const id of wids) upWall.run(groupId, id, param(req, 'id'), param(req, 'floorId'))
+    for (const id of pids) upProp.run(groupId, id, param(req, 'id'), param(req, 'floorId'))
   })()
-  broadcastToTable(req.params.id, { type: 'walls_update', payload: {} })
-  broadcastToTable(req.params.id, { type: 'props_update', payload: {} })
-  pushTableStateToTable(req.params.id)
+  broadcastToTable(param(req, 'id'), { type: 'walls_update', payload: {} })
+  broadcastToTable(param(req, 'id'), { type: 'props_update', payload: {} })
+  pushTableStateToTable(param(req, 'id'))
   res.json({ group_id: groupId, walls: wids.length, props: pids.length })
 })
 
@@ -144,8 +144,8 @@ wallsRouter.put('/tables/:id/floors/:floorId/link', authMiddleware, (req, res) =
  *  ends with EXACTLY the snapshot's rows — no stale-id deletes, no races
  *  with in-flight per-row requests, no duplication. */
 wallsRouter.put('/tables/:id/floors/:floorId/build-state', authMiddleware, (req, res) => {
-  if (!requireMapDM(req, res, req.params.id)) return
-  const floor = db.prepare('SELECT id FROM floors WHERE id=? AND table_id=?').get(req.params.floorId, req.params.id)
+  if (!requireMapDM(req, res, param(req, 'id'))) return
+  const floor = db.prepare('SELECT id FROM floors WHERE id=? AND table_id=?').get(param(req, 'floorId'), param(req, 'id'))
   if (!floor) { res.status(404).json({ error: 'floor not found' }); return }
 
   const wallBody = (Array.isArray(req.body.walls) ? req.body.walls : []) as Array<Record<string, unknown>>
@@ -169,20 +169,20 @@ wallsRouter.put('/tables/:id/floors/:floorId/build-state', authMiddleware, (req,
   const insertWalls = () => {
     for (const w of wallBody) {
       const g = coerceWallBody(w)
-      if (g) insWall.run(cleanId(w.id), req.params.id, req.params.floorId, g.ax, g.ay, g.bx, g.by, strField(w.group_id))
+      if (g) insWall.run(cleanId(w.id), param(req, 'id'), param(req, 'floorId'), g.ax, g.ay, g.bx, g.by, strField(w.group_id))
     }
   }
   const insertPortals = () => {
     for (const p of portalBody) {
       const g = coercePortalBody(p)
-      if (g) insPortal.run(cleanId(p.id), req.params.id, g.x1, g.y1, g.x2, g.y2, g.closed ? 1 : 0, req.params.floorId, g.kind, g.locked ? 1 : 0)
+      if (g) insPortal.run(cleanId(p.id), param(req, 'id'), g.x1, g.y1, g.x2, g.y2, g.closed ? 1 : 0, param(req, 'floorId'), g.kind, g.locked ? 1 : 0)
     }
   }
   const insertStairs = () => {
     for (const s of stairBody) {
-      const g = coerceStairRow(s, req.params.floorId, floorExists, req.params.id)
+      const g = coerceStairRow(s, param(req, 'floorId'), floorExists, param(req, 'id'))
       if (!g) continue
-      insStair.run(cleanId(s.id), req.params.id, req.params.floorId, g.fx, g.fy, g.toFloor, g.tx, g.ty, g.radius)
+      insStair.run(cleanId(s.id), param(req, 'id'), param(req, 'floorId'), g.fx, g.fy, g.toFloor, g.tx, g.ty, g.radius)
       stairCount++
     }
   }
@@ -190,22 +190,22 @@ wallsRouter.put('/tables/:id/floors/:floorId/build-state', authMiddleware, (req,
     for (const p of propBody) {
       const g = coercePropRow(p)
       if (!g) continue
-      insProp.run(cleanId(p.id), req.params.id, req.params.floorId, g.assetPath, g.name, g.x, g.y, g.size, g.rotation, g.z, g.opacity, strField(p.group_id))
+      insProp.run(cleanId(p.id), param(req, 'id'), param(req, 'floorId'), g.assetPath, g.name, g.x, g.y, g.size, g.rotation, g.z, g.opacity, strField(p.group_id))
     }
   }
   db.transaction(() => {
-    delWalls.run(req.params.id, req.params.floorId)
-    delPortals.run(req.params.id, req.params.floorId)
-    delStairs.run(req.params.id, req.params.floorId)
-    delProps.run(req.params.id, req.params.floorId)
+    delWalls.run(param(req, 'id'), param(req, 'floorId'))
+    delPortals.run(param(req, 'id'), param(req, 'floorId'))
+    delStairs.run(param(req, 'id'), param(req, 'floorId'))
+    delProps.run(param(req, 'id'), param(req, 'floorId'))
     insertWalls()
     insertPortals()
     insertStairs()
     insertProps()
   })()
-  pushWalls(req.params.id)
-  pushTableStateToTable(req.params.id)
-  broadcastToTable(req.params.id, { type: 'props_update', payload: {} })
+  pushWalls(param(req, 'id'))
+  pushTableStateToTable(param(req, 'id'))
+  broadcastToTable(param(req, 'id'), { type: 'props_update', payload: {} })
   res.json({ walls: wallBody.length, portals: portalBody.length, stairs: stairCount, props: propBody.length })
 })
 

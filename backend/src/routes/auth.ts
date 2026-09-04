@@ -8,6 +8,7 @@ import bcrypt from 'bcryptjs'
 import { db } from '../db'
 import { signToken, authMiddleware, adminOnly } from '../auth'
 import { loginLimiter } from '../ratelimit'
+import { param } from '../mapaccess'
 
 export const authRouter = Router()
 
@@ -80,10 +81,10 @@ authRouter.post('/users', authMiddleware, adminOnly, (req, res) => {
 authRouter.put('/users/:username', authMiddleware, adminOnly, (req, res) => {
   const { role } = req.body as { role: string }
   if (role !== 'admin' && role !== 'player') { res.status(400).json({ error: 'invalid role' }); return }
-  if (req.params.username === res.locals.user) { res.status(400).json({ error: 'cannot change your own role' }); return }
-  const r = db.prepare('UPDATE users SET role=? WHERE username=?').run(role, req.params.username)
+  if (param(req, 'username') === res.locals.user) { res.status(400).json({ error: 'cannot change your own role' }); return }
+  const r = db.prepare('UPDATE users SET role=? WHERE username=?').run(role, param(req, 'username'))
   if (r.changes === 0) { res.status(404).json({ error: 'not found' }); return }
-  res.json({ username: req.params.username, role })
+  res.json({ username: param(req, 'username'), role })
 })
 
 /** Admin resets another user's password. */
@@ -91,24 +92,24 @@ authRouter.post('/users/:username/password', authMiddleware, adminOnly, (req, re
   const { new_password } = req.body as { new_password: string }
   if (!new_password || new_password.length < 4) { res.status(400).json({ error: 'password too short (min 4)' }); return }
   const r = db.prepare('UPDATE users SET password_hash=? WHERE username=?')
-    .run(bcrypt.hashSync(new_password, 10), req.params.username)
+    .run(bcrypt.hashSync(new_password, 10), param(req, 'username'))
   if (r.changes === 0) { res.status(404).json({ error: 'not found' }); return }
   res.json({ ok: true })
 })
 
 authRouter.delete('/users/:username', authMiddleware, adminOnly, (req, res) => {
-  if (req.params.username === res.locals.user) { res.status(400).json({ error: 'cannot delete yourself' }); return }
+  if (param(req, 'username') === res.locals.user) { res.status(400).json({ error: 'cannot delete yourself' }); return }
 
   // Map cleanup: drop the user's memberships. Maps they owned must not be
   // orphaned — promote another dm member if any, else the first admin.
-  const owned = db.prepare('SELECT id FROM tables WHERE owner=?').all(req.params.username) as Array<{ id: string }>
-  db.prepare('DELETE FROM map_members WHERE username=?').run(req.params.username)
+  const owned = db.prepare('SELECT id FROM tables WHERE owner=?').all(param(req, 'username')) as Array<{ id: string }>
+  db.prepare('DELETE FROM map_members WHERE username=?').run(param(req, 'username'))
   for (const t of owned) {
     const heir = db.prepare("SELECT username FROM map_members WHERE table_id=? AND role='dm' ORDER BY rowid LIMIT 1").get(t.id) as { username: string } | undefined
     if (heir) {
       db.prepare('UPDATE tables SET owner=? WHERE id=?').run(heir.username, t.id)
     } else {
-      const admin = db.prepare("SELECT username FROM users WHERE role='admin' AND username<>? ORDER BY rowid LIMIT 1").get(req.params.username) as { username: string } | undefined
+      const admin = db.prepare("SELECT username FROM users WHERE role='admin' AND username<>? ORDER BY rowid LIMIT 1").get(param(req, 'username')) as { username: string } | undefined
       if (admin) {
         db.prepare('UPDATE tables SET owner=? WHERE id=?').run(admin.username, t.id)
         db.prepare("INSERT OR IGNORE INTO map_members (table_id, username, role) VALUES (?,?,'dm')").run(t.id, admin.username)
@@ -116,6 +117,6 @@ authRouter.delete('/users/:username', authMiddleware, adminOnly, (req, res) => {
     }
   }
 
-  db.prepare('DELETE FROM users WHERE username=?').run(req.params.username)
+  db.prepare('DELETE FROM users WHERE username=?').run(param(req, 'username'))
   res.sendStatus(204)
 })

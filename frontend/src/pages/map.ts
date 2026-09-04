@@ -17,6 +17,7 @@ import {
 import { drawTiledMap, resetTileCache } from '../canvas/tiles'
 import { screenToWorld, worldToScreen, snapToGrid, zoomAround } from '../canvas/camera'
 import { portalWalls, portalSightWalls, pathCrossesWall, pointOnWall } from '../canvas/los'
+import { PALETTE } from '../theme'
 import { loadMode, saveMode, drawWallsOverlay, drawMarquee, drawWallGhost, pickWall, wallsInRect, pickPortalBuild, pickPortalGrab, portalsInRect, drawPortalsBuild, type PageMode } from '../canvas/build'
 import { drawProps, drawPropSelection, pickProp, pickPropHandle, preloadPropImage, clearPropImageCache } from '../canvas/props'
 import type { WallSegment } from '../canvas/los'
@@ -66,6 +67,8 @@ interface GameState {
   gridVisible: boolean
   fogEnabled: boolean
   zen: boolean
+  /** In-progress reveal/erase drag zone (world coords), null when idle */
+  fogDrag: { x0: number; y0: number; x1: number; y1: number } | null
   measure: MeasureState
   sharedMeasure: MeasureState | null
   shareMeasure: boolean
@@ -362,7 +365,8 @@ export function renderMap(
         </div>
         <div class="game-header-right">
           ${isAdmin ? `<button class="header-btn hd-desktop" id="add-token-btn">+ Token</button>
-          <button class="header-btn hd-desktop" id="clear-fog-btn">Clear Fog</button>
+          <button class="header-btn hd-desktop" id="reset-fog-btn" title="Reset fog to arrival state on this floor">Reset Fog</button>
+          <button class="header-btn hd-desktop" id="clear-fog-btn" title="Remove ALL fog from this floor">Clear Fog</button>
           <button class="header-btn hd-desktop" id="share-btn" title="Invite users to this map">👥 Share</button>` : ''}
           <button class="header-btn" id="music-btn" title="Music player">🎵</button>
           <button class="header-btn" id="sidebar-btn">Tokens ≡</button>
@@ -489,6 +493,7 @@ export function renderMap(
     gridVisible: true,
     fogEnabled: true,
     zen: false,
+    fogDrag: null,
     measure: { active: false, tool: 'line', startX: 0, startY: 0, endX: 0, endY: 0 },
     sharedMeasure: null,
     shareMeasure: false,
@@ -701,7 +706,7 @@ export function renderMap(
       // see the sight of hidden tokens too)
       const sightTokens = isAdmin ? state.tokens : visibleTokens
       fogCtx.clearRect(0, 0, w, h)
-      if (state.fogEnabled) {
+      if (state.fogEnabled && !state.floor?.revealed) {
         // Keep the explored memory up to date so areas that fall out of
         // sight keep showing in greyscale instead of going fully black.
         // Stamp only on change (dragging marks dirty per move); the map
@@ -731,6 +736,20 @@ export function renderMap(
 
       // UI canvas: shared (admin) measurement, then the local measuring tool
       uiCtx.clearRect(0, 0, w, h)
+      if (state.fogDrag && isAdmin) {
+        const z = state.fogDrag
+        const [ax, ay] = worldToScreen(Math.min(z.x0, z.x1), Math.min(z.y0, z.y1), state.camera)
+        const [bx, by] = worldToScreen(Math.max(z.x0, z.x1), Math.max(z.y0, z.y1), state.camera)
+        uiCtx.save()
+        uiCtx.strokeStyle = state.tool === 'fog-reveal' ? PALETTE.moss : PALETTE.rose
+        uiCtx.fillStyle = state.tool === 'fog-reveal' ? 'rgba(77,89,71,0.15)' : 'rgba(138,94,97,0.15)'
+        uiCtx.lineWidth = 1.5
+        uiCtx.setLineDash([6, 4])
+        uiCtx.fillRect(ax, ay, bx - ax, by - ay)
+        uiCtx.strokeRect(ax, ay, bx - ax, by - ay)
+        uiCtx.setLineDash([])
+        uiCtx.restore()
+      }
       if (state.mode === 'build' && isAdmin) {
         // Stairs + teleporters as build handles — on the UI layer so they
         // render through the fog canvas (walls/portals already do on main,
@@ -1204,6 +1223,27 @@ export function renderMap(
         }
         markExploredDirty()
         render()
+        break
+      }
+      case 'fog_reset': {
+        const p = msg.payload as { floor_id: string }
+        state.fog = state.fog.filter(f => f.floor_id !== p.floor_id)
+        if (p.floor_id === state.floor?.id) {
+          wipeExplored(p.floor_id)
+          if (state.floor) state.floor.revealed = false
+        }
+        render()
+        break
+      }
+      case 'fog_revealed': {
+        const p = msg.payload as { floor_id: string }
+        const f = state.floors.find(x => x.id === p.floor_id)
+        if (f) (f as Floor).revealed = true
+        if (state.floor?.id === p.floor_id) state.floor.revealed = true
+        if (state.floor?.id === p.floor_id) {
+          state.fog = []
+          render()
+        }
         break
       }
       case 'measure_update': {
@@ -1698,13 +1738,36 @@ export function renderMap(
   }
   updateHeaderToggles()
 
-  // Clear fog (admin)
-  root.querySelector('#clear-fog-btn')?.addEventListener('click', async () => {
-    if (!confirm('Clear all manually revealed fog on this floor?')) return
+  /** Wipe the local explored memory of the given floor. */
+  function wipeExplored(floorId: string | undefined) {
+    if (!floorId) return
+    exploredMasks.delete(floorId)
+    if (state.floor?.id === floorId) {
+      state.exploredCanvas = state.mapImage
+        ? new OffscreenCanvas(state.mapImage.width, state.mapImage.height)
+        : null
+      markExploredDirty()
+    }
+  }
+
+  // Reset fog (dm): back to the arrival state — manual reveals AND the
+  // explored memory of this floor are wiped, full-reveal flag removed.
+  root.querySelector('#reset-fog-btn')?.addEventListener('click', async () => {
+    if (!confirm('Reset fog on this floor? Players will only see what their tokens can see.')) return
     await api.clearFog(table.id, state.floor?.id)
-    socket.send('fog_update', { action: 'clear_all', points: [], floor_id: state.floor?.id })
+    socket.send('fog_update', { action: 'reset', floor_id: state.floor?.id })
     state.fog = []
-    markExploredDirty()
+    if (state.floor) state.floor.revealed = false
+    wipeExplored(state.floor?.id)
+    render()
+  })
+
+  // Clear fog (dm): remove ALL fog — the whole floor is marked revealed
+  root.querySelector('#clear-fog-btn')?.addEventListener('click', () => {
+    if (!confirm('Remove ALL fog from this floor? Everything becomes visible to everyone.')) return
+    socket.send('fog_update', { action: 'reveal_all', floor_id: state.floor?.id })
+    state.fog = []
+    if (state.floor) state.floor.revealed = true
     render()
   })
 
@@ -1762,7 +1825,7 @@ export function renderMap(
     sheet?.classList.remove('open')
   })
   root.querySelector('#sheet-add-token')?.addEventListener('click', () => { sheet?.classList.remove('open'); void addTokenFn() })
-  root.querySelector('#sheet-clear-fog')?.addEventListener('click', () => { sheet?.classList.remove('open'); root.querySelector('#clear-fog-btn')?.dispatchEvent(new Event('click')) })
+  root.querySelector('#sheet-clear-fog')?.addEventListener('click', () => { sheet?.classList.remove('open'); root.querySelector('#reset-fog-btn')?.dispatchEvent(new Event('click')) })
   root.querySelector('#sheet-share')?.addEventListener('click', () => { sheet?.classList.remove('open'); root.querySelector('#share-btn')?.dispatchEvent(new Event('click')) })
   root.querySelector('#sheet-music')?.addEventListener('click', () => { sheet?.classList.remove('open'); root.querySelector('#music-btn')?.dispatchEvent(new Event('click')) })
   root.querySelector('#sheet-tokens')?.addEventListener('click', () => { sheet?.classList.remove('open'); root.querySelector('#sidebar-btn')?.dispatchEvent(new Event('click')) })
@@ -2798,11 +2861,12 @@ export function renderMap(
         return
       }
       if (state.tool === 'fog-reveal' && isAdmin) {
-        addFogPoint(wx, wy)
+        // Click = instant reveal; drag = zone (committed on release)
+        state.fogDrag = { x0: wx, y0: wy, x1: wx, y1: wy }
         return
       }
       if (state.tool === 'fog-erase' && isAdmin) {
-        removeFogPoint(wx, wy)
+        state.fogDrag = { x0: wx, y0: wy, x1: wx, y1: wy }
         return
       }
       if (state.tool !== 'select') {
@@ -3208,6 +3272,14 @@ export function renderMap(
 
     if (sharedMouseMove(e.offsetX, e.offsetY)) return
 
+    if (state.fogDrag) {
+      const [wx, wy] = screenToWorld(e.offsetX, e.offsetY, state.camera)
+      state.fogDrag.x1 = wx
+      state.fogDrag.y1 = wy
+      render()
+      return
+    }
+
     if (state.measure.active) {
       const [wx, wy] = screenToWorld(e.offsetX, e.offsetY, state.camera)
       state.measure.endX = wx; state.measure.endY = wy
@@ -3264,6 +3336,11 @@ export function renderMap(
 
     if (state.dragging && state.selectedId) {
       finishTokenDrag()
+      return
+    }
+
+    if (state.fogDrag && isAdmin) {
+      commitFogDrag()
       return
     }
 
@@ -3378,7 +3455,7 @@ export function renderMap(
   // One finger or pencil: drag tokens (or use the active tool); a tap on a
   // token selects it, a tap on empty space deselects. Two fingers: pinch
   // zoom + pan. A single finger on empty space also pans the map.
-  type TouchMode = 'none' | 'token' | 'pan' | 'measure' | 'pinch' | 'wait'
+  type TouchMode = 'none' | 'token' | 'pan' | 'measure' | 'pinch' | 'wait' | 'fog'
   let touchMode: TouchMode = 'none'
   let touchId: number | null = null
   let touchStartTime = 0
@@ -3409,6 +3486,7 @@ export function renderMap(
       markExploredDirty()
     }
     if (state.measure.active) state.measure.active = false
+    state.fogDrag = null
     state.panning = false
     render()
   }
@@ -3439,8 +3517,8 @@ export function renderMap(
     const [wx, wy] = screenToWorld(x, y, state.camera)
 
     // Active tools first (same behaviour as a left click)
-    if (state.tool === 'fog-reveal' && isAdmin) { addFogPoint(wx, wy); return }
-    if (state.tool === 'fog-erase' && isAdmin) { removeFogPoint(wx, wy); return }
+    if (state.tool === 'fog-reveal' && isAdmin) { state.fogDrag = { x0: wx, y0: wy, x1: wx, y1: wy }; touchMode = 'fog'; return }
+    if (state.tool === 'fog-erase' && isAdmin) { state.fogDrag = { x0: wx, y0: wy, x1: wx, y1: wy }; touchMode = 'fog'; return }
     if (state.tool !== 'select') {
       state.measure = { active: true, tool: state.tool, startX: wx, startY: wy, endX: wx, endY: wy }
       if (isAdmin && state.shareMeasure) {
@@ -3525,6 +3603,17 @@ export function renderMap(
 
     if (touchMode === 'wait') return
 
+    if (touchMode === 'fog' && state.fogDrag) {
+      const t = list.find(t2 => t2.identifier === touchId)
+      if (!t) return
+      const [x, y] = touchPos(t)
+      const [wx, wy] = screenToWorld(x, y, state.camera)
+      state.fogDrag.x1 = wx
+      state.fogDrag.y1 = wy
+      render()
+      return
+    }
+
     const t = list.find(t => t.identifier === touchId)
     if (!t) return
     const [x, y] = touchPos(t)
@@ -3568,6 +3657,7 @@ export function renderMap(
 
     if (touchMode === 'token') finishTokenDrag()
     if (touchMode === 'measure') finishMeasure()
+    if (touchMode === 'fog' && state.fogDrag && isAdmin) commitFogDrag()
 
     const dt = Date.now() - touchStartTime
     const moved = Math.hypot(touchLastX - touchStartX, touchLastY - touchStartY)
@@ -3876,6 +3966,61 @@ export function renderMap(
   }
 
   // Fog helpers
+  /** Commit a reveal/erase drag: a tiny drag counts as a click, anything
+   *  larger applies to the rectangular zone. */
+  function commitFogDrag() {
+    const z = state.fogDrag
+    state.fogDrag = null
+    if (!z) return
+    const gridSize = state.table.grid_size ?? 70
+    const moved = Math.hypot(z.x1 - z.x0, z.y1 - z.y0)
+    if (moved * state.camera.zoom < 6) {
+      // Effectively a click — keep the original per-point behavior
+      if (state.tool === 'fog-reveal') addFogPoint(z.x0, z.y0)
+      else removeFogPoint(z.x0, z.y0)
+      return
+    }
+    const x0 = Math.min(z.x0, z.x1), x1 = Math.max(z.x0, z.x1)
+    const y0 = Math.min(z.y0, z.y1), y1 = Math.max(z.y0, z.y1)
+    if (state.tool === 'fog-reveal') revealRect(x0, y0, x1, y1, gridSize)
+    else eraseRect(x0, y0, x1, y1, gridSize)
+  }
+
+  /** Reveal a rectangular zone: stamp a overlapping grid of reveal points
+   *  inside it (one atomic WS message). */
+  function revealRect(x0: number, y0: number, x1: number, y1: number, gridSize: number) {
+    const radius = 3
+    const step = radius * gridSize * 1.2
+    const points: FogPoint[] = []
+    for (let y = y0 + step / 2; y < y1; y += step) {
+      for (let x = x0 + step / 2; x < x1; x += step) {
+        points.push({ id: '', table_id: table.id, x, y, radius, floor_id: state.floor?.id })
+        if (points.length >= 400) break
+      }
+      if (points.length >= 400) break
+    }
+    if (points.length === 0) {
+      // Zone smaller than one step: a single centered point still covers it
+      points.push({ id: '', table_id: table.id, x: (x0 + x1) / 2, y: (y0 + y1) / 2, radius, floor_id: state.floor?.id })
+    }
+    socket.send('fog_update', { action: 'add', points, floor_id: state.floor?.id })
+    state.fog.push(...points)
+    markExploredDirty()
+    render()
+  }
+
+  /** Erase revealed fog inside a rectangular zone (points whose circle
+   *  intersects the rect), one atomic clear+re-add. */
+  function eraseRect(x0: number, y0: number, x1: number, y1: number, gridSize: number) {
+    state.fog = state.fog.filter(p => {
+      const r = p.radius * gridSize
+      return !(p.x + r > x0 && p.x - r < x1 && p.y + r > y0 && p.y - r < y1)
+    })
+    socket.send('fog_update', { action: 'clear_all', points: state.fog, floor_id: state.floor?.id })
+    markExploredDirty()
+    render()
+  }
+
   function addFogPoint(wx: number, wy: number) {
     const point: FogPoint = { id: '', table_id: table.id, x: wx, y: wy, radius: 3, floor_id: state.floor?.id }
     socket.send('fog_update', { action: 'add', points: [point], floor_id: state.floor?.id })

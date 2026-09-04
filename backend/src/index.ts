@@ -83,8 +83,10 @@ app.use(express.static(staticDir, {
   },
 }))
 
-// SPA fallback
-app.get('*', (_req, res) => {
+// SPA fallback (Express 5: bare '*' wildcards are gone — a terminal
+// app.use handler catches every unmatched request instead)
+app.use((req, res) => {
+  if (req.method !== 'GET' && req.method !== 'HEAD') { res.status(404).send('not found'); return }
   const indexPath = path.join(staticDir, 'index.html')
   if (fs.existsSync(indexPath)) {
     res.sendFile(indexPath)

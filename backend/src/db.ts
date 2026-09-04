@@ -228,6 +228,14 @@ if (!portalCols.some(c => c.name === 'locked')) {
   db.exec('ALTER TABLE portals ADD COLUMN locked INTEGER NOT NULL DEFAULT 0')
 }
 
+// Migration: fully-revealed floors ("Clear fog" marks the whole level seen)
+{
+  const cols = db.prepare('PRAGMA table_info(floors)').all() as Array<{ name: string }>
+  if (!cols.some(c => c.name === 'revealed')) {
+    db.exec('ALTER TABLE floors ADD COLUMN revealed INTEGER NOT NULL DEFAULT 0')
+  }
+}
+
 // Migration: per-table default floor (replaces the global default_floor_level)
 {
   const cols = db.prepare('PRAGMA table_info(tables)').all() as Array<{ name: string }>

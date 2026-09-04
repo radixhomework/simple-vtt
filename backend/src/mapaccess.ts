@@ -14,6 +14,15 @@ import { db } from './db'
 
 export type MapRole = 'dm' | 'player'
 
+/**
+ * Express 5 types route params as `string | string[]` (wildcards may
+ * repeat); our routes only use simple named params, so take the first.
+ */
+export function param(req: Request, name: string): string {
+  const v = req.params[name]
+  return Array.isArray(v) ? v[0] : v
+}
+
 export function mapRole(username: string, tableId: string, globalRole: string): MapRole | null {
   const m = db.prepare('SELECT role FROM map_members WHERE table_id=? AND username=?')
     .get(tableId, username) as { role: string } | undefined
@@ -32,7 +41,7 @@ export function canAccessMap(username: string, tableId: string, globalRole: stri
 
 /** Express guard: respond 403 unless the caller is a dm of this map. */
 export function requireMapDM(req: Request, res: Response, tableId?: string): boolean {
-  const id = tableId ?? req.params.id
+  const id = tableId ?? param(req, 'id')
   if (isMapDM(res.locals.user, id, res.locals.role)) return true
   res.status(403).json({ error: 'map dm only' })
   return false
@@ -40,7 +49,7 @@ export function requireMapDM(req: Request, res: Response, tableId?: string): boo
 
 /** Express guard: respond 403 unless the caller can reach this map. */
 export function requireMapAccess(req: Request, res: Response, tableId?: string): boolean {
-  const id = tableId ?? req.params.id
+  const id = tableId ?? param(req, 'id')
   if (canAccessMap(res.locals.user, id, res.locals.role)) return true
   res.status(403).json({ error: 'no access to this map' })
   return false

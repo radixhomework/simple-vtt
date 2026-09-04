@@ -18,7 +18,7 @@ import { decodeUploadFilename } from '../filename'
 import { pushTableStateToTable, broadcastToTable } from '../hub'
 import { loadTableSettings, sanitizeTableSettingsPatch } from '../settings'
 import { buildTilePyramid, deleteTilePyramid } from '../tiles'
-import { mapRole, requireMapDM, requireMapAccess } from '../mapaccess'
+import { mapRole, requireMapDM, requireMapAccess, param } from '../mapaccess'
 
 export const tablesRouter = Router()
 
@@ -30,7 +30,7 @@ const upload = multer({ storage, limits: { fileSize: 150 * 1024 * 1024 } })
 function newId(): string { return crypto.randomUUID().replace(/-/g, '').slice(0, 16) }
 
 const TABLE_COLS = 'id, name, owner, default_floor_id'
-const FLOOR_COLS = 'id, table_id, level, name, map_image_path, grid_size, uvt_metadata, map_offset_x, map_offset_y, img_width, img_height, tiles_path'
+const FLOOR_COLS = 'id, table_id, level, name, map_image_path, grid_size, uvt_metadata, map_offset_x, map_offset_y, img_width, img_height, tiles_path, revealed'
 
 interface FloorRow {
   id: string; table_id: string; level: number; name: string
@@ -113,14 +113,14 @@ tablesRouter.post('/tables', authMiddleware, (req, res) => {
 
 tablesRouter.get('/tables/:id', authMiddleware, (req, res) => {
   if (!requireMapAccess(req, res)) return
-  const t = getTable(req.params.id)
+  const t = getTable(param(req, 'id'))
   if (!t) { res.status(404).json({ error: 'not found' }); return }
-  res.json({ ...t, floors: floorsOf(req.params.id), my_role: mapRole(res.locals.user, req.params.id, res.locals.role) })
+  res.json({ ...t, floors: floorsOf(param(req, 'id')), my_role: mapRole(res.locals.user, param(req, 'id'), res.locals.role) })
 })
 
 tablesRouter.put('/tables/:id', authMiddleware, (req, res) => {
   if (!requireMapDM(req, res)) return
-  const existing = getTable(req.params.id)
+  const existing = getTable(param(req, 'id'))
   if (!existing) { res.status(404).json({ error: 'not found' }); return }
   const name = req.body.name !== undefined ? req.body.name : existing.name
 
@@ -130,40 +130,40 @@ tablesRouter.put('/tables/:id', authMiddleware, (req, res) => {
     const wanted = String(req.body.default_floor_id)
     if (wanted === '') defaultFloorId = ''
     else {
-      const floor = db.prepare('SELECT id FROM floors WHERE id=? AND table_id=?').get(wanted, req.params.id)
+      const floor = db.prepare('SELECT id FROM floors WHERE id=? AND table_id=?').get(wanted, param(req, 'id'))
       if (!floor) { res.status(404).json({ error: 'floor not found' }); return }
       defaultFloorId = wanted
     }
   }
 
-  db.prepare('UPDATE tables SET name=?, default_floor_id=? WHERE id=?').run(name, defaultFloorId, req.params.id)
-  res.json(getTable(req.params.id))
+  db.prepare('UPDATE tables SET name=?, default_floor_id=? WHERE id=?').run(name, defaultFloorId, param(req, 'id'))
+  res.json(getTable(param(req, 'id')))
 })
 
 tablesRouter.delete('/tables/:id', authMiddleware, (req, res) => {
   if (!requireMapDM(req, res)) return
   // Free the floors' tile pyramids (and their images) before the rows go
-  for (const f of floorsOf(req.params.id)) {
+  for (const f of floorsOf(param(req, 'id'))) {
     if (f.tiles_path) deleteTilePyramid(f.id)
     if (f.map_image_path) {
       try { fs.unlinkSync(path.join(uploadsDir(), path.basename(f.map_image_path))) } catch { /* gone */ }
     }
   }
-  db.prepare('DELETE FROM floors WHERE table_id=?').run(req.params.id) // cascades nothing; children follow below
-  db.prepare('DELETE FROM tokens WHERE table_id=?').run(req.params.id)
-  db.prepare('DELETE FROM portals WHERE table_id=?').run(req.params.id)
-  db.prepare('DELETE FROM fog_points WHERE table_id=?').run(req.params.id)
-  db.prepare('DELETE FROM stairs WHERE table_id=?').run(req.params.id)
-  db.prepare('DELETE FROM walls WHERE table_id=?').run(req.params.id)
-  db.prepare('DELETE FROM props WHERE table_id=?').run(req.params.id)
-  db.prepare('DELETE FROM tables WHERE id=?').run(req.params.id)
+  db.prepare('DELETE FROM floors WHERE table_id=?').run(param(req, 'id')) // cascades nothing; children follow below
+  db.prepare('DELETE FROM tokens WHERE table_id=?').run(param(req, 'id'))
+  db.prepare('DELETE FROM portals WHERE table_id=?').run(param(req, 'id'))
+  db.prepare('DELETE FROM fog_points WHERE table_id=?').run(param(req, 'id'))
+  db.prepare('DELETE FROM stairs WHERE table_id=?').run(param(req, 'id'))
+  db.prepare('DELETE FROM walls WHERE table_id=?').run(param(req, 'id'))
+  db.prepare('DELETE FROM props WHERE table_id=?').run(param(req, 'id'))
+  db.prepare('DELETE FROM tables WHERE id=?').run(param(req, 'id'))
   res.sendStatus(204)
 })
 
 // ── Map members (invitations) ─────────────────────────────────────────────────
 tablesRouter.get('/tables/:id/members', authMiddleware, (req, res) => {
   if (!requireMapDM(req, res)) return
-  res.json(db.prepare('SELECT username, role FROM map_members WHERE table_id=? ORDER BY role, username').all(req.params.id))
+  res.json(db.prepare('SELECT username, role FROM map_members WHERE table_id=? ORDER BY role, username').all(param(req, 'id')))
 })
 
 tablesRouter.post('/tables/:id/members', authMiddleware, (req, res) => {
@@ -173,37 +173,37 @@ tablesRouter.post('/tables/:id/members', authMiddleware, (req, res) => {
   const user = db.prepare('SELECT username FROM users WHERE username=?').get(username)
   if (!user) { res.status(404).json({ error: 'unknown user' }); return }
   db.prepare('INSERT INTO map_members (table_id, username, role) VALUES (?,?,?) ON CONFLICT(table_id, username) DO UPDATE SET role=excluded.role')
-    .run(req.params.id, username, role)
+    .run(param(req, 'id'), username, role)
   res.status(201).json({ username, role })
 })
 
 tablesRouter.delete('/tables/:id/members/:username', authMiddleware, (req, res) => {
   if (!requireMapDM(req, res)) return
-  const table = getTable(req.params.id)
-  if (req.params.username === table?.owner) { res.status(409).json({ error: 'the map owner cannot be removed' }); return }
-  const r = db.prepare('DELETE FROM map_members WHERE table_id=? AND username=?').run(req.params.id, req.params.username)
+  const table = getTable(param(req, 'id'))
+  if (param(req, 'username') === table?.owner) { res.status(409).json({ error: 'the map owner cannot be removed' }); return }
+  const r = db.prepare('DELETE FROM map_members WHERE table_id=? AND username=?').run(param(req, 'id'), param(req, 'username'))
   if (r.changes === 0) { res.status(404).json({ error: 'not a member' }); return }
   res.sendStatus(204)
 })
 
 // ── Per-map settings ──────────────────────────────────────────────────────────
 tablesRouter.get('/tables/:id/settings', authMiddleware, (req, res) => {
-  const table = getTable(req.params.id)
+  const table = getTable(param(req, 'id'))
   if (!table) { res.status(404).json({ error: 'not found' }); return }
-  res.json(loadTableSettings(req.params.id))
+  res.json(loadTableSettings(param(req, 'id')))
 })
 
 tablesRouter.patch('/tables/:id/settings', authMiddleware, (req, res) => {
   if (!requireMapDM(req, res)) return
-  const table = getTable(req.params.id)
+  const table = getTable(param(req, 'id'))
   if (!table) { res.status(404).json({ error: 'not found' }); return }
   const patches = sanitizeTableSettingsPatch(req.body)
   if (Object.keys(patches).length === 0) { res.status(400).json({ error: 'nothing to update' }); return }
   const sets = Object.keys(patches).map(k => `${k}=?`).join(', ')
-  db.prepare(`UPDATE tables SET ${sets} WHERE id=?`).run(...Object.values(patches), req.params.id)
-  const settings = loadTableSettings(req.params.id)
+  db.prepare(`UPDATE tables SET ${sets} WHERE id=?`).run(...Object.values(patches), param(req, 'id'))
+  const settings = loadTableSettings(param(req, 'id'))
   // Live sync for everyone viewing this map
-  broadcastToTable(req.params.id, { type: 'settings_update', payload: { settings } })
+  broadcastToTable(param(req, 'id'), { type: 'settings_update', payload: { settings } })
   res.json(settings)
 })
 
@@ -418,15 +418,15 @@ function importUvttProps(
 /** Create an empty floor at the next level. */
 tablesRouter.post('/tables/:id/floors', authMiddleware, (req, res) => {
   if (!requireMapDM(req, res)) return
-  const table = getTable(req.params.id)
+  const table = getTable(param(req, 'id'))
   if (!table) { res.status(404).json({ error: 'not found' }); return }
   const { name = '', grid_size } = req.body
-  const ref = floorsOf(req.params.id)
+  const ref = floorsOf(param(req, 'id'))
   const level = (ref.at(-1)?.level ?? 0) + 1
   const size = grid_size ?? ref[0]?.grid_size ?? 70
   const id = newId()
   db.prepare('INSERT INTO floors (id, table_id, level, name, grid_size) VALUES (?,?,?,?,?)')
-    .run(id, req.params.id, level, name, size)
+    .run(id, param(req, 'id'), level, name, size)
   res.status(201).json(getFloor(id))
 })
 
@@ -434,7 +434,7 @@ tablesRouter.post('/tables/:id/floors', authMiddleware, (req, res) => {
 tablesRouter.post('/tables/:id/floors/import', authMiddleware, upload.single('file'), (req, res) => {
   if (!requireMapDM(req, res)) return
   if (!req.file) { res.status(400).json({ error: 'no file' }); return }
-  const table = getTable(req.params.id)
+  const table = getTable(param(req, 'id'))
   if (!table) { res.status(404).json({ error: 'not found' }); return }
 
   let parsed: ReturnType<typeof parseUvttUpload>
@@ -452,11 +452,11 @@ tablesRouter.post('/tables/:id/floors/import', authMiddleware, upload.single('fi
   // UVTT stores the grid dimensions under resolution.map_size
   const mapSize = (resolution as Record<string, unknown> | undefined)?.map_size as { x?: number; y?: number } | undefined
   if (typeof mapSize?.x === 'number' && typeof mapSize?.y === 'number') {
-    const dimError = checkDimensions(req.params.id, mapSize.x * gridSize, mapSize.y * gridSize)
+    const dimError = checkDimensions(param(req, 'id'), mapSize.x * gridSize, mapSize.y * gridSize)
     if (dimError) { res.status(409).json({ error: dimError }); return }
   }
 
-  const existing = floorsOf(req.params.id)
+  const existing = floorsOf(param(req, 'id'))
   const level = (existing.at(-1)?.level ?? 0) + 1
   const name = String(req.body.name ?? '')
   const floorId = newId()
@@ -477,7 +477,7 @@ tablesRouter.post('/tables/:id/floors/import', authMiddleware, upload.single('fi
     buildTilePyramid(floorId, imageBuffer)
       .then(() => {
         db.prepare('UPDATE floors SET tiles_path=? WHERE id=?').run(`/uploads/tiles/${floorId}`, floorId)
-        pushTableStateToTable(req.params.id)
+        pushTableStateToTable(param(req, 'id'))
       })
       .catch(err => console.error(`[tiles] pyramid build failed for floor ${floorId}:`, err))
   }
@@ -487,7 +487,7 @@ tablesRouter.post('/tables/:id/floors/import', authMiddleware, upload.single('fi
     db.prepare(
       `INSERT INTO floors (id, table_id, level, name, map_image_path, grid_size, uvt_metadata, img_width, img_height)
        VALUES (?,?,?,?,?,?,?,?,?)`
-    ).run(floorId, req.params.id, level, name, imagePath, gridSize, meta, imgW, imgH)
+    ).run(floorId, param(req, 'id'), level, name, imagePath, gridSize, meta, imgW, imgH)
 
     if (Array.isArray(uvttJson.portals)) {
       const insertPortal = db.prepare('INSERT INTO portals (id, table_id, x1, y1, x2, y2, closed, floor_id, kind) VALUES (?,?,?,?,?,?,?,?,?)')
@@ -499,7 +499,7 @@ tablesRouter.post('/tables/:id/floors/import', authMiddleware, upload.single('fi
         const kind = portal.window === true || portal.kind === 'window' || portal.type === 'window'
           ? 'window' : 'door'
         insertPortal.run(
-          newId(), req.params.id,
+          newId(), param(req, 'id'),
           p1.x * gridSize, p1.y * gridSize,
           p2.x * gridSize, p2.y * gridSize,
           portal.closed !== false ? 1 : 0,
@@ -510,7 +510,7 @@ tablesRouter.post('/tables/:id/floors/import', authMiddleware, upload.single('fi
     }
 
     // Props extension (see docs/UVTT-PROPS.md)
-    importUvttProps(uvttJson, req.params.id, floorId, gridSize, propAssets)
+    importUvttProps(uvttJson, param(req, 'id'), floorId, gridSize, propAssets)
   })()
 
   res.status(201).json(getFloor(floorId))
@@ -520,7 +520,7 @@ tablesRouter.post('/tables/:id/floors/import', authMiddleware, upload.single('fi
 tablesRouter.put('/tables/:id/floors/reorder', authMiddleware, (req, res) => {
   if (!requireMapDM(req, res)) return
   const { floor_ids } = req.body as { floor_ids?: string[] }
-  const floors = floorsOf(req.params.id)
+  const floors = floorsOf(param(req, 'id'))
   if (!Array.isArray(floor_ids) || floor_ids.length !== floors.length
       || !floors.every(f => floor_ids.includes(f.id)) || new Set(floor_ids).size !== floor_ids.length) {
     res.status(400).json({ error: 'floor_ids must list every floor of the table exactly once' })
@@ -528,16 +528,16 @@ tablesRouter.put('/tables/:id/floors/reorder', authMiddleware, (req, res) => {
   }
   db.transaction(() => {
     const update = db.prepare('UPDATE floors SET level=? WHERE id=? AND table_id=?')
-    floor_ids.forEach((id, i) => update.run(i + 1, id, req.params.id))
+    floor_ids.forEach((id, i) => update.run(i + 1, id, param(req, 'id')))
   })()
   // Connected clients see the new order in their floor switcher
-  pushTableStateToTable(req.params.id)
-  res.json(floorsOf(req.params.id))
+  pushTableStateToTable(param(req, 'id'))
+  res.json(floorsOf(param(req, 'id')))
 })
 
 /** Upload/replace the map image of a floor. Client sends width/height for the dimension check. */
 tablesRouter.post('/floors/:id/upload-image', authMiddleware, upload.single('image'), (req, res) => {
-  const floor = getFloor(req.params.id)
+  const floor = getFloor(param(req, 'id'))
   if (!floor) { res.status(404).json({ error: 'floor not found' }); return }
   if (!requireMapDM(req, res, floor.table_id)) return
   if (!req.file) { res.status(400).json({ error: 'no file' }); return }
@@ -571,7 +571,7 @@ tablesRouter.post('/floors/:id/upload-image', authMiddleware, upload.single('ima
 })
 
 tablesRouter.put('/floors/:id', authMiddleware, (req, res) => {
-  const floor = getFloor(req.params.id)
+  const floor = getFloor(param(req, 'id'))
   if (!floor) { res.status(404).json({ error: 'not found' }); return }
   if (!requireMapDM(req, res, floor.table_id)) return
   const b = req.body
@@ -595,7 +595,7 @@ tablesRouter.put('/floors/:id', authMiddleware, (req, res) => {
  *  `props[].asset`. Coordinates convert world px → grid units (÷grid_size),
  *  matching the UVTT convention. */
 tablesRouter.get('/floors/:floorId/export.uvtt', authMiddleware, async (req, res) => {
-  const floor = getFloor(req.params.floorId)
+  const floor = getFloor(param(req, 'floorId'))
   if (!floor) { res.status(404).json({ error: 'floor not found' }); return }
   if (!requireMapDM(req, res, floor.table_id)) return
 
@@ -721,7 +721,7 @@ function floorLevelOf(floorId: string): number {
 function roundG(v: number): number { return Math.round(v * 1000) / 1000 }
 
 tablesRouter.delete('/floors/:id', authMiddleware, (req, res) => {
-  const floor = getFloor(req.params.id)
+  const floor = getFloor(param(req, 'id'))
   if (!floor) { res.status(404).json({ error: 'not found' }); return }
   if (!requireMapDM(req, res, floor.table_id)) return
   const count = db.prepare('SELECT COUNT(*) AS n FROM floors WHERE table_id=?').get(floor.table_id) as { n: number }
@@ -747,22 +747,22 @@ tablesRouter.delete('/floors/:id', authMiddleware, (req, res) => {
 tablesRouter.post('/tables/:id/stairs', authMiddleware, (req, res) => {
   if (!requireMapDM(req, res)) return
   const { from_floor, from_x, from_y, to_floor, to_x, to_y, radius = 1 } = req.body
-  const floors = floorsOf(req.params.id)
+  const floors = floorsOf(param(req, 'id'))
   const from = floors.find(f => f.id === from_floor)
   const to = floors.find(f => f.id === to_floor)
   if (!from || !to) { res.status(400).json({ error: 'both floors must belong to this table' }); return }
   // from == to is legal: that's a same-floor teleporter
   const id = newId()
   db.prepare('INSERT INTO stairs (id, table_id, from_floor, from_x, from_y, to_floor, to_x, to_y, radius) VALUES (?,?,?,?,?,?,?,?,?)')
-    .run(id, req.params.id, from_floor, from_x, from_y, to_floor, to_x, to_y, radius)
-  res.status(201).json({ id, table_id: req.params.id, from_floor, from_x, from_y, to_floor, to_x, to_y, radius })
+    .run(id, param(req, 'id'), from_floor, from_x, from_y, to_floor, to_x, to_y, radius)
+  res.status(201).json({ id, table_id: param(req, 'id'), from_floor, from_x, from_y, to_floor, to_x, to_y, radius })
 })
 
 tablesRouter.delete('/stairs/:id', authMiddleware, (req, res) => {
-  const stair = db.prepare('SELECT table_id FROM stairs WHERE id=?').get(req.params.id) as { table_id: string } | undefined
+  const stair = db.prepare('SELECT table_id FROM stairs WHERE id=?').get(param(req, 'id')) as { table_id: string } | undefined
   if (!stair) { res.sendStatus(204); return }
   if (!requireMapDM(req, res, stair.table_id)) return
-  db.prepare('DELETE FROM stairs WHERE id=?').run(req.params.id)
+  db.prepare('DELETE FROM stairs WHERE id=?').run(param(req, 'id'))
   res.sendStatus(204)
 })
 
@@ -773,17 +773,17 @@ tablesRouter.patch('/tables/:id/stairs/:stairId', authMiddleware, (req, res) => 
   if (!requireMapDM(req, res)) return
   const b = req.body as Record<string, unknown>
   const stair = db.prepare('SELECT id, table_id, from_floor, from_x, from_y, to_floor, to_x, to_y, radius FROM stairs WHERE id=? AND table_id=?')
-    .get(req.params.stairId, req.params.id) as Record<string, unknown> | undefined
+    .get(param(req, 'stairId'), param(req, 'id')) as Record<string, unknown> | undefined
   if (!stair) { res.status(404).json({ error: 'not found' }); return }
 
-  const merged = mergeStairEdits(stair, b, req.params.id)
+  const merged = mergeStairEdits(stair, b, param(req, 'id'))
   if ('error' in merged) { res.status(400).json({ error: merged.error }); return }
 
   db.prepare('UPDATE stairs SET from_x=?, from_y=?, to_floor=?, to_x=?, to_y=? WHERE id=?')
-    .run(merged.from_x, merged.from_y, merged.to_floor, merged.to_x, merged.to_y, req.params.stairId)
-  pushTableStateToTable(req.params.id)
+    .run(merged.from_x, merged.from_y, merged.to_floor, merged.to_x, merged.to_y, param(req, 'stairId'))
+  pushTableStateToTable(param(req, 'id'))
   const fresh = db.prepare('SELECT id, table_id, from_floor, from_x, from_y, to_floor, to_x, to_y, radius FROM stairs WHERE id=?')
-    .get(req.params.stairId)
+    .get(param(req, 'stairId'))
   res.json(fresh)
 })
 

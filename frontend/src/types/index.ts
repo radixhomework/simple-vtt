@@ -37,6 +37,7 @@ export interface FloorLite {
   table_id: string
   level: number
   name: string
+  revealed?: boolean
 }
 
 /** Full floor row — sent only for the viewer's active floor. */
@@ -50,6 +51,8 @@ export interface Floor extends FloorLite {
   img_height: number
   /** Tile pyramid base URL ('' when the floor has no pyramid yet). */
   tiles_path?: string
+  /** Whole floor revealed ("Clear fog"): fog is not drawn at all */
+  revealed: boolean
 }
 
 export interface Token {
