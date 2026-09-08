@@ -18,6 +18,7 @@ import { drawTiledMap, resetTileCache } from '../canvas/tiles'
 import { screenToWorld, worldToScreen, snapToGrid, zoomAround } from '../canvas/camera'
 import { portalWalls, portalSightWalls, pathCrossesWall, pointOnWall } from '../canvas/los'
 import { PALETTE } from '../theme'
+import gameHtml from '../views/game.html?raw'
 import { loadMode, saveMode, drawWallsOverlay, drawMarquee, drawWallGhost, pickWall, wallsInRect, pickPortalBuild, pickPortalGrab, portalsInRect, drawPortalsBuild, type PageMode } from '../canvas/build'
 import { drawProps, drawPropSelection, pickProp, pickPropHandle, preloadPropImage, clearPropImageCache } from '../canvas/props'
 import type { WallSegment } from '../canvas/los'
@@ -55,6 +56,8 @@ interface GameState {
    *  re-wiping the tile cache on routine table_state pushes. */
   activeTilesPath: string
   exploredCanvas: OffscreenCanvas | null
+  /** Reveal mask painted by the fog brushes (world space, half res) */
+  fogMask: OffscreenCanvas | null
   selectedId: string | null
   /** Multi-selection (admin): every selected token id. */
   selectedIds: Set<string>
@@ -137,252 +140,24 @@ export function renderMap(
     }
   }
 
-  root.innerHTML = `
-    <style>
-      .game { display: flex; flex-direction: column; height: 100%; background: #1E211C; overflow: hidden; }
-      /* Fullscreen mode: hide every menu, keep only the canvases */
-      .game.zen .game-header, .game.zen .chat-wrap, .game.zen .sidebar, .game.zen .music-panel { display: none; }
+  const A = (html: string) => (isAdmin ? html : '')
 
-      /* Music panel (left side). direction:rtl moves its scrollbar to the
-         panel's left edge — i.e. the window edge, not the middle of the
-         screen. Children re-set ltr to render normally. */
-      .music-panel {
-        position: absolute; left: 0; top: 0; bottom: 0;
-        width: 260px; max-width: calc(100vw - 24px); background: var(--surface); border-right: 1px solid var(--border);
-        display: flex; flex-direction: column; z-index: 20; transform: translateX(-100%);
-        transition: transform 0.2s; overflow-y: auto; direction: rtl;
-      }
-      .music-panel.open { transform: none; }
-      .music-panel > * { direction: ltr; }
-      .music-row {
-        display: flex; align-items: center; gap: 6px; padding: 6px 8px;
-        border-radius: 6px; cursor: pointer; font-size: 13px; transition: background 0.15s;
-      }
-      .music-row:hover { background: rgba(30,33,28,0.08); }
-      .music-row.current { background: rgba(154,118,86,0.30); }
-      .music-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-      .game-header {
-        display: flex; align-items: center; gap: 10px; row-gap: 6px;
-        padding: 6px 12px; min-height: 44px; background: var(--header);
-        border-bottom: 1px solid var(--border); flex-shrink: 0; z-index: 10;
-        user-select: none; flex-wrap: wrap;
-      }
-      .game-header-left { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-      .game-header-right { display: flex; align-items: center; gap: 8px; margin-left: auto; flex-wrap: wrap; }
-      .header-btn {
-        padding: 8px 11px; border-radius: 6px; border: 1px solid var(--border);
-        background: transparent; color: var(--text); font-size: 12px; cursor: pointer;
-        transition: background 0.15s, border-color 0.15s;
-        line-height: 1; height: 36px; box-sizing: border-box;
-        display: inline-flex; align-items: center; justify-content: center;
-      }
-      .header-btn:hover { background: rgba(30,33,28,0.08); }
-      .header-btn:focus-visible, .tool-btn:focus-visible, .chat-send:focus-visible, .chat-collapse:focus-visible {
-        outline: 2px solid var(--accent); outline-offset: 1px;
-      }
-      .header-btn.active { background: var(--brand); border-color: var(--brand); color: var(--on-brand); }
-      .header-sep { width: 1px; height: 22px; background: var(--border); }
-      .table-name { font-family: var(--font-title); font-size: 16px; font-weight: 600; color: var(--text); max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-      .canvas-wrap { flex: 1; position: relative; overflow: hidden; }
-      canvas { position: absolute; top: 0; left: 0; cursor: crosshair; touch-action: none; }
-      #canvas-main { z-index: 1; }
-      #canvas-fog  { z-index: 2; pointer-events: none; }
-      #canvas-ui   { z-index: 3; }
-
-      /* Sidebar */
-      .sidebar {
-        position: absolute; right: 0; top: 0; bottom: 0;
-        width: 260px; max-width: calc(100vw - 24px); background: var(--surface); border-left: 1px solid var(--border);
-        display: flex; flex-direction: column; z-index: 20; transform: translateX(100%);
-        transition: transform 0.2s; overflow-y: auto;
-      }
-      .sidebar.open { transform: none; }
-      .sidebar-section { padding: 14px; border-bottom: 1px solid var(--border); }
-      .sidebar-section h4 { font-family: var(--font-title); font-size: 12px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 10px; }
-      .token-list { display: flex; flex-direction: column; gap: 6px; }
-      .token-item {
-        display: flex; align-items: center; gap: 8px; padding: 7px 9px;
-        border-radius: 7px; cursor: pointer; font-size: 13px; transition: background 0.15s;
-      }
-      .token-item:hover { background: rgba(30,33,28,0.08); }
-      .token-item.selected { background: rgba(154,118,86,0.30); }
-      .token-item.token-hidden { opacity: 0.55; }
-      .token-dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
-      .token-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-      .icon-btn { background: none; border: none; cursor: pointer; color: var(--muted); font-size: 15px; padding: 5px; border-radius: 4px; }
-      .icon-btn:hover { color: var(--text); background: rgba(30,33,28,0.08); }
-
-      /* Token editor */
-      .token-editor { padding: 14px; }
-      .field { margin-bottom: 10px; }
-      .field label { display: block; font-size: 11px; color: var(--muted); margin-bottom: 4px; }
-      .field input[type=text], .field input[type=number] {
-        width: 100%; padding: 7px 10px; background: var(--bg); border: 1px solid var(--border);
-        border-radius: 6px; color: var(--text); font-size: 13px; outline: none;
-      }
-      .field input:focus { border-color: var(--accent); }
-      .field-row { display: flex; gap: 8px; }
-      .field-row .field { flex: 1; }
-      .checkbox-row { display: flex; align-items: center; gap: 8px; font-size: 13px; cursor: pointer; }
-      .checkbox-row input { cursor: pointer; }
-      .color-input { width: 40px; height: 30px; border: 1px solid var(--border); border-radius: 6px; cursor: pointer; background: none; padding: 2px; }
-      .save-btn { width: 100%; padding: 8px; background: var(--brand); border: none; border-radius: 7px; color: var(--on-brand); font-size: 13px; font-weight: 600; cursor: pointer; margin-top: 4px; }
-      .save-btn:hover { background: var(--brand-hover); }
-      .del-btn { width: 100%; padding: 7px; background: transparent; border: 1px solid var(--danger); border-radius: 7px; color: var(--danger); font-size: 13px; cursor: pointer; margin-top: 6px; }
-      .del-btn:hover { background: var(--danger); color: var(--on-brand); }
-
-      /* Chat: dark ink glass so it stays readable over any map */
-      .chat-wrap { position: absolute; bottom: 12px; left: 12px; width: min(280px, calc(100% - 24px)); z-index: 20; }
-      .chat-messages {
-        background: rgba(30,33,28,0.85); border: 1px solid rgba(216,208,189,0.25); border-radius: 8px;
-        padding: 8px; max-height: 160px; overflow-y: auto; margin-bottom: 6px;
-        font-size: 12px; display: flex; flex-direction: column; gap: 3px;
-      }
-      .chat-msg { color: #DCD4C1; }
-      .chat-msg strong { color: #C89B7B; }
-      .chat-input-row { display: flex; gap: 6px; }
-      .chat-input {
-        flex: 1; padding: 6px 10px; background: rgba(30,33,28,0.9); border: 1px solid rgba(216,208,189,0.25);
-        border-radius: 6px; color: #DCD4C1; font-size: 16px; outline: none;
-        /* 16px stops iOS Safari from auto-zooming the whole fixed layout on focus */
-      }
-      .chat-send { padding: 6px 12px; background: var(--brand); border: none; border-radius: 6px; color: var(--on-brand); cursor: pointer; font-size: 14px; }
-
-      /* Notifications */
-      .notif { position: absolute; top: 52px; left: 50%; transform: translateX(-50%);
-        background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
-        padding: 8px 16px; font-size: 13px; color: var(--text); z-index: 30;
-        opacity: 0; transition: opacity 0.3s; pointer-events: none; }
-      .notif.show { opacity: 1; }
-
-      .toolbar-group { display: flex; gap: 4px; align-items: center; flex-wrap: wrap; }
-      .tool-btn {
-        width: 36px; height: 36px; border-radius: 6px; border: 1px solid var(--border);
-        background: transparent; color: var(--text); cursor: pointer; font-size: 15px;
-        display: flex; align-items: center; justify-content: center; transition: background 0.15s;
-        position: relative;
-      }
-      .tool-btn:hover { background: rgba(30,33,28,0.08); }
-      .tool-btn.active { background: var(--brand); border-color: var(--brand); color: var(--on-brand); }
-      /* Right-click context menu for doors, windows and stairs */
-      .ctx-menu { position: absolute; z-index: 40; background: var(--surface); border: 1px solid var(--border);
-        border-radius: 8px; box-shadow: 0 4px 16px rgba(30,33,28,0.25); padding: 4px; min-width: 180px; }
-      .ctx-menu button { display: block; width: 100%; text-align: left; padding: 7px 12px; background: none;
-        border: none; border-radius: 6px; cursor: pointer; color: var(--text); font-size: 13px; }
-      .ctx-menu button:hover { background: rgba(30,33,28,0.08); }
-      .ctx-menu .ctx-err { color: var(--danger); }
-
-      .tool-btn[title]:hover::after {
-        content: attr(title); position: absolute; bottom: -28px; left: 50%; transform: translateX(-50%);
-        background: #1E211C; color: #D8D0BD; padding: 3px 7px; border-radius: 4px; font-size: 11px;
-        white-space: nowrap; pointer-events: none; z-index: 100;
-      }
-
-      /* ── Mobile / tablet: map-first layout ───────────────────────────────
-         Players (and GMs on touch devices) get a floating tool dock at the
-         bottom instead of the header tool cluster; secondary controls fold
-         into a "⋯" sheet. The header keeps only identity + floor + zen. */
-      .tool-dock {
-        position: absolute; bottom: max(10px, env(safe-area-inset-bottom)); left: 50%;
-        transform: translateX(-50%);
-        display: none; align-items: center; gap: 4px; padding: 6px;
-        background: rgba(30,33,28,0.92); border: 1px solid rgba(216,208,189,0.25);
-        border-radius: 14px; z-index: 25;
-        max-width: calc(100vw - 16px); overflow-x: auto; scrollbar-width: none;
-        box-shadow: 0 4px 16px rgba(0,0,0,0.35);
-      }
-      .tool-dock::-webkit-scrollbar { display: none; }
-      /* Dock sits on dark glass over the map: ivory ink, light-alpha states.
-         Same tokens as the chat glass so the two floaters read as one family. */
-      .tool-dock .tool-btn, .tool-dock button {
-        width: 44px; height: 44px; font-size: 19px; flex-shrink: 0;
-        color: #DCD4C1; background: rgba(216,208,189,0.07); border: 1px solid rgba(216,208,189,0.14);
-        border-radius: 10px;
-      }
-      .tool-dock .tool-btn:hover, .tool-dock button:hover { background: rgba(216,208,189,0.16); }
-      .tool-dock .tool-btn.active {
-        background: var(--brand); border-color: var(--brand); color: var(--on-brand);
-      }
-      .tool-dock .header-sep { height: 28px; flex-shrink: 0; background: rgba(216,208,189,0.25); }
-      .game.zen .tool-dock, .game.zen .more-sheet { display: none; }
-
-      .more-sheet {
-        position: absolute; left: 50%; transform: translateX(-50%); bottom: 78px;
-        background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
-        padding: 6px; z-index: 26; display: none; flex-direction: column; gap: 2px;
-        min-width: 230px; max-height: 60vh; overflow-y: auto;
-        box-shadow: 0 4px 16px rgba(0,0,0,0.35);
-      }
-      .more-sheet.open { display: flex; }
-      .more-sheet .header-btn { text-align: left; }
-
-      /* Chat collapses to a bubble on small screens */
-      .chat-bubble {
-        display: none; align-items: center; gap: 7px; padding: 9px 15px;
-        background: rgba(30,33,28,0.9); border: 1px solid rgba(216,208,189,0.25);
-        border-radius: 999px; color: #DCD4C1; font-size: 13px; cursor: pointer;
-      }
-      .chat-wrap.collapsed .chat-messages, .chat-wrap.collapsed .chat-input-row { display: none; }
-      .chat-wrap.collapsed .chat-bubble { display: flex; }
-      .chat-collapse { display: none; background: none; border: none; cursor: pointer;
-        color: #DCD4C1; opacity: 0.75; font-size: 14px; padding: 2px 4px; align-self: center; }
-      .chat-collapse:hover { opacity: 1; }
-
-      @media (max-width: 900px) {
-        .game-header { min-height: 40px; padding: 4px 8px; gap: 6px; }
-        .table-name { max-width: 96px; font-size: 14px; }
-        /* Header sheds everything that is not identity/navigation */
-        .hd-desktop, .hd-desktop-sep { display: none !important; }
-        #tools { display: none; }
-        .tool-dock { display: flex; }
-        .chat-wrap { bottom: 76px; }
-        .chat-collapse { display: block; }
-        .notif { top: 46px; }
-        .tool-btn[title]:hover::after { display: none; }
-      }
-    </style>
-
-    <div class="game">
-      <div class="game-header">
-        <div class="game-header-left">
-          <img src="/logo.png" alt="Simple VTT" title="Back to maps" style="height:28px;width:auto;object-fit:contain;flex-shrink:0;cursor:pointer" id="logo-home" />
-          <button class="header-btn" id="back-btn">← VTT</button>
-          <div class="header-sep hd-desktop-sep"></div>
-          <span class="table-name">${esc(table.name)}</span>
-          <div class="header-sep hd-desktop-sep"></div>
-          <select class="header-btn" id="floor-select" title="Active floor"
-                  style="max-width:150px;font-weight:600;display:none"></select>
-          <div class="header-sep hd-desktop-sep" id="floor-sep" style="display:none"></div>
-          <div class="toolbar-group hd-desktop" id="tools"></div>
-          ${isAdmin ? `<div class="header-sep hd-desktop-sep" id="mode-sep"></div>
-          <button class="header-btn" id="mode-btn" title="Toggle Build mode (B)">🔨 Build</button>` : ''}
-          ${isAdmin ? `<div class="header-sep hd-desktop-sep"></div>
+    root.innerHTML = gameHtml
+    .replace(/{{tableName}}/g, esc(table.name))
+    .replace(/{{username}}/g, esc(user.username))
+    .replace('{{admin1}}', A(`<div class="header-sep hd-desktop-sep" id="mode-sep"></div>
+          <button class="header-btn" id="mode-btn" title="Toggle Build mode (B)">🔨 Build</button>`))
+    .replace('{{admin2}}', A(`<div class="header-sep hd-desktop-sep"></div>
           <button class="header-btn hd-desktop" id="snap-btn">Snap ✓</button>
-          <button class="header-btn hd-desktop" id="grid-btn">Grid ✓</button>` : ''}
-          ${isAdmin ? `<button class="header-btn hd-desktop" id="fog-toggle-btn">Fog ✓</button>
+          <button class="header-btn hd-desktop" id="grid-btn">Grid ✓</button>`))
+    .replace('{{admin3}}', A(`<button class="header-btn hd-desktop" id="fog-toggle-btn">Fog ✓</button>
           <button class="header-btn hd-desktop" id="share-measure-btn" title="Share measurements with players">Share ✗</button>
-          <button class="header-btn hd-desktop" id="focus-btn" title="Focus every display on your current view (one time)">🎯 Focus</button>` : ''}
-        </div>
-        <div class="game-header-right">
-          ${isAdmin ? `<button class="header-btn hd-desktop" id="add-token-btn">+ Token</button>
+          <button class="header-btn hd-desktop" id="focus-btn" title="Focus every display on your current view (one time)">🎯 Focus</button>`))
+    .replace('{{admin4}}', A(`<button class="header-btn hd-desktop" id="add-token-btn">+ Token</button>
           <button class="header-btn hd-desktop" id="reset-fog-btn" title="Reset fog to arrival state on this floor">Reset Fog</button>
           <button class="header-btn hd-desktop" id="clear-fog-btn" title="Remove ALL fog from this floor">Clear Fog</button>
-          <button class="header-btn hd-desktop" id="share-btn" title="Invite users to this map">👥 Share</button>` : ''}
-          <button class="header-btn" id="music-btn" title="Music player">🎵</button>
-          <button class="header-btn" id="sidebar-btn">Tokens ≡</button>
-          <button class="header-btn" id="zen-btn" title="Fullscreen — hide menus (Esc to exit)">⛶</button>
-        </div>
-      </div>
-
-      <div class="canvas-wrap" id="canvas-wrap">
-        <canvas id="canvas-main"></canvas>
-        <canvas id="canvas-fog"></canvas>
-        <canvas id="canvas-ui"></canvas>
-
-        <!-- Mobile/tablet floating tool dock (hidden ≥901px; populated by renderToolbar) -->
-        <div class="tool-dock" id="tool-dock"></div>
-        <div class="more-sheet" id="more-sheet">
-          ${isAdmin ? `
+          <button class="header-btn hd-desktop" id="share-btn" title="Invite users to this map">👥 Share</button>`))
+    .replace('{{admin5}}', A(`
           <button class="header-btn" id="sheet-mode">🔨 Build Mode</button>
           <button class="header-btn" id="sheet-snap">Snap ✓</button>
           <button class="header-btn" id="sheet-grid">Grid ✓</button>
@@ -391,59 +166,8 @@ export function renderMap(
           <button class="header-btn" id="sheet-focus">🎯 Focus Displays</button>
           <button class="header-btn" id="sheet-add-token">+ Add Token</button>
           <button class="header-btn" id="sheet-clear-fog">Clear Fog</button>
-          <button class="header-btn" id="sheet-share">👥 Invite Players</button>` : ''}
-          <button class="header-btn" id="sheet-music">🎵 Music</button>
-          <button class="header-btn" id="sheet-tokens">≡ Tokens</button>
-        </div>
-
-        <div class="music-panel" id="music-panel">
-          <div class="sidebar-section" style="display:flex;align-items:center;justify-content:space-between;">
-            <span style="font-family:var(--font-title);font-size:15px;font-weight:600;color:var(--text);">Music</span>
-            <button class="icon-btn" id="music-close">✕</button>
-          </div>
-          <div style="padding:12px 14px;display:flex;flex-direction:column;gap:10px;border-bottom:1px solid var(--border);">
-            <div id="music-now" style="font-size:13px;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">Nothing playing</div>
-            <div style="display:flex;align-items:center;gap:6px;">
-              <button class="icon-btn" id="music-prev" title="Previous" style="font-size:16px;">⏮</button>
-              <button class="icon-btn" id="music-play" title="Play / Pause" style="font-size:16px;">▶</button>
-              <button class="icon-btn" id="music-next" title="Next" style="font-size:16px;">⏭</button>
-              <span style="font-size:12px;color:var(--muted);">🔊</span>
-              <input type="range" id="music-vol" min="0" max="1" step="0.05" style="flex:1;accent-color:#4D5947;" title="Volume" />
-            </div>
-          </div>
-          <div class="sidebar-section">
-            <h4>Queue</h4>
-            <div id="music-queue" style="display:flex;flex-direction:column;gap:4px;"></div>
-          </div>
-        </div>
-
-        <div class="sidebar" id="share-panel"></div>
-
-        <div class="sidebar" id="sidebar">
-          <div class="sidebar-section">
-            <h4>Tokens</h4>
-            <div class="token-list" id="token-list"></div>
-            ${isAdmin ? `<button class="header-btn" style="width:100%;margin-top:8px;text-align:center" id="add-token-sidebar">+ Add Token</button>` : ''}
-          </div>
-          <div id="token-editor"></div>
-        </div>
-
-      </div>
-
-      <div class="chat-wrap" id="chat-wrap">
-        <button class="chat-bubble" id="chat-bubble" title="Open chat">💬 Chat</button>
-        <div class="chat-messages" id="chat-messages"></div>
-        <div class="chat-input-row">
-          <input class="chat-input" id="chat-input" placeholder="Chat…" />
-          <button class="chat-send" id="chat-send">→</button>
-          <button class="chat-collapse" id="chat-collapse" title="Collapse chat">▾</button>
-        </div>
-      </div>
-
-      <div class="notif" id="notif"></div>
-    </div>
-  `
-
+          <button class="header-btn" id="sheet-share">👥 Invite Players</button>`))
+    .replace('{{admin6}}', A(`<button class="header-btn" style="width:100%;margin-top:8px;text-align:center" id="add-token-sidebar">+ Add Token</button>`))
   // Canvas setup
   const wrap = root.querySelector('#canvas-wrap') as HTMLElement
   const mainCanvas = root.querySelector('#canvas-main') as HTMLCanvasElement
@@ -484,6 +208,7 @@ export function renderMap(
     fogOverview: null,
     activeTilesPath: '',
     exploredCanvas: null,
+    fogMask: null,
     selectedId: null,
     selectedIds: new Set<string>(),
     forceDrag: false,
@@ -529,6 +254,13 @@ export function renderMap(
   // panning/zooming, especially on phones.
   let exploredDirty = true
   function markExploredDirty() { exploredDirty = true }
+
+  const fogMaskStash = new Map<string, OffscreenCanvas>()
+
+  function stashFogMask(floorId: string, mask: OffscreenCanvas | null) {
+    if (!mask || !floorId) return
+    fogMaskStash.set(floorId, mask)
+  }
 
   function stashExploredMask(floorId: string, explored: OffscreenCanvas | null) {
     if (!explored || !floorId) return
@@ -622,6 +354,10 @@ export function renderMap(
       state.exploredCanvas = state.floor
         ? restoreExploredMask(state.floor.id, Math.ceil(state.floor.img_width / 4), Math.ceil(state.floor.img_height / 4))
         : null
+      state.fogMask = state.floor
+        ? (fogMaskStash.get(state.floor.id) ?? ensureFogMask())
+        : null
+      loadFogMask()
       markExploredDirty()
       render()
       return
@@ -638,6 +374,10 @@ export function renderMap(
         state.exploredCanvas = state.floor
           ? restoreExploredMask(state.floor.id, img.width, img.height)
           : new OffscreenCanvas(img.width, img.height)
+        state.fogMask = state.floor
+          ? (fogMaskStash.get(state.floor.id) ?? ensureFogMask())
+          : null
+        loadFogMask()
         markExploredDirty()
         render()
       })
@@ -719,8 +459,11 @@ export function renderMap(
         // exact polygon is computed on release (finishTokenDrag marks dirty
         // with quantum 0).
         const dragging = state.dragging
-        if (state.exploredCanvas && exploredDirty) {
-          updateExplored(state.exploredCanvas, sightTokens, state.fog, state.sightWalls, state.table.grid_size ?? 70, maskScale, wallVersion, dragging ? DRAG_QUANTUM : 0)
+        // During a fog brush stroke, skip the explored re-stamp: the live
+        // reveal comes from the mask punch, and the memory pass is deferred
+        // to stroke end (halves the per-frame compositing cost).
+        if (state.exploredCanvas && exploredDirty && !state.fogDrag) {
+          updateExplored(state.exploredCanvas, sightTokens, state.fog, state.sightWalls, state.table.grid_size ?? 70, maskScale, wallVersion, dragging ? DRAG_QUANTUM : 0, state.fogMask)
           exploredDirty = false
         }
         const fogSource = tiled ? state.fogOverview : state.mapImage
@@ -730,7 +473,7 @@ export function renderMap(
           state.table.map_offset_x ?? 0, state.table.map_offset_y ?? 0,
           tiled ? state.floor!.img_width : undefined,
           tiled ? state.floor!.img_height : undefined,
-          wallVersion, dragging ? DRAG_QUANTUM : 0,
+          wallVersion, dragging ? DRAG_QUANTUM : 0, state.fogMask,
         )
       }
 
@@ -1038,6 +781,7 @@ export function renderMap(
     // Stash the old floor's explored memory, then drop it: each level keeps
     // its own sight history, nothing is transposed across the switch.
     if (state.floor) stashExploredMask(state.floor.id, state.exploredCanvas)
+    if (state.floor) stashFogMask(state.floor.id, state.fogMask)
     state.floor = floor as Floor
     state.table = { ...state.table, ...floorFields(floor as Floor) }
     state.tokens = []
@@ -1232,11 +976,29 @@ export function renderMap(
         render()
         break
       }
+      case 'fog_paint': {
+        const o = msg.payload as { op: 'reveal' | 'hide'; x: number; y: number; r: number; floor_id?: string }
+        if (o.floor_id !== state.floor?.id || !state.fogMask) break
+        const mctx = state.fogMask.getContext('2d')!
+        mctx.save()
+        mctx.setTransform(MASK_SCALE, 0, 0, MASK_SCALE, 0, 0)
+        mctx.globalCompositeOperation = o.op === 'reveal' ? 'source-over' : 'destination-out'
+        mctx.fillStyle = '#fff'
+        mctx.beginPath()
+        mctx.arc(o.x, o.y, o.r, 0, Math.PI * 2)
+        mctx.fill()
+        mctx.restore()
+        markExploredDirty()
+        render()
+        break
+      }
       case 'fog_reset': {
         const p = msg.payload as { floor_id: string }
         state.fog = state.fog.filter(f => f.floor_id !== p.floor_id)
+        fogMaskStash.delete(p.floor_id)
         if (p.floor_id === state.floor?.id) {
           wipeExplored(p.floor_id)
+          state.fogMask = ensureFogMask()
           if (state.floor) state.floor.revealed = false
         }
         render()
@@ -1757,15 +1519,86 @@ export function renderMap(
   updateHeaderToggles()
 
   /** Wipe the local explored memory of the given floor. */
+  const MASK_SCALE = 4 // mask runs at quarter world resolution (same as explored)
   function wipeExplored(floorId: string | undefined) {
     if (!floorId) return
     exploredMasks.delete(floorId)
+    fogMaskStash.delete(floorId)
     if (state.floor?.id === floorId) {
       state.exploredCanvas = state.mapImage
         ? new OffscreenCanvas(state.mapImage.width, state.mapImage.height)
         : null
+      state.fogMask = null
       markExploredDirty()
     }
+  }
+
+  /** Create the (empty) mask canvas for the current floor. */
+  function ensureFogMask(): OffscreenCanvas | null {
+    if (!state.floor) return null
+    if (!state.fogMask) {
+      const img = state.mapImage
+      const w = Math.max(1, Math.ceil((img ? img.width : state.floor.img_width || 1000) / MASK_SCALE))
+      const h = Math.max(1, Math.ceil((img ? img.height : state.floor.img_height || 1000) / MASK_SCALE))
+      state.fogMask = new OffscreenCanvas(w, h)
+    }
+    return state.fogMask
+  }
+
+  /** Load the persisted mask (if any) for the active floor. */
+  function loadFogMask() {
+    if (!state.floor) return
+    const floorId = state.floor.id
+    ensureFogMask()
+    fetch(`/api/floors/${floorId}/fog-mask`, { headers: { Authorization: 'Bearer ' + (localStorage.getItem('token') ?? '') } })
+      .then(r => { if (!r.ok) throw new Error(String(r.status)); return r.blob() })
+      .then(b => createImageBitmap(b))
+      .then(bmp => {
+        if (state.floor?.id !== floorId || !state.fogMask) return
+        const ctx = state.fogMask.getContext('2d')!
+        ctx.drawImage(bmp, 0, 0, state.fogMask.width, state.fogMask.height)
+        markExploredDirty()
+        render()
+      })
+      .catch(() => {}) // no mask yet — starts empty
+  }
+
+  let maskUploadTimer: ReturnType<typeof setTimeout> | null = null
+  /** Persist the mask (debounced — called at stroke end). */
+  function scheduleMaskUpload() {
+    if (maskUploadTimer) clearTimeout(maskUploadTimer)
+    maskUploadTimer = setTimeout(async () => {
+      if (!state.floor || !state.fogMask) return
+      try {
+        const blob = await state.fogMask.convertToBlob({ type: 'image/png' })
+        const fd = new FormData()
+        fd.append('mask', blob)
+        await fetch(`/api/floors/${state.floor.id}/fog-mask`, {
+          method: 'PUT', headers: { Authorization: 'Bearer ' + (localStorage.getItem('token') ?? '') }, body: fd,
+        })
+      } catch (e) { console.error('[fog] mask upload failed', e) }
+    }, 800)
+  }
+
+  /** Paint one brush dab into the reveal mask and broadcast the op. */
+  function paintMaskDab(x: number, y: number, reveal: boolean) {
+    const mask = ensureFogMask()
+    if (!mask) return
+    const ctx = mask.getContext('2d')!
+    const rWorld = brushRadiusWorld()
+    ctx.save()
+    ctx.setTransform(MASK_SCALE, 0, 0, MASK_SCALE, 0, 0)
+    if (reveal) {
+      ctx.globalCompositeOperation = 'source-over'
+      ctx.fillStyle = '#fff'
+    } else {
+      ctx.globalCompositeOperation = 'destination-out'
+    }
+    ctx.beginPath()
+    ctx.arc(x, y, rWorld, 0, Math.PI * 2)
+    ctx.fill()
+    ctx.restore()
+    socket.send('fog_paint', { op: reveal ? 'reveal' : 'hide', x, y, r: rWorld, floor_id: state.floor?.id })
   }
 
   // Reset fog (dm): back to the arrival state — manual reveals AND the
@@ -3295,11 +3128,10 @@ export function renderMap(
   uiCanvas.addEventListener('mousemove', (e) => {
     if (isAdmin && (state.tool === 'fog-reveal' || state.tool === 'fog-erase')) {
       fogCursor = { x: e.offsetX, y: e.offsetY }
-      uiCanvas.style.cursor = 'none'
-      render() // keep the brush circle glued to the cursor
-    } else if (uiCanvas.style.cursor === 'none') {
-      fogCursor = null
-      uiCanvas.style.cursor = 'crosshair'
+      // Throttle: the full 3-canvas pipeline is expensive in software
+      // rendering; ~20 fps is plenty for the cursor circle
+      const now = Date.now()
+      if (now - (lastCursorRender ?? 0) > 50) { lastCursorRender = now; render() }
     }
     if (state.panning) {
       panTo(e.offsetX, e.offsetY)
@@ -4002,6 +3834,7 @@ export function renderMap(
   let lastEraseSend = 0
   /** Cursor position over the canvas (screen px) — drives the brush-size circle. */
   let fogCursor: { x: number; y: number } | null = null
+  let lastCursorRender = 0
   /** Reveal/erase brush tip in SCREEN pixels (1 = hairline). */
   const savedBrush = parseFloat(localStorage.getItem('fogBrushPx') ?? '')
   let brushSizePx = Number.isFinite(savedBrush) && savedBrush >= 1 && savedBrush <= 256 ? savedBrush : 100
@@ -4032,39 +3865,28 @@ export function renderMap(
     if (state.tool === 'fog-reveal') {
       dx = (dx / dist) * step
       dy = (dy / dist) * step
-      const radiusGrid = radiusWorld / gridSize
-      const batch: FogPoint[] = []
       while (dist >= step) {
         state.fogDrag.lastX += dx
         state.fogDrag.lastY += dy
         dist -= step
-        batch.push({ id: newPointId(), table_id: table.id, x: state.fogDrag.lastX, y: state.fogDrag.lastY, radius: radiusGrid, floor_id: state.floor?.id })
+        paintMaskDab(state.fogDrag.lastX, state.fogDrag.lastY, true)
       }
-      if (batch.length > 0) {
-        socket.send('fog_update', { action: 'add', points: batch, floor_id: state.floor?.id })
-        state.fog.push(...batch)
-        markExploredDirty()
-      }
-    } else {
-      // Erase: drop reveal points near the cursor path segment (id-based,
-      // sent incrementally so other clients erase smoothly)
-      const er = brushRadiusWorld()
-      const vx = wx - state.fogDrag.lastX, vy = wy - state.fogDrag.lastY
-      const lenSq = vx * vx + vy * vy
-      const removedIds: string[] = []
-      const fd = state.fogDrag!
-      state.fog = state.fog.filter(p => {
-        const t = lenSq === 0 ? 0 : Math.max(0, Math.min(1, ((p.x - fd.lastX) * vx + (p.y - fd.lastY) * vy) / lenSq))
-        const hit = Math.hypot(p.x - (fd.lastX + t * vx), p.y - (fd.lastY + t * vy)) <= er
-        if (hit && p.id) removedIds.push(p.id)
-        return !hit
-      })
+      // Stamp the tail exactly at the cursor so the stroke never lags
+      paintMaskDab(wx, wy, true)
       state.fogDrag.lastX = wx
       state.fogDrag.lastY = wy
-      if (removedIds.length > 0) {
-        socket.send('fog_update', { action: 'remove_ids', ids: removedIds, floor_id: state.floor?.id })
-        markExploredDirty()
+      markExploredDirty()
+    } else {
+      const er = brushRadiusWorld()
+      const vx = wx - state.fogDrag.lastX, vy = wy - state.fogDrag.lastY
+      const steps = Math.max(1, Math.ceil(Math.hypot(vx, vy) / (er * 0.5)))
+      const fd2 = state.fogDrag
+      for (let i = 1; i <= steps; i++) {
+        if (!fd2) break
+        paintMaskDab(fd2.lastX + (vx * i) / steps, fd2.lastY + (vy * i) / steps, false)
       }
+      if (fd2) { fd2.lastX = wx; fd2.lastY = wy }
+      markExploredDirty()
     }
     render()
   }
@@ -4072,26 +3894,18 @@ export function renderMap(
   /** End the brush stroke. */
   function endFogBrush() {
     state.fogDrag = null
+    scheduleMaskUpload()
     render()
   }
 
-  const newPointId = () => crypto.randomUUID().replace(/-/g, '').slice(0, 16)
-
   function addFogPoint(wx: number, wy: number) {
-    const point: FogPoint = { id: newPointId(), table_id: table.id, x: wx, y: wy, radius: brushRadiusWorld() / (state.table.grid_size ?? 70), floor_id: state.floor?.id }
-    socket.send('fog_update', { action: 'add', points: [point], floor_id: state.floor?.id })
-    state.fog.push(point)
+    paintMaskDab(wx, wy, true)
     markExploredDirty()
     render()
   }
 
   function removeFogPoint(wx: number, wy: number) {
-    const er = brushRadiusWorld()
-    const removedIds = state.fog.filter(p => Math.hypot(p.x - wx, p.y - wy) <= er && p.id).map(p => p.id)
-    state.fog = state.fog.filter(p => Math.hypot(p.x - wx, p.y - wy) > er)
-    if (removedIds.length > 0) {
-      socket.send('fog_update', { action: 'remove_ids', ids: removedIds, floor_id: state.floor?.id })
-    }
+    paintMaskDab(wx, wy, false)
     markExploredDirty()
     render()
   }

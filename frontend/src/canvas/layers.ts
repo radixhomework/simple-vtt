@@ -297,6 +297,7 @@ export function updateExplored(
   scale = 1,
   wallVersion = 0,
   dragQuantum = 0,
+  fogMask?: OffscreenCanvas | null,
 ) {
   const ctx = exploredCanvas.getContext('2d')!
   ctx.globalCompositeOperation = 'source-over'
@@ -335,6 +336,9 @@ export function updateExplored(
     ctx.arc(pt.x, pt.y, pt.radius * gridSize, 0, Math.PI * 2)
     ctx.fill()
   }
+
+  // Brush-painted reveal mask counts as explored memory too
+  if (fogMask) ctx.drawImage(fogMask, 0, 0)
 }
 
 // ── LOS worker ────────────────────────────────────────────────────────────────
@@ -654,6 +658,7 @@ export function drawFog(
   worldH?: number,
   wallVersion = 0,
   dragQuantum = 0,
+  fogMask?: OffscreenCanvas | null,
 ) {
   const w = ctx.canvas.width
   const h = ctx.canvas.height
@@ -686,6 +691,13 @@ export function drawFog(
     // ── Phase 2: punch out currently-visible areas (full colour shows through) ─
     ctx.globalCompositeOperation = 'destination-out'
     punchVision(ctx, tokens, fogPoints, walls, cam, gridSize, wallVersion, dragQuantum)
+    // Brush-painted reveal mask
+    if (fogMask) {
+      ctx.save()
+      ctx.setTransform(cam.zoom, 0, 0, cam.zoom, -cam.x * cam.zoom, -cam.y * cam.zoom)
+      ctx.drawImage(fogMask, 0, 0, wW, wH)
+      ctx.restore()
+    }
 
     // ── Phase 3: black layer for never-explored areas ─────────────────────────
     // Build a black canvas with the explored region cut out, then composite it

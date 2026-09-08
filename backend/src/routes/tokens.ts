@@ -8,8 +8,30 @@ import { db } from '../db'
 import { authMiddleware } from '../auth'
 import { requireMapDM, isMapDM, param } from '../mapaccess'
 import { pushTableStateToTable } from '../hub'
+import multer from 'multer'
+import path from 'path'
+import fs from 'fs'
 
 export const tokensRouter = Router()
+
+const fogMaskFile = (floorId: string) =>
+  path.join(process.env.UPLOADS_DIR || path.join(process.cwd(), 'uploads'), `fog_${floorId}.png`)
+const maskUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 * 1024 * 1024 } })
+
+/** GET the persisted reveal mask of a floor (404 when none yet). */
+tokensRouter.get('/floors/:id/fog-mask', authMiddleware, (req, res) => {
+  const p = fogMaskFile(param(req, 'id'))
+  if (!fs.existsSync(p)) { res.status(404).end(); return }
+  res.sendFile(p)
+})
+
+/** PUT the reveal mask (dm only). */
+tokensRouter.put('/floors/:id/fog-mask', authMiddleware, maskUpload.single('mask'), (req, res) => {
+  if (!requireMapDM(req, res)) return
+  if (!req.file) { res.status(400).json({ error: 'no mask' }); return }
+  fs.writeFileSync(fogMaskFile(param(req, 'id')), req.file.buffer)
+  res.sendStatus(204)
+})
 
 function newId() { return crypto.randomUUID().replace(/-/g, '').slice(0, 16) }
 
