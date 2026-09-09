@@ -8,7 +8,7 @@
  */
 export class Observable<T> {
   private value: T
-  private subscribers = new Set<(v: T) => void>()
+  private readonly subscribers = new Set<(v: T) => void>()
 
   constructor(initial: T) {
     this.value = initial

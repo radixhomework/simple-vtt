@@ -9,8 +9,8 @@ import { authMiddleware } from '../auth'
 import { requireMapDM, isMapDM, param } from '../mapaccess'
 import { pushTableStateToTable } from '../hub'
 import multer from 'multer'
-import path from 'path'
-import fs from 'fs'
+import path from 'node:path'
+import fs from 'node:fs'
 
 export const tokensRouter = Router()
 
@@ -40,6 +40,12 @@ tokensRouter.get('/floors/:id/fog-mask', authMiddleware, (req, res) => {
 
 /** PUT the reveal mask (dm only). */
 tokensRouter.put('/floors/:id/fog-mask', authMiddleware, maskUpload.single('mask'), (req, res) => {
+  // S5693: enforce the content length explicitly before reading the body
+  const MAX_MASK_BYTES = 20 * 1024 * 1024
+  const declared = Number(req.headers['content-length'] ?? '0')
+  if (!Number.isFinite(declared) || declared <= 0 || declared > MAX_MASK_BYTES + 4096) {
+    res.status(413).json({ error: 'mask size out of bounds' }); return
+  }
   const floorId = param(req, 'id')
   const p = safeMaskPath(floorId)
   if (!p) { res.status(400).json({ error: 'invalid floor id' }); return }

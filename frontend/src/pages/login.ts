@@ -2,12 +2,13 @@
  *  user input to the ViewModel; contains no login logic itself. */
 import { LoginViewModel } from '../viewmodels/login.viewmodel'
 import loginHtml from '../views/login.html?raw'
+import loginCss from '../styles/login.css?raw'
 import type { User } from '../types'
 
 export function renderLogin(root: HTMLElement, onLogin: (user: User) => void) {
   const vm = new LoginViewModel()
 
-  root.innerHTML = loginHtml
+  root.innerHTML = `<style>${loginCss}</style>` + loginHtml
 
   const form = root.querySelector('#login-form') as HTMLFormElement
   const errEl = root.querySelector('#login-err') as HTMLElement

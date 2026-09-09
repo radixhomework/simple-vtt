@@ -20,7 +20,7 @@ import { loadTableSettings, sanitizeTableSettingsPatch } from '../settings'
 import { buildTilePyramid, deleteTilePyramid } from '../tiles'
 import { mapRole, requireMapDM, requireMapAccess, param } from '../mapaccess'
 import {
-  getTable, getFloor, floorsOf, listTablesFor, dimensionRef, checkDimensions,
+  getTable, getFloor, floorsOf, listTablesFor, checkDimensions,
   membersOf, setMember, removeMember, userExists,
 } from '../models/tables.model'
 
@@ -122,8 +122,7 @@ tablesRouter.delete('/tables/:id/members/:username', authMiddleware, (req, res) 
   if (!requireMapDM(req, res)) return
   const table = getTable(param(req, 'id'))
   if (param(req, 'username') === table?.owner) { res.status(409).json({ error: 'the map owner cannot be removed' }); return }
-  const r = db.prepare('DELETE FROM map_members WHERE table_id=? AND username=?').run(param(req, 'id'), param(req, 'username'))
-  if (r.changes === 0) { res.status(404).json({ error: 'not a member' }); return }
+  if (!removeMember(param(req, 'id'), param(req, 'username'))) { res.status(404).json({ error: 'not a member' }); return }
   res.sendStatus(204)
 })
 

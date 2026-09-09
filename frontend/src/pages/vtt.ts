@@ -5,6 +5,7 @@
  */
 import { api } from '../api/client'
 import lobbyHtml from '../views/lobby.html?raw'
+import lobbyCss from '../styles/lobby.css?raw'
 import type { User, Table, Asset, Floor, TableSettings } from '../types'
 
 type AdminPage = 'tables' | 'users' | 'assets' | 'settings'
@@ -20,7 +21,7 @@ export function renderVtt(
 
   const render = async () => {
     const tables = await api.listTables()
-    root.innerHTML = lobbyHtml
+    root.innerHTML = `<style>${lobbyCss}</style>` + lobbyHtml
     .replace('{{username}}', esc(user.username))
     .replace('{{roleLabel}}', user.role === 'player' ? 'user' : user.role)
     .replace('{{roleClass}}', user.role)

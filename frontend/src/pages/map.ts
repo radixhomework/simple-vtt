@@ -19,6 +19,7 @@ import { screenToWorld, worldToScreen, snapToGrid, zoomAround } from '../canvas/
 import { portalWalls, portalSightWalls, pathCrossesWall, pointOnWall } from '../canvas/los'
 import { PALETTE } from '../theme'
 import gameHtml from '../views/game.html?raw'
+import gameCss from '../styles/game.css?raw'
 import { loadMode, saveMode, drawWallsOverlay, drawMarquee, drawWallGhost, pickWall, wallsInRect, pickPortalBuild, pickPortalGrab, portalsInRect, drawPortalsBuild, type PageMode } from '../canvas/build'
 import { drawProps, drawPropSelection, pickProp, pickPropHandle, preloadPropImage, clearPropImageCache } from '../canvas/props'
 import type { WallSegment } from '../canvas/los'
@@ -142,7 +143,7 @@ export function renderMap(
 
   const A = (html: string) => (isAdmin ? html : '')
 
-    root.innerHTML = gameHtml
+    root.innerHTML = `<style>${gameCss}</style>` + gameHtml
     .replace(/{{tableName}}/g, esc(table.name))
     .replace(/{{username}}/g, esc(user.username))
     .replace('{{admin1}}', A(`<div class="header-sep hd-desktop-sep" id="mode-sep"></div>
