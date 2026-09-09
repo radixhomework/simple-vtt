@@ -342,7 +342,7 @@ export function renderMap(
       // Its failure means the pyramid is unusable (deleted on disk, partial
       // write…) — fall back to the legacy full-image path.
       fetch(`${state.floor!.tiles_path}/0/0_0.jpg`)
-        .then(r => { if (!r.ok) throw new Error(String(r.status)); return r.blob() })
+        .then(r => { if (!r.ok) { throw new Error(String(r.status)) } return r.blob() })
         .then(b => {
           if (!b.type.startsWith('image/')) throw new Error('not an image')
           return createImageBitmap(b)

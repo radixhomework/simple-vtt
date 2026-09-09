@@ -28,7 +28,10 @@ const safeMaskPath = (floorId: string): string | null => {
   const p = path.resolve(fogMaskFile(floorId))
   return p.startsWith(uploadsRoot + path.sep) ? p : null
 }
-const maskUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 * 1024 * 1024 } })
+const maskUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 20 * 1024 * 1024, files: 1, fields: 2 },
+})
 
 /** GET the persisted reveal mask of a floor (404 when none yet). */
 tokensRouter.get('/floors/:id/fog-mask', authMiddleware, (req, res) => {

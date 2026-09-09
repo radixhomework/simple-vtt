@@ -155,10 +155,10 @@
      Same tokens as the chat glass so the two floaters read as one family. */
   .tool-dock .tool-btn, .tool-dock button {
     width: 44px; height: 44px; font-size: 19px; flex-shrink: 0;
-    color: #DCD4C1; background: rgba(220,212,193,0.07); border: 1px solid rgba(220,212,193,0.14);
+    color: #DCD4C1; background: #373933; border: 1px solid rgba(220,212,193,0.14);
     border-radius: 10px;
   }
-  .tool-dock .tool-btn:hover, .tool-dock button:hover { background: rgba(216,208,189,0.16); }
+  .tool-dock .tool-btn:hover, .tool-dock button:hover { background: #474841; }
   .tool-dock .tool-btn.active {
     background: var(--brand); border-color: var(--brand); color: var(--on-brand);
   }
