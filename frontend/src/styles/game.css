@@ -145,7 +145,7 @@
     position: absolute; bottom: max(10px, env(safe-area-inset-bottom)); left: 50%;
     transform: translateX(-50%);
     display: none; align-items: center; gap: 4px; padding: 6px;
-    background: rgba(30,33,28,0.92); border: 1px solid rgba(216,208,189,0.25);
+    background: #2B2E28; border: 1px solid rgba(216,208,189,0.25);
     border-radius: 14px; z-index: 25;
     max-width: calc(100vw - 16px); overflow-x: auto; scrollbar-width: none;
     box-shadow: 0 4px 16px rgba(0,0,0,0.35);
@@ -155,7 +155,7 @@
      Same tokens as the chat glass so the two floaters read as one family. */
   .tool-dock .tool-btn, .tool-dock button {
     width: 44px; height: 44px; font-size: 19px; flex-shrink: 0;
-    color: #DCD4C1; background: rgba(216,208,189,0.07); border: 1px solid rgba(216,208,189,0.14);
+    color: #DCD4C1; background: rgba(220,212,193,0.07); border: 1px solid rgba(220,212,193,0.14);
     border-radius: 10px;
   }
   .tool-dock .tool-btn:hover, .tool-dock button:hover { background: rgba(216,208,189,0.16); }

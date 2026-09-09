@@ -39,13 +39,16 @@ tokensRouter.get('/floors/:id/fog-mask', authMiddleware, (req, res) => {
 })
 
 /** PUT the reveal mask (dm only). */
-tokensRouter.put('/floors/:id/fog-mask', authMiddleware, maskUpload.single('mask'), (req, res) => {
-  // S5693: enforce the content length explicitly before reading the body
-  const MAX_MASK_BYTES = 20 * 1024 * 1024
+/** S5693: reject oversized uploads BEFORE the body is buffered. */
+const MAX_MASK_BYTES = 20 * 1024 * 1024 + 4096
+const guardMaskLength = (req: import('express').Request, res: import('express').Response, next: import('express').NextFunction) => {
   const declared = Number(req.headers['content-length'] ?? '0')
-  if (!Number.isFinite(declared) || declared <= 0 || declared > MAX_MASK_BYTES + 4096) {
+  if (!Number.isFinite(declared) || declared <= 0 || declared > MAX_MASK_BYTES) {
     res.status(413).json({ error: 'mask size out of bounds' }); return
   }
+  next()
+}
+tokensRouter.put('/floors/:id/fog-mask', authMiddleware, guardMaskLength, maskUpload.single('mask'), (req, res) => {
   const floorId = param(req, 'id')
   const p = safeMaskPath(floorId)
   if (!p) { res.status(400).json({ error: 'invalid floor id' }); return }

@@ -3126,14 +3126,23 @@ export function renderMap(
     return false
   }
 
-  uiCanvas.addEventListener('mousemove', (e) => {
+  /** Track the cursor and keep the brush-size circle glued to it. */
+  function updateFogCursor(e: MouseEvent) {
     if (isAdmin && (state.tool === 'fog-reveal' || state.tool === 'fog-erase')) {
       fogCursor = { x: e.offsetX, y: e.offsetY }
+      uiCanvas.style.cursor = 'none'
       // Throttle: the full 3-canvas pipeline is expensive in software
       // rendering; ~20 fps is plenty for the cursor circle
       const now = Date.now()
       if (now - (lastCursorRender ?? 0) > 50) { lastCursorRender = now; render() }
+    } else if (uiCanvas.style.cursor === 'none') {
+      fogCursor = null
+      uiCanvas.style.cursor = 'crosshair'
     }
+  }
+
+  uiCanvas.addEventListener('mousemove', (e) => {
+    updateFogCursor(e)
     if (state.panning) {
       panTo(e.offsetX, e.offsetY)
       return

@@ -106,7 +106,7 @@ tablesRouter.delete('/tables/:id', authMiddleware, (req, res) => {
 // ── Map members (invitations) ─────────────────────────────────────────────────
 tablesRouter.get('/tables/:id/members', authMiddleware, (req, res) => {
   if (!requireMapDM(req, res)) return
-  res.json(db.prepare('SELECT username, role FROM map_members WHERE table_id=? ORDER BY role, username').all(param(req, 'id')))
+  res.json(membersOf(param(req, 'id')))
 })
 
 tablesRouter.post('/tables/:id/members', authMiddleware, (req, res) => {
