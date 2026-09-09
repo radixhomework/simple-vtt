@@ -14,22 +14,38 @@ import fs from 'fs'
 
 export const tokensRouter = Router()
 
-const fogMaskFile = (floorId: string) =>
-  path.join(process.env.UPLOADS_DIR || path.join(process.cwd(), 'uploads'), `fog_${floorId}.png`)
+/** All entity ids are 16 hex chars — rejects '..' and any path tricks. */
+const ID_RE = /^[a-f0-9]{16}$/
+const uploadsRoot = path.resolve(process.env.UPLOADS_DIR || path.join(process.cwd(), 'uploads'))
+const fogMaskFile = (floorId: string) => path.join(uploadsRoot, `fog_${floorId}.png`)
+/**
+ * Containment guard: resolve the final path and verify it stays inside the
+ * uploads root (CodeQL S5780 / path-traversal barrier, belt and braces with
+ * the ID_RE check).
+ */
+const safeMaskPath = (floorId: string): string | null => {
+  if (!ID_RE.test(floorId)) return null
+  const p = path.resolve(fogMaskFile(floorId))
+  return p.startsWith(uploadsRoot + path.sep) ? p : null
+}
 const maskUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 * 1024 * 1024 } })
 
 /** GET the persisted reveal mask of a floor (404 when none yet). */
 tokensRouter.get('/floors/:id/fog-mask', authMiddleware, (req, res) => {
-  const p = fogMaskFile(param(req, 'id'))
+  const p = safeMaskPath(param(req, 'id'))
+  if (!p) { res.status(400).json({ error: 'invalid floor id' }); return }
   if (!fs.existsSync(p)) { res.status(404).end(); return }
   res.sendFile(p)
 })
 
 /** PUT the reveal mask (dm only). */
 tokensRouter.put('/floors/:id/fog-mask', authMiddleware, maskUpload.single('mask'), (req, res) => {
-  if (!requireMapDM(req, res)) return
+  const floorId = param(req, 'id')
+  const p = safeMaskPath(floorId)
+  if (!p) { res.status(400).json({ error: 'invalid floor id' }); return }
+  if (!requireMapDM(req, res, floorId)) return
   if (!req.file) { res.status(400).json({ error: 'no mask' }); return }
-  fs.writeFileSync(fogMaskFile(param(req, 'id')), req.file.buffer)
+  fs.writeFileSync(p, req.file.buffer)
   res.sendStatus(204)
 })
 
