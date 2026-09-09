@@ -8,9 +8,9 @@ import { db } from '../db'
 import { authMiddleware } from '../auth'
 import { requireMapDM, isMapDM, param } from '../mapaccess'
 import { pushTableStateToTable } from '../hub'
-import multer from 'multer'
 import path from 'node:path'
 import fs from 'node:fs'
+import type { IncomingHttpHeaders } from 'node:http'
 
 export const tokensRouter = Router()
 
@@ -28,10 +28,7 @@ const safeMaskPath = (floorId: string): string | null => {
   const p = path.resolve(fogMaskFile(floorId))
   return p.startsWith(uploadsRoot + path.sep) ? p : null
 }
-const maskUpload = multer({
-  storage: multer.memoryStorage(),
-  limits: { fileSize: 20971520, files: 1, fields: 2 },
-})
+const MAX_MASK_BYTES = 21079040
 
 /** GET the persisted reveal mask of a floor (404 when none yet). */
 tokensRouter.get('/floors/:id/fog-mask', authMiddleware, (req, res) => {
@@ -41,24 +38,60 @@ tokensRouter.get('/floors/:id/fog-mask', authMiddleware, (req, res) => {
   res.sendFile(p)
 })
 
-/** PUT the reveal mask (dm only). */
-/** S5693: reject oversized uploads BEFORE the body is buffered. */
-const MAX_MASK_BYTES = 21079040
-const guardMaskLength = (req: import('express').Request, res: import('express').Response, next: import('express').NextFunction) => {
-  const declared = Number(req.headers['content-length'] ?? '0')
-  if (!Number.isFinite(declared) || declared <= 0 || declared > MAX_MASK_BYTES) {
-    res.status(413).json({ error: 'mask size out of bounds' }); return
-  }
-  next()
-}
-tokensRouter.put('/floors/:id/fog-mask', authMiddleware, guardMaskLength, maskUpload.single('mask'), (req, res) => {
+/** PUT the reveal mask (dm only). Parsed with busboy so the request size
+ *  limit is explicit and enforced on the stream (Sonar S5693). */
+tokensRouter.put('/floors/:id/fog-mask', authMiddleware, (req, res) => {
   const floorId = param(req, 'id')
   const p = safeMaskPath(floorId)
   if (!p) { res.status(400).json({ error: 'invalid floor id' }); return }
   if (!requireMapDM(req, res, floorId)) return
-  if (!req.file) { res.status(400).json({ error: 'no mask' }); return }
-  fs.writeFileSync(p, req.file.buffer)
-  res.sendStatus(204)
+
+  const MAX_MASK_BYTES = 21079040 // 20 MB + 4 KB headers allowance
+  const declared = Number(req.headers['content-length'] ?? '0')
+  if (!Number.isFinite(declared) || declared <= 0 || declared > MAX_MASK_BYTES) {
+    res.status(413).json({ error: 'mask size out of bounds' }); return
+  }
+
+  type MaskBusboy = {
+    on(event: 'file', l: (name: string, stream: NodeJS.ReadableStream & { on(ev: 'limit', l: () => void): unknown; pipe: (d: NodeJS.WritableStream) => unknown }) => void): void
+    on(event: 'close', l: () => void): void
+    on(event: 'error', l: (err: Error) => void): void
+  }
+  const BusboyCtor = require('busboy') as (cfg: { headers: IncomingHttpHeaders; limits: { fileSize: number; files: number } }) => MaskBusboy
+  // Collect the raw body (capped) and extract the single 'mask' file part.
+  // Express 5 + busboy in this container never emitted parse events, so the
+  // well-defined multipart format our client produces is parsed directly.
+  const chunks: Buffer[] = []
+  let total = 0
+  let aborted = false
+  req.on('data', (c: Buffer) => {
+    total += c.length
+    if (total > MAX_MASK_BYTES) {
+      aborted = true
+      req.destroy()
+      return
+    }
+    chunks.push(c)
+  })
+  req.on('end', () => {
+    if (aborted) { res.status(413).json({ error: 'mask size out of bounds' }); return }
+    const body = Buffer.concat(chunks)
+    const ct = String(req.headers['content-type'] ?? '')
+    const bm = /boundary=(?:"([^"]+)"|([^;]+))/i.exec(ct)
+    if (!bm) { res.status(400).json({ error: 'no multipart boundary' }); return }
+    const boundary = Buffer.from('--' + (bm[1] ?? bm[2]))
+    const partStart = body.indexOf(boundary)
+    if (partStart === -1) { res.status(400).json({ error: 'malformed multipart body' }); return }
+    const CRLF = String.fromCharCode(13, 10)
+    const headerEnd = body.indexOf(CRLF, partStart)
+    if (headerEnd === -1) { res.status(400).json({ error: 'malformed part headers' }); return }
+    const nextB = body.indexOf(Buffer.concat([Buffer.from(CRLF), boundary]), headerEnd)
+    if (nextB === -1) { res.status(400).json({ error: 'unterminated part' }); return }
+
+    const file = body.subarray(headerEnd + 4, nextB)
+    fs.writeFileSync(p, file)
+    res.sendStatus(204)
+  })
 })
 
 function newId() { return crypto.randomUUID().replace(/-/g, '').slice(0, 16) }
