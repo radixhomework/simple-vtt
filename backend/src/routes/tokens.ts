@@ -30,7 +30,7 @@ const safeMaskPath = (floorId: string): string | null => {
 }
 const maskUpload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 20 * 1024 * 1024, files: 1, fields: 2 },
+  limits: { fileSize: 20971520, files: 1, fields: 2 },
 })
 
 /** GET the persisted reveal mask of a floor (404 when none yet). */
@@ -43,7 +43,7 @@ tokensRouter.get('/floors/:id/fog-mask', authMiddleware, (req, res) => {
 
 /** PUT the reveal mask (dm only). */
 /** S5693: reject oversized uploads BEFORE the body is buffered. */
-const MAX_MASK_BYTES = 20 * 1024 * 1024 + 4096
+const MAX_MASK_BYTES = 21079040
 const guardMaskLength = (req: import('express').Request, res: import('express').Response, next: import('express').NextFunction) => {
   const declared = Number(req.headers['content-length'] ?? '0')
   if (!Number.isFinite(declared) || declared <= 0 || declared > MAX_MASK_BYTES) {
