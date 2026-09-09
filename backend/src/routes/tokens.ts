@@ -52,12 +52,6 @@ tokensRouter.put('/floors/:id/fog-mask', authMiddleware, (req, res) => {
     res.status(413).json({ error: 'mask size out of bounds' }); return
   }
 
-  type MaskBusboy = {
-    on(event: 'file', l: (name: string, stream: NodeJS.ReadableStream & { on(ev: 'limit', l: () => void): unknown; pipe: (d: NodeJS.WritableStream) => unknown }) => void): void
-    on(event: 'close', l: () => void): void
-    on(event: 'error', l: (err: Error) => void): void
-  }
-  const BusboyCtor = require('busboy') as (cfg: { headers: IncomingHttpHeaders; limits: { fileSize: number; files: number } }) => MaskBusboy
   // Collect the raw body (capped) and extract the single 'mask' file part.
   // Express 5 + busboy in this container never emitted parse events, so the
   // well-defined multipart format our client produces is parsed directly.
@@ -82,7 +76,7 @@ tokensRouter.put('/floors/:id/fog-mask', authMiddleware, (req, res) => {
     const boundary = Buffer.from('--' + (bm[1] ?? bm[2]))
     const partStart = body.indexOf(boundary)
     if (partStart === -1) { res.status(400).json({ error: 'malformed multipart body' }); return }
-    const CRLF = String.fromCharCode(13, 10)
+    const CRLF = String.fromCodePoint(13, 10)
     const headerEnd = body.indexOf(CRLF, partStart)
     if (headerEnd === -1) { res.status(400).json({ error: 'malformed part headers' }); return }
     const nextB = body.indexOf(Buffer.concat([Buffer.from(CRLF), boundary]), headerEnd)
