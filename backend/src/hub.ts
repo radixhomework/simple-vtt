@@ -452,12 +452,19 @@ function handleMessage(client: Client, raw: string) {
         // message) would keep showing cleared fog.
         tables.get(client.tableId)?.forEach(c => sendTableState(c))
         break
+      } else if (action === 'fog_paint') {
+        // Live brush stroke op — relay to viewers of that floor
+        tables.get(client.tableId)?.forEach(c => {
+          if (c !== client && c.activeFloorId === floorId && c.ws.readyState === WebSocket.OPEN) c.ws.send(raw)
+        })
+        break
       } else if (action === 'reset') {
         // Back to arrival state: no manual reveals, explored memory cleared,
         // any full-reveal flag removed. Clients wipe their local explored
         // bitmaps on the fog_reset notice.
         db.prepare('DELETE FROM fog_points WHERE table_id=? AND floor_id=?').run(client.tableId, floorId)
         db.prepare('UPDATE floors SET revealed=0 WHERE id=?').run(floorId)
+        try { fs.unlinkSync(path.join(process.env.UPLOADS_DIR || path.join(process.cwd(), 'uploads'), `fog_${floorId}.png`)) } catch {}
         pushTableStateToTable(client.tableId)
         tables.get(client.tableId)?.forEach(c => {
           if (c !== client && c.ws.readyState === WebSocket.OPEN) {

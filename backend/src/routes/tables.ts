@@ -19,6 +19,10 @@ import { pushTableStateToTable, broadcastToTable } from '../hub'
 import { loadTableSettings, sanitizeTableSettingsPatch } from '../settings'
 import { buildTilePyramid, deleteTilePyramid } from '../tiles'
 import { mapRole, requireMapDM, requireMapAccess, param } from '../mapaccess'
+import {
+  getTable, getFloor, floorsOf, listTablesFor, checkDimensions,
+  membersOf, setMember, removeMember, userExists,
+} from '../models/tables.model'
 
 export const tablesRouter = Router()
 
@@ -29,73 +33,12 @@ const upload = multer({ storage, limits: { fileSize: 150 * 1024 * 1024 } })
 
 function newId(): string { return crypto.randomUUID().replace(/-/g, '').slice(0, 16) }
 
-const TABLE_COLS = 'id, name, owner, default_floor_id'
-const FLOOR_COLS = 'id, table_id, level, name, map_image_path, grid_size, uvt_metadata, map_offset_x, map_offset_y, img_width, img_height, tiles_path, revealed'
-
-interface FloorRow {
-  id: string; table_id: string; level: number; name: string
-  map_image_path: string; grid_size: number; uvt_metadata: string
-  map_offset_x: number; map_offset_y: number; img_width: number; img_height: number
-  tiles_path: string
-}
-
-function getTable(id: string) {
-  return db.prepare(`SELECT ${TABLE_COLS} FROM tables WHERE id=?`).get(id) as { id: string; name: string; owner: string; default_floor_id: string } | undefined
-}
-
-function getFloor(id: string) {
-  return db.prepare(`SELECT ${FLOOR_COLS} FROM floors WHERE id=?`).get(id) as FloorRow | undefined
-}
-
-function floorsOf(tableId: string) {
-  return db.prepare(`SELECT ${FLOOR_COLS} FROM floors WHERE table_id=? ORDER BY level, rowid`).all(tableId) as FloorRow[]
-}
-
-/**
- * The dimension reference of a table: the lowest floor with a known image
- * size. Returns null while no floor declares one (legacy data), in which
- * case the check is skipped.
- */
-function dimensionRef(tableId: string): { w: number; h: number } | null {
-  const row = db.prepare(
-    'SELECT img_width AS w, img_height AS h FROM floors WHERE table_id=? AND img_width>0 AND img_height>0 ORDER BY level, rowid LIMIT 1'
-  ).get(tableId) as { w: number; h: number } | undefined
-  return row ? { w: row.w, h: row.h } : null
-}
-
-/** All floor images must share dimensions so coordinates map 1:1 across levels. */
-function checkDimensions(tableId: string, w: number, h: number): string | null {
-  if (!w || !h) return null // unknown → nothing to compare against
-  const ref = dimensionRef(tableId)
-  if (ref && (ref.w !== w || ref.h !== h)) {
-    return `floor images must all be ${ref.w}×${ref.h}px (got ${w}×${h})`
-  }
-  return null
-}
-
 // ── Tables ────────────────────────────────────────────────────────────────────
 tablesRouter.get('/tables', authMiddleware, (req, res) => {
     // Users see the maps they can reach (uploaded or invited); admins see
     // everything through the console.
-    const rows = res.locals.role === 'admin'
-      ? db.prepare(`
-          SELECT t.id, t.name, t.owner,
-            (SELECT COUNT(*) FROM floors  WHERE table_id = t.id) AS floor_count,
-            (SELECT COUNT(*) FROM floors  WHERE table_id = t.id AND map_image_path <> '') AS image_count,
-            (SELECT COUNT(*) FROM tokens  WHERE table_id = t.id) AS token_count,
-            (SELECT COUNT(*) FROM portals WHERE table_id = t.id) AS portal_count
-          FROM tables t ORDER BY t.rowid DESC
-        `).all() as Array<Record<string, unknown>>
-      : db.prepare(`
-          SELECT t.id, t.name, t.owner,
-            (SELECT COUNT(*) FROM floors  WHERE table_id = t.id) AS floor_count,
-            (SELECT COUNT(*) FROM floors  WHERE table_id = t.id AND map_image_path <> '') AS image_count,
-            (SELECT COUNT(*) FROM tokens  WHERE table_id = t.id) AS token_count,
-            (SELECT COUNT(*) FROM portals WHERE table_id = t.id) AS portal_count
-          FROM tables t JOIN map_members m ON m.table_id = t.id
-          WHERE m.username = ? ORDER BY t.rowid DESC
-        `).all(res.locals.user) as Array<Record<string, unknown>>
-    const withRole = rows.map(t => ({ ...t, my_role: mapRole(res.locals.user, t.id as string, res.locals.role) }))
+    const rows = listTablesFor(res.locals.user, res.locals.role === 'admin')
+    const withRole = rows.map(t => ({ ...t, my_role: mapRole(res.locals.user, t.id, res.locals.role) }))
     res.json(withRole)
   })
 
@@ -163,17 +106,15 @@ tablesRouter.delete('/tables/:id', authMiddleware, (req, res) => {
 // ── Map members (invitations) ─────────────────────────────────────────────────
 tablesRouter.get('/tables/:id/members', authMiddleware, (req, res) => {
   if (!requireMapDM(req, res)) return
-  res.json(db.prepare('SELECT username, role FROM map_members WHERE table_id=? ORDER BY role, username').all(param(req, 'id')))
+  res.json(membersOf(param(req, 'id')))
 })
 
 tablesRouter.post('/tables/:id/members', authMiddleware, (req, res) => {
   if (!requireMapDM(req, res)) return
   const { username, role } = req.body as { username?: string; role?: string }
   if (!username || (role !== 'dm' && role !== 'player')) { res.status(400).json({ error: 'username and role (dm|player) required' }); return }
-  const user = db.prepare('SELECT username FROM users WHERE username=?').get(username)
-  if (!user) { res.status(404).json({ error: 'unknown user' }); return }
-  db.prepare('INSERT INTO map_members (table_id, username, role) VALUES (?,?,?) ON CONFLICT(table_id, username) DO UPDATE SET role=excluded.role')
-    .run(param(req, 'id'), username, role)
+  if (!userExists(username)) { res.status(404).json({ error: 'unknown user' }); return }
+  setMember(param(req, 'id'), username, role)
   res.status(201).json({ username, role })
 })
 
@@ -181,8 +122,7 @@ tablesRouter.delete('/tables/:id/members/:username', authMiddleware, (req, res) 
   if (!requireMapDM(req, res)) return
   const table = getTable(param(req, 'id'))
   if (param(req, 'username') === table?.owner) { res.status(409).json({ error: 'the map owner cannot be removed' }); return }
-  const r = db.prepare('DELETE FROM map_members WHERE table_id=? AND username=?').run(param(req, 'id'), param(req, 'username'))
-  if (r.changes === 0) { res.status(404).json({ error: 'not a member' }); return }
+  if (!removeMember(param(req, 'id'), param(req, 'username'))) { res.status(404).json({ error: 'not a member' }); return }
   res.sendStatus(204)
 })
 

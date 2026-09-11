@@ -1,86 +1,28 @@
-/** Login page: posts credentials, stores the JWT in localStorage. */
-import { api } from '../api/client'
+/** Login page — VIEW of LoginViewModel (MVVM). Renders state, forwards
+ *  user input to the ViewModel; contains no login logic itself. */
+import { LoginViewModel } from '../viewmodels/login.viewmodel'
+import loginHtml from '../views/login.html?raw'
+import loginCss from '../styles/login.css?raw'
 import type { User } from '../types'
 
 export function renderLogin(root: HTMLElement, onLogin: (user: User) => void) {
-  root.innerHTML = `
-    <style>
-      .login-wrap {
-        display: flex; align-items: center; justify-content: center;
-        height: 100%; background: var(--bg);
-      }
-      .login-box {
-        background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
-        padding: 40px 48px; width: 360px; box-shadow: 0 8px 32px rgba(30,33,28,0.25);
-      }
-      .login-logo {
-        display: flex; flex-direction: column; align-items: center;
-        gap: 10px; margin-bottom: 32px;
-      }
-      .login-logo img { flex-shrink: 0; display: block; width: 96px; height: auto; object-fit: contain; }
-      .login-logo .login-title {
-        font-family: var(--font-title); font-size: 34px; font-weight: 700;
-        line-height: 1.1;
-      }
-      .login-logo .login-title .t-ink { color: var(--text); }
-      .login-logo .login-title .t-moss { color: var(--brand); }
-      .login-field { margin-bottom: 16px; }
-      .login-field label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.05em; }
-      .login-field input {
-        width: 100%; padding: 10px 14px; background: var(--bg);
-        border: 1px solid var(--border); border-radius: 8px; color: var(--text);
-        font-size: 15px; outline: none; transition: border-color 0.2s;
-      }
-      .login-field input:focus { border-color: var(--accent); }
-      .login-btn {
-        width: 100%; padding: 11px; background: var(--brand); border: none;
-        border-radius: 8px; color: var(--on-brand); font-size: 15px; font-weight: 600;
-        cursor: pointer; margin-top: 8px; transition: background 0.2s;
-      }
-      .login-btn:hover { background: var(--brand-hover); }
-      .login-btn:disabled { opacity: 0.5; cursor: default; }
-      .login-err { color: var(--danger); font-size: 13px; margin-top: 10px; min-height: 18px; }
-    </style>
-    <div class="login-wrap">
-      <div class="login-box">
-        <div class="login-logo">
-          <img src="/logo.png" alt="Simple VTT logo" />
-          <span class="login-title"><span class="t-ink">Simple</span> <span class="t-moss">VTT</span></span>
-        </div>
-        <form id="login-form">
-          <div class="login-field">
-            <label>Username</label>
-            <input id="login-user" type="text" autocomplete="username" required />
-          </div>
-          <div class="login-field">
-            <label>Password</label>
-            <input id="login-pass" type="password" autocomplete="current-password" required />
-          </div>
-          <button class="login-btn" type="submit">Sign in</button>
-          <div class="login-err" id="login-err"></div>
-        </form>
-      </div>
-    </div>
-  `
+  const vm = new LoginViewModel()
+
+  root.innerHTML = `<style>${loginCss}</style>` + loginHtml
 
   const form = root.querySelector('#login-form') as HTMLFormElement
   const errEl = root.querySelector('#login-err') as HTMLElement
   const btn = root.querySelector('.login-btn') as HTMLButtonElement
+  const userInput = root.querySelector('#login-user') as HTMLInputElement
+  const passInput = root.querySelector('#login-pass') as HTMLInputElement
 
-  form.addEventListener('submit', async (e) => {
-    e.preventDefault()
-    const username = (root.querySelector('#login-user') as HTMLInputElement).value.trim()
-    const password = (root.querySelector('#login-pass') as HTMLInputElement).value
-    errEl.textContent = ''
-    btn.disabled = true
+  // View -> ViewModel: forward inputs and submits
+  userInput.addEventListener('input', () => vm.username.set(userInput.value))
+  passInput.addEventListener('input', () => vm.password.set(passInput.value))
+  form.addEventListener('submit', e => { e.preventDefault(); void vm.login() })
 
-    try {
-      const { token, user } = await api.login(username, password)
-      localStorage.setItem('token', token)
-      onLogin(user)
-    } catch (err: any) {
-      errEl.textContent = 'Invalid username or password'
-      btn.disabled = false
-    }
-  })
+  // ViewModel -> View: project state changes
+  vm.error.subscribe(err => { errEl.textContent = err })
+  vm.busy.subscribe(busy => { btn.disabled = busy })
+  vm.user.subscribe(user => { if (user) onLogin(user) })
 }

@@ -1,0 +1,44 @@
+            <div class="lobby">
+        <div class="lobby-header">
+          <div class="lobby-title">
+            <img src="/logo.png" alt="Simple VTT logo" style="height:32px;width:auto;object-fit:contain" />
+            Simple VTT
+          </div>
+          <div class="lobby-user">
+            <span>{{username}}</span>
+            <span class="badge badge-{{roleClass}}">{{roleLabel}}</span>
+            <button class="btn btn-ghost btn-sm" id="pass-btn" title="Change password">🔑</button>
+            <button class="btn btn-ghost btn-sm" id="logout-btn">Sign out</button>
+          </div>
+        </div>
+        <div class="lobby-body">
+          <div class="lobby-content">
+          <div class="admin-section" id="pass-section" style="display:none">
+            <h3>Change Password ({{username}})</h3>
+            <div class="form-row">
+              <div class="form-field">
+                <label for="pass-current">Current password</label>
+                <input id="pass-current" type="password" autocomplete="current-password" />
+              </div>
+              <div class="form-field">
+                <label for="pass-new">New password</label>
+                <input id="pass-new" type="password" autocomplete="new-password" />
+              </div>
+              <div class="form-field">
+                <label for="pass-confirm">Confirm new password</label>
+                <input id="pass-confirm" type="password" autocomplete="new-password" />
+              </div>
+              <button class="btn btn-primary" id="pass-save-btn">Save</button>
+            </div>
+            <div class="msg" id="pass-msg"></div>
+          </div>
+
+          <div class="admin-nav" id="admin-nav">
+            <button class="admin-tab active" data-page="tables">🗺 Maps &amp; Tables</button>
+            {{adminTabs}}
+          </div>
+          <div id="admin-page"></div>
+          </div>
+        </div>
+      </div>
+    

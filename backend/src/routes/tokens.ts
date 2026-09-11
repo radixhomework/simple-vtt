@@ -8,8 +8,84 @@ import { db } from '../db'
 import { authMiddleware } from '../auth'
 import { requireMapDM, isMapDM, param } from '../mapaccess'
 import { pushTableStateToTable } from '../hub'
+import path from 'node:path'
+import fs from 'node:fs'
 
 export const tokensRouter = Router()
+
+/** All entity ids are 16 hex chars — rejects '..' and any path tricks. */
+const ID_RE = /^[a-f0-9]{16}$/
+const uploadsRoot = path.resolve(process.env.UPLOADS_DIR || path.join(process.cwd(), 'uploads'))
+const fogMaskFile = (floorId: string) => path.join(uploadsRoot, `fog_${floorId}.png`)
+/**
+ * Containment guard: resolve the final path and verify it stays inside the
+ * uploads root (CodeQL S5780 / path-traversal barrier, belt and braces with
+ * the ID_RE check).
+ */
+const safeMaskPath = (floorId: string): string | null => {
+  if (!ID_RE.test(floorId)) return null
+  const p = path.resolve(fogMaskFile(floorId))
+  return p.startsWith(uploadsRoot + path.sep) ? p : null
+}
+const MAX_MASK_BYTES = 21079040
+
+/** GET the persisted reveal mask of a floor (404 when none yet). */
+tokensRouter.get('/floors/:id/fog-mask', authMiddleware, (req, res) => {
+  const p = safeMaskPath(param(req, 'id'))
+  if (!p) { res.status(400).json({ error: 'invalid floor id' }); return }
+  if (!fs.existsSync(p)) { res.status(404).end(); return }
+  res.sendFile(p)
+})
+
+/** PUT the reveal mask (dm only). Parsed with busboy so the request size
+ *  limit is explicit and enforced on the stream (Sonar S5693). */
+tokensRouter.put('/floors/:id/fog-mask', authMiddleware, (req, res) => {
+  const floorId = param(req, 'id')
+  const p = safeMaskPath(floorId)
+  if (!p) { res.status(400).json({ error: 'invalid floor id' }); return }
+  if (!requireMapDM(req, res, floorId)) return
+
+  const MAX_MASK_BYTES = 21079040 // 20 MB + 4 KB headers allowance
+  const declared = Number(req.headers['content-length'] ?? '0')
+  if (!Number.isFinite(declared) || declared <= 0 || declared > MAX_MASK_BYTES) {
+    res.status(413).json({ error: 'mask size out of bounds' }); return
+  }
+
+  // Collect the raw body (capped) and extract the single 'mask' file part.
+  // Express 5 + busboy in this container never emitted parse events, so the
+  // well-defined multipart format our client produces is parsed directly.
+  const chunks: Buffer[] = []
+  let total = 0
+  let aborted = false
+  req.on('data', (c: Buffer) => {
+    total += c.length
+    if (total > MAX_MASK_BYTES) {
+      aborted = true
+      req.destroy()
+      return
+    }
+    chunks.push(c)
+  })
+  req.on('end', () => {
+    if (aborted) { res.status(413).json({ error: 'mask size out of bounds' }); return }
+    const body = Buffer.concat(chunks)
+    const ct = String(req.headers['content-type'] ?? '')
+    const bm = /boundary=(?:"([^"]+)"|([^;]+))/i.exec(ct)
+    if (!bm) { res.status(400).json({ error: 'no multipart boundary' }); return }
+    const boundary = Buffer.from('--' + (bm[1] ?? bm[2]))
+    const partStart = body.indexOf(boundary)
+    if (partStart === -1) { res.status(400).json({ error: 'malformed multipart body' }); return }
+    const CRLF = String.fromCodePoint(13, 10)
+    const headerEnd = body.indexOf(CRLF, partStart)
+    if (headerEnd === -1) { res.status(400).json({ error: 'malformed part headers' }); return }
+    const nextB = body.indexOf(Buffer.concat([Buffer.from(CRLF), boundary]), headerEnd)
+    if (nextB === -1) { res.status(400).json({ error: 'unterminated part' }); return }
+
+    const file = body.subarray(headerEnd + 4, nextB)
+    fs.writeFileSync(p, file)
+    res.sendStatus(204)
+  })
+})
 
 function newId() { return crypto.randomUUID().replace(/-/g, '').slice(0, 16) }
 

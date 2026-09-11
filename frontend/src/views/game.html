@@ -1,0 +1,85 @@
+    
+    <div class="game">
+      <div class="game-header">
+        <div class="game-header-left">
+          <img src="/logo.png" alt="Simple VTT" title="Back to maps" style="height:28px;width:auto;object-fit:contain;flex-shrink:0;cursor:pointer" id="logo-home" />
+          <button class="header-btn" id="back-btn">← VTT</button>
+          <div class="header-sep hd-desktop-sep"></div>
+          <span class="table-name">{{tableName}}</span>
+          <div class="header-sep hd-desktop-sep"></div>
+          <select class="header-btn" id="floor-select" aria-label="Active floor"
+                  style="max-width:150px;font-weight:600;display:none"></select>
+          <div class="header-sep hd-desktop-sep" id="floor-sep" style="display:none"></div>
+          <div class="toolbar-group hd-desktop" id="tools"></div>
+          {{admin1}}
+          {{admin2}}
+          {{admin3}}
+        </div>
+        <div class="game-header-right">
+          {{admin4}}
+          <button class="header-btn" id="music-btn" title="Music player">🎵</button>
+          <button class="header-btn" id="sidebar-btn">Tokens ≡</button>
+          <button class="header-btn" id="zen-btn" title="Fullscreen — hide menus (Esc to exit)">⛶</button>
+        </div>
+      </div>
+
+      <div class="canvas-wrap" id="canvas-wrap">
+        <canvas id="canvas-main"></canvas>
+        <canvas id="canvas-fog"></canvas>
+        <canvas id="canvas-ui"></canvas>
+
+        <!-- Mobile/tablet floating tool dock (hidden ≥901px; populated by renderToolbar) -->
+        <div class="tool-dock" id="tool-dock"></div>
+        <div class="more-sheet" id="more-sheet">
+          {{admin5}}
+          <button class="header-btn" id="sheet-music">🎵 Music</button>
+          <button class="header-btn" id="sheet-tokens">≡ Tokens</button>
+        </div>
+
+        <div class="music-panel" id="music-panel">
+          <div class="sidebar-section" style="display:flex;align-items:center;justify-content:space-between;">
+            <span style="font-family:var(--font-title);font-size:15px;font-weight:600;color:var(--text);">Music</span>
+            <button class="icon-btn" id="music-close">✕</button>
+          </div>
+          <div style="padding:12px 14px;display:flex;flex-direction:column;gap:10px;border-bottom:1px solid var(--border);">
+            <div id="music-now" style="font-size:13px;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">Nothing playing</div>
+            <div style="display:flex;align-items:center;gap:6px;">
+              <button class="icon-btn" id="music-prev" title="Previous" style="font-size:16px;">⏮</button>
+              <button class="icon-btn" id="music-play" title="Play / Pause" style="font-size:16px;">▶</button>
+              <button class="icon-btn" id="music-next" title="Next" style="font-size:16px;">⏭</button>
+              <span style="font-size:12px;color:var(--muted);">🔊</span>
+              <input type="range" aria-label="Music volume" id="music-vol" min="0" max="1" step="0.05" style="flex:1;accent-color:#4D5947;" title="Volume" />
+            </div>
+          </div>
+          <div class="sidebar-section">
+            <h4>Queue</h4>
+            <div id="music-queue" style="display:flex;flex-direction:column;gap:4px;"></div>
+          </div>
+        </div>
+
+        <div class="sidebar" id="share-panel"></div>
+
+        <div class="sidebar" id="sidebar">
+          <div class="sidebar-section">
+            <h4>Tokens</h4>
+            <div class="token-list" id="token-list"></div>
+            {{admin6}}
+          </div>
+          <div id="token-editor"></div>
+        </div>
+
+      </div>
+
+      <div class="chat-wrap" id="chat-wrap">
+        <button class="chat-bubble" id="chat-bubble" title="Open chat">💬 Chat</button>
+        <div class="chat-messages" id="chat-messages"></div>
+        <div class="chat-input-row">
+          <input class="chat-input" aria-label="Chat message" id="chat-input" placeholder="Chat…" />
+          <button class="chat-send" id="chat-send">→</button>
+          <button class="chat-collapse" id="chat-collapse" title="Collapse chat">▾</button>
+        </div>
+      </div>
+
+      <div class="notif" id="notif"></div>
+    </div>
+  
