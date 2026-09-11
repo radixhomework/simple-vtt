@@ -10,7 +10,6 @@ import { requireMapDM, isMapDM, param } from '../mapaccess'
 import { pushTableStateToTable } from '../hub'
 import path from 'node:path'
 import fs from 'node:fs'
-import type { IncomingHttpHeaders } from 'node:http'
 
 export const tokensRouter = Router()
 
