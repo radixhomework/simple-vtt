@@ -8,9 +8,9 @@
  * dedup (existing hashes are reused, never re-stored).
  */
 import AdmZip from 'adm-zip'
-import crypto from 'crypto'
-import fs from 'fs'
-import path from 'path'
+import crypto from 'node:crypto'
+import fs from 'node:fs'
+import path from 'node:path'
 import { db } from '../db'
 import { buildTilePyramid } from '../tiles'
 
@@ -74,6 +74,10 @@ export interface ApplyMapResult {
   assetsReused: number
 }
 
+function floorRef(ref: string | undefined): string | undefined {
+  return ref || undefined
+}
+
 export function sha256(buf: Buffer): string {
   return crypto.createHash('sha256').update(buf).digest('hex')
 }
@@ -117,13 +121,30 @@ export function buildMapPackage(tableId: string, tableName: string): Buffer {
     | undefined
   if (!table) throw new Error('table not found')
 
-  const floors = db.prepare('SELECT id, level, name, grid_size, uvt_metadata, map_offset_x, map_offset_y, map_image_path, tiles_path, revealed FROM floors WHERE table_id=? ORDER BY level, rowid').all(tableId) as Array<Record<string, unknown>>
-  const tokens = db.prepare('SELECT * FROM tokens WHERE table_id=?').all(tableId)
-  const portals = db.prepare('SELECT * FROM portals WHERE table_id=?').all(tableId)
-  const walls = db.prepare('SELECT * FROM walls WHERE table_id=?').all(tableId)
-  const props = db.prepare('SELECT * FROM props WHERE table_id=?').all(tableId)
-  const stairs = db.prepare('SELECT from_floor, to_floor, from_x, from_y, to_x, to_y, radius FROM stairs WHERE table_id=?').all(tableId)
-  const members = db.prepare('SELECT username, role FROM map_members WHERE table_id=? ORDER BY role, username').all(tableId)
+  const floors = db.prepare('SELECT id, level, name, grid_size, uvt_metadata, map_offset_x, map_offset_y, map_image_path, tiles_path, revealed FROM floors WHERE table_id=? ORDER BY level, rowid').all(tableId) as Array<{
+    id: string; level: number; name: string; grid_size: number; uvt_metadata: string
+    map_offset_x: number; map_offset_y: number; map_image_path: string; tiles_path: string; revealed: number
+  }>
+  const tokens = db.prepare('SELECT * FROM tokens WHERE table_id=?').all(tableId) as Array<{
+    id: string; name: string; x: number; y: number; icon_path: string; has_vision: number
+    vision_radius: number; size: number; color: string; owner: string; hidden: number; floor_id: string
+  }>
+  const portals = db.prepare('SELECT * FROM portals WHERE table_id=?').all(tableId) as Array<{
+    id: string; x1: number; y1: number; x2: number; y2: number; closed: number; kind: string; locked: number; floor_id: string
+  }>
+  const walls = db.prepare('SELECT * FROM walls WHERE table_id=?').all(tableId) as Array<{
+    id: string; ax: number; ay: number; bx: number; by: number; group_id: string; floor_id: string
+  }>
+  const props = db.prepare('SELECT * FROM props WHERE table_id=?').all(tableId) as Array<{
+    id: string; asset_path: string; name: string; x: number; y: number; size: number
+    rotation: number; z: number; opacity: number; group_id: string; floor_id: string
+  }>
+  const stairs = db.prepare('SELECT from_floor, to_floor, from_x, from_y, to_x, to_y, radius FROM stairs WHERE table_id=?').all(tableId) as Array<{
+    from_floor: string; to_floor: string; from_x: number; from_y: number; to_x: number; to_y: number; radius: number
+  }>
+  const members = db.prepare('SELECT username, role FROM map_members WHERE table_id=? ORDER BY role, username').all(tableId) as Array<{
+    username: string; role: string
+  }>
 
   const zip = new AdmZip()
   const assets: Array<Omit<PackageAsset, 'zipPath'> & { zipPath: string }> = []
@@ -143,25 +164,25 @@ export function buildMapPackage(tableId: string, tableName: string): Buffer {
   const floorRefByOld = new Map<string, string>()
   const floorEntries: MapPackageManifest['floors'] = []
   let levelIdx = 0
-  for (const f of floors as Array<Record<string, unknown>>) {
+  for (const f of floors) {
     levelIdx++
     const ref = newId()
-    floorRefByOld.set(String(f.id), ref)
+    floorRefByOld.set(f.id, ref)
     const entry: MapPackageManifest['floors'][number] = {
       ref,
-      level: Number(f.level),
-      name: String(f.name ?? ''),
-      grid_size: Number(f.grid_size),
-      uvt_metadata: String(f.uvt_metadata ?? '{}'),
-      map_offset_x: Number(f.map_offset_x ?? 0),
-      map_offset_y: Number(f.map_offset_y ?? 0),
-      revealed: Number(f.revealed) === 1,
+      level: f.level,
+      name: f.name,
+      grid_size: f.grid_size,
+      uvt_metadata: f.uvt_metadata,
+      map_offset_x: f.map_offset_x,
+      map_offset_y: f.map_offset_y,
+      revealed: f.revealed === 1,
     }
     if (f.map_image_path) {
       entry.image = `floors/floor-${levelIdx}.png`
-      zip.addFile(entry.image, fs.readFileSync(uploadsFilePath(String(f.map_image_path))))
+      zip.addFile(entry.image, fs.readFileSync(uploadsFilePath(f.map_image_path)))
     }
-    const maskFile = path.join(uploadsDir(), `fog_${String(f.id)}.png`)
+    const maskFile = path.join(uploadsDir(), `fog_${f.id}.png`)
     if (fs.existsSync(maskFile)) {
       entry.fogMask = `masks/floor-${levelIdx}.png`
       zip.addFile(entry.fogMask, fs.readFileSync(maskFile))
@@ -170,14 +191,14 @@ export function buildMapPackage(tableId: string, tableName: string): Buffer {
   }
 
   const iconZipByOld = new Map<string, string>()
-  for (const t of tokens as Array<Record<string, unknown>>) {
-    if (t.icon_path && !iconZipByOld.has(String(t.icon_path))) {
-      iconZipByOld.set(String(t.icon_path), addLibraryAsset(String(t.icon_path)))
+  for (const t of tokens) {
+    if (t.icon_path && !iconZipByOld.has(t.icon_path)) {
+      iconZipByOld.set(t.icon_path, addLibraryAsset(t.icon_path))
     }
   }
-  for (const pr of props as Array<Record<string, unknown>>) {
-    if (pr.asset_path && !iconZipByOld.has(String(pr.asset_path))) {
-      iconZipByOld.set(String(pr.asset_path), addLibraryAsset(String(pr.asset_path)))
+  for (const pr of props) {
+    if (pr.asset_path && !iconZipByOld.has(pr.asset_path)) {
+      iconZipByOld.set(pr.asset_path, addLibraryAsset(pr.asset_path))
     }
   }
 
@@ -186,26 +207,26 @@ export function buildMapPackage(tableId: string, tableName: string): Buffer {
     kind: 'map',
     name: table.name,
     floors: floorEntries,
-    tokens: (tokens as Array<Record<string, unknown>>).map(t => ({
+    tokens: tokens.map(t => ({
       ...t,
-      floorRef: floorRefByOld.get(String(t.floor_id)) ?? '',
-      icon: t.icon_path ? iconZipByOld.get(String(t.icon_path)) : undefined,
+      floorRef: floorRefByOld.get(t.floor_id) ?? '',
+      icon: t.icon_path ? iconZipByOld.get(t.icon_path) : undefined,
     })),
-    portals: (portals as Array<Record<string, unknown>>).map(p => ({ ...p, floorRef: floorRefByOld.get(String(p.floor_id)) ?? '' })),
-    walls: (walls as Array<Record<string, unknown>>).map(w => ({ ...w, floorRef: floorRefByOld.get(String(w.floor_id)) ?? '' })),
+    portals: portals.map(p => ({ ...p, floorRef: floorRefByOld.get(p.floor_id) ?? '' })),
+    walls: walls.map(w => ({ ...w, floorRef: floorRefByOld.get(w.floor_id) ?? '' })),
     props: (props as Array<Record<string, unknown>>).map(p => ({
       ...p,
       floorRef: floorRefByOld.get(String(p.floor_id)) ?? '',
       asset: p.asset_path ? iconZipByOld.get(String(p.asset_path)) : undefined,
     })),
-    stairs: (stairs as Array<Record<string, unknown>>).map(st => ({
-      fromRef: floorRefByOld.get(String(st.from_floor)) ?? '',
-      toRef: floorRefByOld.get(String(st.to_floor)) ?? '',
+    stairs: stairs.map(st => ({
+      fromRef: floorRefByOld.get(st.from_floor) ?? '',
+      toRef: floorRefByOld.get(st.to_floor) ?? '',
       from_x: Number(st.from_x), from_y: Number(st.from_y),
       to_x: Number(st.to_x), to_y: Number(st.to_y),
       radius: Number(st.radius ?? 1),
     })),
-    members: members as Array<{ username: string; role: string }>,
+    members,
     assets,
   }
   zip.addFile('manifest.json', JSON.stringify(manifest))
@@ -224,36 +245,131 @@ export function applyMapPackage(
   const tableId = newPackageId()
   const counts = { floors: 0, tokens: 0, portals: 0, walls: 0, props: 0, stairs: 0, assetsAdded: 0, assetsReused: 0 }
 
-  // Register referenced assets first (content-hash dedup), collect path rewrites
-  const zipPathByOld = new Map<string, string>()
+  const zipPathByOld = registerPackageAssets(zip, manifest, counts)
+  const rewrite = (zipPath: string | undefined): string | undefined => (zipPath ? zipPathByOld.get(zipPath) : undefined)
+
+  db.prepare('INSERT INTO tables (id, name, owner) VALUES (?,?,?)').run(tableId, tableName, owner)
+  db.prepare("INSERT INTO map_members (table_id, username, role) VALUES (?,?,'dm')").run(tableId, owner)
+
+  const floorMap = applyPackageFloors(zip, manifest, tableId, counts)
+  applyPackageTokens(zip, manifest, tableId, counts, rewrite)
+  applyPackagePortals(zip, manifest, tableId, counts, rewrite)
+  applyPackageWalls(zip, manifest, tableId, counts, rewrite)
+  applyPackageProps(zip, manifest, tableId, counts, rewrite)
+  applyPackageStairs(zip, manifest, tableId, counts)
+  applyPackageMembers(manifest.members, tableId, owner)
+  void floorMap
+
+  return { tableId, ...counts }
+}
+
+
+interface RawFloor {
+  ref: string
+  level: number
+  name: string
+  grid_size: number
+  uvt_metadata: string
+  map_offset_x: number
+  map_offset_y: number
+  revealed: boolean
+  image?: string
+  fogMask?: string
+}
+
+interface RawToken {
+  name?: string
+  x?: number
+  y?: number
+  icon?: string
+  has_vision?: boolean
+  vision_radius?: number
+  size?: number
+  color?: string
+  owner?: string
+  hidden?: boolean
+  floorRef: string
+}
+
+interface RawPortal {
+  x1?: number
+  y1?: number
+  x2?: number
+  y2?: number
+  closed?: boolean
+  kind?: string
+  locked?: boolean
+  floorRef: string
+}
+
+interface RawWall {
+  ax?: number
+  ay?: number
+  bx?: number
+  by?: number
+  group_id?: string
+  floorRef: string
+}
+
+interface RawProp {
+  asset?: string
+  name?: string
+  x?: number
+  y?: number
+  size?: number
+  rotation?: number
+  z?: number
+  opacity?: number
+  group_id?: string
+  floorRef: string
+}
+
+interface RawStair {
+  fromRef: string
+  toRef: string
+  from_x: number
+  from_y: number
+  to_x: number
+  to_y: number
+  radius: number
+}
+
+function registerPackageAssets(
+  zip: AdmZip,
+  manifest: MapPackageManifest,
+  counts: { assetsAdded: number; assetsReused: number },
+): Map<string, string> {
+  const zipPathByRef = new Map<string, string>()
   for (const a of manifest.assets) {
     const entry = zip.getEntry(a.zipPath)
     if (!entry) continue
-    const buf = entry.getData()
     const existing = db.prepare('SELECT id, path FROM assets WHERE hash=? AND kind=?').get(a.hash, 'image') as
       | { id: string; path: string }
       | undefined
     if (existing) {
-      zipPathByOld.set(a.zipPath, existing.path)
+      zipPathByRef.set(a.zipPath, existing.path)
       counts.assetsReused++
       continue
     }
+    const buf = entry.getData()
     const newId = newPackageId()
     const fileUrl = `/uploads/asset_${newId}${a.ext}`
     fs.writeFileSync(path.join(uploadsDir(), path.basename(fileUrl)), buf)
     db.prepare('INSERT INTO assets (id, kind, name, hash, path, size, folder) VALUES (?,?,?,?,?,?,?)')
       .run(newId, 'image', a.name, a.hash, fileUrl, buf.length, a.folder)
-    zipPathByOld.set(a.zipPath, fileUrl)
+    zipPathByRef.set(a.zipPath, fileUrl)
     counts.assetsAdded++
   }
-  const rewrite = (p: unknown): string | undefined => {
-    if (typeof p !== 'string' || p === '') return undefined
-    return zipPathByOld.get(p)
-  }
+  return zipPathByRef
+}
 
-  db.prepare('INSERT INTO tables (id, name, owner) VALUES (?,?,?)').run(tableId, tableName, owner)
-  db.prepare("INSERT INTO map_members (table_id, username, role) VALUES (?,?,'dm')").run(tableId, owner)
-
+function applyPackageFloors(
+  zip: AdmZip,
+  manifest: MapPackageManifest,
+  tableId: string,
+  counts: { floors: number },
+  rewrite: (zipPath: string | undefined) => string | undefined,
+): Map<string, string> {
   const floorMap = new Map<string, string>()
   for (const f of manifest.floors) {
     const newId = newPackageId()
@@ -265,9 +381,8 @@ export function applyMapPackage(
       if (entry) {
         imageBuf = entry.getData()
         const ext = path.extname(f.image) || '.png'
-        const fileUrl = `/uploads/map_${newId}${ext}`
-        fs.writeFileSync(path.join(uploadsDir(), path.basename(fileUrl)), imageBuf)
-        imagePath = fileUrl
+        imagePath = `/uploads/map_${newId}${ext}`
+        fs.writeFileSync(path.join(uploadsDir(), path.basename(imagePath)), imageBuf)
       }
     }
     db.prepare(
@@ -275,61 +390,109 @@ export function applyMapPackage(
        VALUES (?,?,?,?,?,?,?,?,?,0,0,'',?)`
     ).run(newId, tableId, f.level, f.name, imagePath, f.grid_size, f.uvt_metadata, f.map_offset_x, f.map_offset_y, f.revealed ? 1 : 0)
     counts.floors++
-    if (imageBuf && imagePath) {
-      // Fire-and-forget: same pattern as the upload routes — the pyramid
-      // appears a few seconds later without blocking the import response
+    if (imageBuf) {
+      // Fire-and-forget: the pyramid appears a few seconds after import
       void buildTilePyramid(newId, imageBuf).catch(() => {})
     }
   }
+  return floorMap
+}
 
+function applyPackageTokens(
+  zip: AdmZip,
+  manifest: MapPackageManifest,
+  tableId: string,
+  counts: { tokens: number },
+  rewrite: (zipPath: string | undefined) => string | undefined,
+): void {
   for (const t of manifest.tokens) {
     db.prepare(
       `INSERT INTO tokens (id, table_id, name, x, y, icon_path, has_vision, vision_radius, size, color, owner, hidden, floor_id)
        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`
     ).run(
-      newPackageId(), tableId, String(t.name ?? ''), Number(t.x ?? 0), Number(t.y ?? 0),
+      newPackageId(), tableId, t.name ?? '', Number(t.x ?? 0), Number(t.y ?? 0),
       rewrite(t.icon) ?? '', t.has_vision ? 1 : 0, Number(t.vision_radius ?? 6),
-      Number(t.size ?? 0.75), String(t.color ?? '#4a90d9'), String(t.owner ?? ''), t.hidden ? 1 : 0,
-      floorMap.get(String(t.floorRef)) ?? '',
+      Number(t.size ?? 0.75), t.color ?? '#4a90d9', t.owner ?? '', t.hidden ? 1 : 0,
+      floorRef(t.floorRef),
     )
     counts.tokens++
   }
+}
 
+function applyPackagePortals(
+  zip: AdmZip,
+  manifest: MapPackageManifest,
+  tableId: string,
+  counts: { portals: number },
+  rewrite: (zipPath: string | undefined) => string | undefined,
+): void {
   for (const p of manifest.portals) {
     db.prepare(
       'INSERT INTO portals (id, table_id, x1, y1, x2, y2, closed, floor_id, kind, locked) VALUES (?,?,?,?,?,?,?,?,?,0)'
-    ).run(newPackageId(), tableId, Number(p.x1), Number(p.y1), Number(p.x2), Number(p.y2), p.closed ? 1 : 0, floorMap.get(String(p.floorRef)) ?? '', p.kind === 'window' ? 'window' : 'door')
+    ).run(
+      newPackageId(), tableId, Number(p.x1 ?? 0), Number(p.y1 ?? 0), Number(p.x2 ?? 0), Number(p.y2 ?? 0),
+      p.closed === false ? 0 : 1, floorRef(p.floorRef), p.kind === 'window' ? 'window' : 'door',
+    )
     counts.portals++
   }
+}
 
+function applyPackageWalls(
+  zip: AdmZip,
+  manifest: MapPackageManifest,
+  tableId: string,
+  counts: { walls: number },
+  rewrite: (zipPath: string | undefined) => string | undefined,
+): void {
   for (const w of manifest.walls) {
     db.prepare('INSERT INTO walls (id, table_id, floor_id, ax, ay, bx, by, group_id) VALUES (?,?,?,?,?,?,?,?)')
-      .run(newPackageId(), tableId, floorMap.get(String(w.floorRef)) ?? '', Number(w.ax), Number(w.ay), Number(w.bx), Number(w.by), String(w.group_id ?? ''))
+      .run(newPackageId(), tableId, floorRef(w.floorRef), Number(w.ax ?? 0), Number(w.ay ?? 0), Number(w.bx ?? 0), Number(w.by ?? 0), w.group_id ?? '')
     counts.walls++
   }
+}
 
+function applyPackageProps(
+  zip: AdmZip,
+  manifest: MapPackageManifest,
+  tableId: string,
+  counts: { props: number },
+  rewrite: (zipPath: string | undefined) => string | undefined,
+): void {
   for (const pr of manifest.props) {
     db.prepare(
       'INSERT INTO props (id, table_id, floor_id, asset_path, name, x, y, size, rotation, z, opacity, group_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)'
     ).run(
-      newPackageId(), tableId, floorMap.get(String(pr.floorRef)) ?? '',
-      rewrite(pr.asset) ?? '', String(pr.name ?? ''), Number(pr.x ?? 0), Number(pr.y ?? 0),
-      Number(pr.size ?? 70), Number(pr.rotation ?? 0), Number(pr.z ?? 0), Number(pr.opacity ?? 1), String(pr.group_id ?? ''),
+      newPackageId(), tableId, floorRef(pr.floorRef) ?? '',
+      rewrite(pr.asset) ?? '', pr.name ?? '', Number(pr.x ?? 0), Number(pr.y ?? 0),
+      Number(pr.size ?? 70), Number(pr.rotation ?? 0), Number(pr.z ?? 0), Number(pr.opacity ?? 1), pr.group_id ?? '',
     )
     counts.props++
   }
+}
 
+function applyPackageStairs(
+  zip: AdmZip,
+  manifest: MapPackageManifest,
+  tableId: string,
+  counts: { stairs: number },
+): void {
   for (const st of manifest.stairs) {
-    if (!floorMap.get(st.fromRef) || !floorMap.get(st.toRef)) continue
+    const from = floorRef(st.fromRef)
+    const to = floorRef(st.toRef)
+    if (!from || !to) continue
     db.prepare('INSERT INTO stairs (id, table_id, from_floor, from_x, from_y, to_floor, to_x, to_y, radius) VALUES (?,?,?,?,?,?,?,?,?)')
-      .run(newPackageId(), tableId, floorMap.get(st.fromRef) ?? '', st.from_x, st.from_y, floorMap.get(st.toRef) ?? '', st.to_x, st.to_y, st.radius)
+      .run(newPackageId(), tableId, from, Number(st.from_x ?? 0), Number(st.from_y ?? 0), to, Number(st.to_x ?? 0), Number(st.to_y ?? 0), Number(st.radius ?? 1))
     counts.stairs++
   }
+}
 
-  for (const m of manifest.members) {
+function applyPackageMembers(
+  members: Array<{ username: string; role: string }>,
+  tableId: string,
+  owner: string,
+): void {
+  for (const m of members) {
     if (m.username === owner) continue
     if (userExists(m.username)) setMember(tableId, m.username, m.role === 'dm' ? 'dm' : 'player')
   }
-
-  return { tableId, ...counts }
 }
