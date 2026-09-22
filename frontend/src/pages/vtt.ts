@@ -83,6 +83,15 @@ root.querySelector('#logout-btn')!.addEventListener('click', onLogout)
     const tables = await api.listTables()
     page.innerHTML = `
       <div class="admin-section">
+        <h3>Import map package (.zip)</h3>
+        <div class="upload-zone" id="map-package-drop">
+          Drop a Simple VTT map package here, or click to browse
+          <input type="file" id="map-package-file" accept=".zip" style="display:none" />
+        </div>
+        <div class="msg" id="map-package-msg"></div>
+      </div>
+
+      <div class="admin-section">
         <h3>Import Universal VTT (.uvtt / .zip)</h3>
         <div style="font-size:12px;color:var(--muted);margin:-8px 0 12px">Importing a map makes you its DM — invite users from the map's 👥 Share button</div>
         <div class="upload-zone" id="uvtt-drop">
@@ -118,6 +127,7 @@ root.querySelector('#logout-btn')!.addEventListener('click', onLogout)
                 <td class="row-actions">
                   <button class="btn btn-primary btn-sm" data-mjoin="${t.id}">Join</button>
                   ${manage ? `
+                  <button class="btn btn-ghost btn-sm" data-mexp="${t.id}">Export</button>
                   <button class="btn btn-ghost btn-sm" data-mfloors="${t.id}">Floors</button>
                   <button class="btn btn-ghost btn-sm" data-mset="${t.id}">Settings</button>
                   <button class="btn btn-ghost btn-sm" data-mren="${t.id}">Rename</button>
@@ -150,6 +160,34 @@ root.querySelector('#logout-btn')!.addEventListener('click', onLogout)
     `
 
     const refresh = () => { void render() }
+
+    // Map package import (drop zone + file input)
+    const mpDrop = page.querySelector('#map-package-drop') as HTMLElement
+    const mpInput = page.querySelector('#map-package-file') as HTMLInputElement
+    const mpMsg = page.querySelector('#map-package-msg') as HTMLElement
+    const importPackage = async (file: File) => {
+      mpMsg.textContent = 'Importing…'; mpMsg.className = 'msg'
+      try {
+        const t = await api.importMapPackage(file)
+        mpMsg.textContent = `Map imported as "${t.name}"`; mpMsg.className = 'msg msg-ok'
+        setTimeout(refresh, 800)
+      } catch (e: any) {
+        mpMsg.textContent = 'Import failed: ' + e.message; mpMsg.className = 'msg msg-err'
+      }
+    }
+    mpDrop.addEventListener('click', () => mpInput.click())
+    mpDrop.addEventListener('dragover', (e) => { e.preventDefault(); mpDrop.classList.add('drag') })
+    mpDrop.addEventListener('dragleave', () => mpDrop.classList.remove('drag'))
+    mpDrop.addEventListener('drop', async (e) => {
+      e.preventDefault()
+      mpDrop.classList.remove('drag')
+      const f = e.dataTransfer?.files[0]
+      if (f) await importPackage(f)
+    })
+    mpInput.addEventListener('change', async () => {
+      const f = mpInput.files?.[0]
+      if (f) await importPackage(f)
+    })
 
     const dropZone = page.querySelector('#uvtt-drop') as HTMLElement
     const fileInput = page.querySelector('#uvtt-file') as HTMLInputElement
@@ -196,6 +234,19 @@ root.querySelector('#logout-btn')!.addEventListener('click', onLogout)
           await api.deleteTable(id)
           refresh()
         }
+      })
+    })
+
+    page.querySelectorAll('[data-mexp]').forEach(el => {
+      el.addEventListener('click', async () => {
+        const id = (el as HTMLElement).dataset.mexp!
+        try {
+          const { blob, filename } = await api.exportMap(id)
+          const url = URL.createObjectURL(blob)
+          const a = document.createElement('a')
+          a.href = url; a.download = filename; a.click()
+          URL.revokeObjectURL(url)
+        } catch (e: any) { alert('Export failed: ' + e.message) }
       })
     })
 
@@ -638,8 +689,9 @@ root.querySelector('#logout-btn')!.addEventListener('click', onLogout)
         const delBtn = folder === ''
           ? ''
           : `<button class="btn btn-danger btn-sm" data-del-folder="${esc(folder)}" style="margin-left:10px">Delete folder</button>`
+        const exportBtn = `<button class="btn btn-ghost btn-sm" data-export-folder="${esc(folder)}" style="margin-left:10px">Export folder</button>`
         rows.push(`<tr class="folder-head" data-fold="${esc(key)}">
-          <td colspan="4" style="color:var(--brand);font-weight:600;border-bottom:1px solid var(--border)"><span class="fold-arrow">${open ? '▾' : '▸'}</span>📁 ${folder === '' ? 'Root' : esc(folder)} (${groups.get(folder)!.length})${delBtn}</td>
+          <td colspan="4" style="color:var(--brand);font-weight:600;border-bottom:1px solid var(--border)"><span class="fold-arrow">${open ? '▾' : '▸'}</span>📁 ${folder === '' ? 'Root' : esc(folder)} (${groups.get(folder)!.length})${delBtn}${exportBtn}</td>
         </tr>`)
         for (const a of groups.get(folder)!) {
           rows.push(`
@@ -787,6 +839,44 @@ root.querySelector('#logout-btn')!.addEventListener('click', onLogout)
             tbody.querySelectorAll(`tr.folder-row[data-group="${CSS.escape(key)}"]`).forEach(r => { (r as HTMLElement).hidden = false })
           }
         })
+      })
+    })
+
+    const downloadZip = (blob: Blob, filename: string) => {
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url; a.download = filename; a.click()
+      URL.revokeObjectURL(url)
+    }
+    page.querySelector('#assets-export-all')?.addEventListener('click', async () => {
+      try {
+        const { blob, filename } = await api.exportAssets()
+        downloadZip(blob, filename)
+      } catch (e: any) { msg.textContent = e.message; msg.className = 'msg msg-err' }
+    })
+    page.querySelector('#assets-import-btn')?.addEventListener('click', () => {
+      (page.querySelector('#assets-import-file') as HTMLElement | null)?.click()
+    })
+    page.querySelector('#assets-import-file')?.addEventListener('change', async (e) => {
+      const f = (e.target as HTMLInputElement).files?.[0]
+      if (!f) return
+      msg.textContent = 'Importing…'; msg.className = 'msg'
+      try {
+        const r = await api.importAssetsPackage(f)
+        msg.textContent = `Imported ${r.added} asset(s), ${r.skipped} skipped (duplicates)`; msg.className = 'msg msg-ok'
+        refresh()
+      } catch (e: any) {
+        msg.textContent = e.message; msg.className = 'msg msg-err'
+      }
+    })
+    page.querySelectorAll('[data-export-folder]').forEach(el => {
+      el.addEventListener('click', async (e) => {
+        e.stopPropagation()
+        const folder = (el as HTMLElement).dataset.exportFolder!
+        try {
+          const { blob, filename } = await api.exportAssets(folder === '' ? undefined : folder)
+          downloadZip(blob, filename)
+        } catch (e: any) { msg.textContent = e.message; msg.className = 'msg msg-err' }
       })
     })
 

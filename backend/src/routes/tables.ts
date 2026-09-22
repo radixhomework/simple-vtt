@@ -23,6 +23,7 @@ import {
   getTable, getFloor, floorsOf, listTablesFor, checkDimensions,
   membersOf, setMember, removeMember, userExists,
 } from '../models/tables.model'
+import { buildMapPackage, applyMapPackage, PACKAGE_FORMAT } from '../models/map-package.model'
 
 export const tablesRouter = Router()
 
@@ -353,6 +354,45 @@ function importUvttProps(
   }
   return count
 }
+
+
+// ── Map package export/import (single-map portability) ───────────────────────
+tablesRouter.get('/tables/:id/export', authMiddleware, (req, res) => {
+  if (!requireMapDM(req, res)) return
+  const table = getTable(param(req, 'id'))
+  if (!table) { res.status(404).json({ error: 'not found' }); return }
+  try {
+    const buf = buildMapPackage(table.id, table.name)
+    const safe = table.name.replace(/[^a-z0-9_-]+/gi, '_').slice(0, 40) || 'map'
+    res.setHeader('Content-Type', 'application/zip')
+    res.setHeader('Content-Disposition', `attachment; filename="simple-vtt-map-${safe}.zip"`)
+    res.send(buf)
+  } catch (e: unknown) {
+    res.status(500).json({ error: e instanceof Error ? e.message : 'export failed' })
+  }
+})
+
+tablesRouter.post('/tables/import-package', authMiddleware, upload.single('file'), (req, res) => {
+  if (!req.file) { res.status(400).json({ error: 'no file' }); return }
+  let zip: AdmZip
+  let manifest: { format: number; kind: string; name?: string; floors?: unknown[]; assets?: unknown[] }
+  try {
+    zip = new AdmZip(req.file.buffer)
+    manifest = JSON.parse(zip.readAsText('manifest.json'))
+  } catch {
+    res.status(400).json({ error: 'not a valid map package' }); return
+  }
+  if (manifest.format !== PACKAGE_FORMAT || manifest.kind !== 'map' || !Array.isArray(manifest.floors)) {
+    res.status(400).json({ error: 'unsupported package format' }); return
+  }
+  const tableName = String(req.body.name || manifest.name || 'Imported map').slice(0, 200)
+  try {
+    const result = applyMapPackage(zip, manifest as never, tableName, res.locals.user)
+    res.status(201).json({ id: result.tableId, name: tableName, ...result })
+  } catch (e: unknown) {
+    res.status(500).json({ error: e instanceof Error ? e.message : 'import failed' })
+  }
+})
 
 // ── Floors ────────────────────────────────────────────────────────────────────
 /** Create an empty floor at the next level. */

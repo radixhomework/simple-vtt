@@ -170,10 +170,46 @@ export const api = {
   updateProp: (tableId: string, propId: string, p: Partial<Prop>) => request<Prop>('PATCH', `/tables/${tableId}/props/${propId}`, p),
   deleteProp: (tableId: string, propId: string) => request<void>('DELETE', `/tables/${tableId}/props/${propId}`),
 
+  // Map package export/import
+  async exportMap(tableId: string): Promise<{ blob: Blob; filename: string }> {
+    const res = await fetch(`${BASE}/tables/${tableId}/export`, { headers: { Authorization: `Bearer ${localStorage.getItem('token') ?? ''}` } })
+    if (!res.ok) throw new Error(`${res.status}`)
+    const dispo = res.headers.get('Content-Disposition') ?? ''
+    const m = /filename="([^"]+)"/.exec(dispo)
+    return { blob: await res.blob(), filename: m?.[1] ?? `simple-vtt-map-${tableId}.zip` }
+  },
+  async importMapPackage(file: File, name?: string): Promise<Table> {
+    const fd = new FormData()
+    fd.append('file', file)
+    if (name) fd.append('name', name)
+    const res = await fetch(`${BASE}/tables/import-package`, {
+      method: 'POST', headers: { Authorization: `Bearer ${localStorage.getItem('token') ?? ''}` }, body: fd,
+    })
+    if (!res.ok) throw new Error(await res.text())
+    return res.json()
+  },
+
   // Assets (shared image + audio library, deduplicated server-side)
   listAssets: (kind: 'image' | 'audio') => request<Asset[]>('GET', `/assets?kind=${kind}`),
   deleteAsset: (id: string, force = false) =>
     request<void>('DELETE', `/assets/${id}${force ? '?force=1' : ''}`),
+  async exportAssets(folder?: string): Promise<{ blob: Blob; filename: string }> {
+    const q = folder ? `?folder=${encodeURIComponent(folder)}` : ''
+    const res = await fetch(`${BASE}/assets/export${q}`, { headers: { Authorization: `Bearer ${localStorage.getItem('token') ?? ''}` } })
+    if (!res.ok) throw new Error(`${res.status}`)
+    const dispo = res.headers.get('Content-Disposition') ?? ''
+    const m = /filename="([^"]+)"/.exec(dispo)
+    return { blob: await res.blob(), filename: m?.[1] ?? 'simple-vtt-assets.zip' }
+  },
+  async importAssetsPackage(file: File): Promise<{ added: number; skipped: number }> {
+    const fd = new FormData()
+    fd.append('file', file)
+    const res = await fetch(`${BASE}/assets/import-package`, {
+      method: 'POST', headers: { Authorization: `Bearer ${localStorage.getItem('token') ?? ''}` }, body: fd,
+    })
+    if (!res.ok) throw new Error(await res.text())
+    return res.json()
+  },
   deleteAssetFolder: (folder: string) =>
     request<{ deleted: number }>('DELETE', `/assets-folder/${encodeURIComponent(folder)}`),
   updateAsset: (id: string, data: { folder?: string; name?: string }) => request<Asset>('PUT', `/assets/${id}`, data),

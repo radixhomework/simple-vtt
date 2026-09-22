@@ -23,3 +23,7 @@ Thumbs.db
 ## Vendored AI-harness tooling (installed via npx impeccable install; see .github/skills/impeccable/SKILL.md)
 .github/skills/impeccable/scripts/
 .hermes/skills/impeccable/scripts/
+
+## Test/export artifacts
+*.zip
+!frontend/public/*.zip

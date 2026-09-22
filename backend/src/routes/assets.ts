@@ -16,6 +16,7 @@ import { musicLibraryChanged } from '../hub'
 import { decodeUploadFilename } from '../filename'
 import { param } from '../mapaccess'
 import { loadSettings } from '../settings'
+import AdmZip from 'adm-zip'
 
 export const assetsRouter = Router()
 
@@ -44,6 +45,7 @@ function assetUpload(req: Request, res: Response, next: NextFunction) {
 
 function newId() { return crypto.randomUUID().replace(/-/g, '').slice(0, 16) }
 const uploadsDir = () => process.env.UPLOADS_DIR || path.join(process.cwd(), 'uploads')
+const importUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 500 * 1024 * 1024 } })
 
 assetsRouter.get('/assets', authMiddleware, (req, res) => {
   const kind = req.query.kind
@@ -136,6 +138,65 @@ assetsRouter.put('/assets/:id', authMiddleware, adminOnly, (req, res) => {
   res.json(fresh)
 })
 
+
+// ── Asset library package export/import (admin) ──────────────────────────────
+assetsRouter.get('/assets/export', authMiddleware, adminOnly, (req, res) => {
+  const folder = typeof req.query.folder === 'string' ? req.query.folder : null
+  const rows = (folder !== null
+    ? db.prepare('SELECT id, kind, name, hash, path, size, folder FROM assets WHERE folder=? ORDER BY kind, name COLLATE NOCASE').all(folder)
+    : db.prepare('SELECT id, kind, name, hash, path, size, folder FROM assets ORDER BY kind, folder, name COLLATE NOCASE').all()) as
+    Array<{ id: string; kind: string; name: string; hash: string; path: string; size: number; folder: string }>
+  const zip = new AdmZip()
+  const manifest: Record<string, unknown> = { format: 1, kind: 'assets', assets: [] }
+  const list = manifest.assets as Array<Record<string, unknown>>
+  let n = 0
+  for (const row of rows) {
+    const file = path.join(process.env.UPLOADS_DIR || path.join(process.cwd(), 'uploads'), path.basename(row.path))
+    if (!fs.existsSync(file)) continue
+    const buf = fs.readFileSync(file)
+    const hash = row.hash && row.hash !== '' ? row.hash : crypto.createHash('sha256').update(buf).digest('hex')
+    const zipPath = `files/${row.kind}-${n}${path.extname(row.path).toLowerCase()}`
+    zip.addFile(zipPath, buf)
+    list.push({ kind: row.kind, name: row.name, folder: row.folder, hash, zipPath })
+    n++
+  }
+  zip.addFile('manifest.json', JSON.stringify(manifest))
+  const label = folder ? `folder-${folder.replace(/[^a-z0-9_-]+/gi, '_')}` : 'all'
+  res.setHeader('Content-Type', 'application/zip')
+  res.setHeader('Content-Disposition', `attachment; filename="simple-vtt-assets-${label}.zip"`)
+  res.send(zip.toBuffer())
+})
+
+assetsRouter.post('/assets/import-package', authMiddleware, adminOnly, importUpload.single('file'), (req, res) => {
+  let zip: AdmZip
+  let manifest: { format: number; kind: string; assets: Array<{ kind: string; name: string; folder: string; hash: string; zipPath: string }> }
+  try {
+    zip = new AdmZip(req.file!.buffer)
+    manifest = JSON.parse(zip.readAsText('manifest.json'))
+  } catch {
+    res.status(400).json({ error: 'not a valid asset package' }); return
+  }
+  if (manifest.format !== 1 || manifest.kind !== 'assets' || !Array.isArray(manifest.assets)) {
+    res.status(400).json({ error: 'unsupported package format' }); return
+  }
+  let added = 0
+  let skipped = 0
+  for (const a of manifest.assets) {
+    const entry = zip.getEntry(a.zipPath)
+    if (!entry) { skipped++; continue }
+    if (db.prepare('SELECT id FROM assets WHERE hash=? AND kind=?').get(a.hash, a.kind)) { skipped++; continue }
+    const buf = entry.getData()
+    const newId = crypto.randomUUID().replace(/-/g, '').slice(0, 16)
+    const ext = path.extname(a.zipPath).toLowerCase() || '.bin'
+    const fileUrl = `/uploads/asset_${newId}${ext}`
+    fs.writeFileSync(path.join(process.env.UPLOADS_DIR || path.join(process.cwd(), 'uploads'), path.basename(fileUrl)), buf)
+    db.prepare('INSERT INTO assets (id, kind, name, hash, path, size, folder) VALUES (?,?,?,?,?,?,?)')
+      .run(newId, a.kind, a.name, a.hash, fileUrl, buf.length, a.folder ?? '')
+    if (a.kind === 'audio') musicLibraryChanged()
+    added++
+  }
+  res.json({ added, skipped })
+})
 assetsRouter.delete('/assets/:id', authMiddleware, adminOnly, (req, res) => {
   const row = db.prepare('SELECT id, kind, path FROM assets WHERE id=?').get(param(req, 'id')) as
     { id: string; kind: string; path: string } | undefined
