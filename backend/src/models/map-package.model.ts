@@ -496,3 +496,4 @@ function applyPackageMembers(
     if (userExists(m.username)) setMember(tableId, m.username, m.role === 'dm' ? 'dm' : 'player')
   }
 }
+// BUILD_MARKER_CHECK
