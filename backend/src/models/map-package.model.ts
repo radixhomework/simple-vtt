@@ -368,7 +368,6 @@ function applyPackageFloors(
   manifest: MapPackageManifest,
   tableId: string,
   counts: { floors: number },
-  rewrite: (zipPath: string | undefined) => string | undefined,
 ): Map<string, string> {
   const floorMap = new Map<string, string>()
   for (const f of manifest.floors) {
