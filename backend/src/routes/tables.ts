@@ -286,7 +286,35 @@ tablesRouter.post('/tables/import', authMiddleware, upload.single('file'), async
   res.status(201).json({ ...getTable(tableId), floors: floorsOf(tableId), my_role: mapRole(res.locals.user, tableId, res.locals.role) })
 })
 
-// ── UVTT extensions: props + stairs import (see docs/UVTT-PROPS.md) ──────────
+// ── UVTT extensions: portals, props + stairs import (see docs/UVTT-PROPS.md) ──
+
+/** Insert the UVTT portals of an imported floor: doors and windows,
+ *  coordinates converted grid units → world px. */
+function importUvttPortals(
+  uvttJson: Record<string, unknown>,
+  tableId: string,
+  floorId: string,
+  gridSize: number,
+): void {
+  if (!Array.isArray(uvttJson.portals)) return
+  const insertPortal = db.prepare('INSERT INTO portals (id, table_id, x1, y1, x2, y2, closed, floor_id, kind) VALUES (?,?,?,?,?,?,?,?,?)')
+  for (const portal of uvttJson.portals as Array<Record<string, unknown>>) {
+    const bounds = portal.bounds as Array<{ x: number; y: number }> | undefined
+    if (!bounds || bounds.length < 2) continue
+    const p1 = bounds[0], p2 = bounds[bounds.length - 1]
+    // Some exporters mark windows explicitly; unmarked portals are doors
+    const kind = portal.window === true || portal.kind === 'window' || portal.type === 'window'
+      ? 'window' : 'door'
+    insertPortal.run(
+      newId(), tableId,
+      p1.x * gridSize, p1.y * gridSize,
+      p2.x * gridSize, p2.y * gridSize,
+      portal.closed !== false ? 1 : 0,
+      floorId,
+      kind,
+    )
+  }
+}
 
 /** Resolve one prop's image to an uploads path, or null.
  *  Handles both carriage variants: inline base64 (`assetData`) and
@@ -385,7 +413,7 @@ tablesRouter.post('/tables/import-package', authMiddleware, upload.single('file'
 
 // ── Floors ────────────────────────────────────────────────────────────────────
 /** Create an empty floor at the next level. */
-tablesRouter.post('/tables/:id/floors', authMiddleware, async (req, res) => {
+tablesRouter.post('/tables/:id/floors', authMiddleware, (req, res) => {
   if (!requireMapDM(req, res)) return
   const table = getTable(param(req, 'id'))
   if (!table) { res.status(404).json({ error: 'not found' }); return }
@@ -449,33 +477,14 @@ tablesRouter.post('/tables/:id/floors/import', authMiddleware, upload.single('fi
   }
 
   const meta = JSON.stringify(uvttJson)
-  
-    db.prepare(
-      `INSERT INTO floors (id, table_id, level, name, map_image_path, grid_size, uvt_metadata, img_width, img_height)
-       VALUES (?,?,?,?,?,?,?,?,?)`
-    ).run(floorId, param(req, 'id'), level, name, imagePath, gridSize, meta, imgW, imgH)
+  db.prepare(
+    `INSERT INTO floors (id, table_id, level, name, map_image_path, grid_size, uvt_metadata, img_width, img_height)
+     VALUES (?,?,?,?,?,?,?,?,?)`
+  ).run(floorId, param(req, 'id'), level, name, imagePath, gridSize, meta, imgW, imgH)
 
-    if (Array.isArray(uvttJson.portals)) {
-      const insertPortal = db.prepare('INSERT INTO portals (id, table_id, x1, y1, x2, y2, closed, floor_id, kind) VALUES (?,?,?,?,?,?,?,?,?)')
-      for (const portal of uvttJson.portals as Array<Record<string, unknown>>) {
-        const bounds = portal.bounds as Array<{ x: number; y: number }> | undefined
-        if (!bounds || bounds.length < 2) continue
-        const p1 = bounds[0], p2 = bounds[bounds.length - 1]
-        // Some exporters mark windows explicitly; unmarked portals are doors
-        const kind = portal.window === true || portal.kind === 'window' || portal.type === 'window'
-          ? 'window' : 'door'
-        insertPortal.run(
-          newId(), param(req, 'id'),
-          p1.x * gridSize, p1.y * gridSize,
-          p2.x * gridSize, p2.y * gridSize,
-          portal.closed !== false ? 1 : 0,
-          floorId,
-          kind,
-        )
-      }
-    }
+  importUvttPortals(uvttJson, param(req, 'id'), floorId, gridSize)
 
-    // Props extension (see docs/UVTT-PROPS.md)
+  // Props extension (see docs/UVTT-PROPS.md)
     await importUvttProps(uvttJson, param(req, 'id'), floorId, gridSize, propAssets)
   
 

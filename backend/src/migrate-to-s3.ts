@@ -10,7 +10,7 @@ process.env.STORAGE_DRIVER = 's3'
 
 import fs from 'node:fs'
 import path from 'node:path'
-import { storage, keyOf } from './storage'
+import { storage } from './storage'
 
 const uploadsDir = process.env.UPLOADS_DIR || path.join(process.cwd(), 'uploads')
 

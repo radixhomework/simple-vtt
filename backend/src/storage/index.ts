@@ -31,6 +31,8 @@ export function safeKey(key: string): string | null {
 }
 
 // ── Local driver: byte-identical to the pre-abstraction behavior ──────────────
+// The fs calls are synchronous; the Promise wrapper exists for interface
+// parity with the S3 driver (callers stay driver-agnostic).
 class LocalStorageDriver implements StorageDriver {
   private readonly root = path.resolve(process.env.UPLOADS_DIR || path.join(process.cwd(), 'uploads'))
 
@@ -41,30 +43,31 @@ class LocalStorageDriver implements StorageDriver {
     return abs !== this.root && abs.startsWith(this.root + path.sep) ? abs : null
   }
 
-  async put(key: string, data: Buffer): Promise<void> {
+  put(key: string, data: Buffer): Promise<void> {
     const p = this.filePath(key)
-    if (!p) throw new Error(`invalid storage key: ${key}`)
+    if (!p) return Promise.reject(new Error(`invalid storage key: ${key}`))
     fs.mkdirSync(path.dirname(p), { recursive: true })
     fs.writeFileSync(p, data)
+    return Promise.resolve()
   }
-  async get(key: string): Promise<Buffer> {
+  get(key: string): Promise<Buffer> {
     const p = this.filePath(key)
-    if (!p) throw new Error(`invalid storage key: ${key}`)
-    return fs.readFileSync(p)
+    if (!p) return Promise.reject(new Error(`invalid storage key: ${key}`))
+    return Promise.resolve(fs.readFileSync(p))
   }
-  async getStream(key: string): Promise<NodeJS.ReadableStream> {
+  getStream(key: string): Promise<NodeJS.ReadableStream> {
     const p = this.filePath(key)
-    if (!p) throw new Error(`invalid storage key: ${key}`)
-    return fs.createReadStream(p)
+    if (!p) return Promise.reject(new Error(`invalid storage key: ${key}`))
+    return Promise.resolve(fs.createReadStream(p))
   }
-  async delete(key: string): Promise<void> {
+  delete(key: string): Promise<void> {
     const p = this.filePath(key)
-    if (!p) return
-    fs.unlink(p, () => {})
+    if (p) fs.unlink(p, () => {})
+    return Promise.resolve()
   }
-  async exists(key: string): Promise<boolean> {
+  exists(key: string): Promise<boolean> {
     const p = this.filePath(key)
-    return p !== null && fs.existsSync(p)
+    return Promise.resolve(p !== null && fs.existsSync(p))
   }
 }
 
@@ -118,11 +121,9 @@ let driver: StorageDriver | null = null
 
 /** The active storage driver (process-lifetime singleton). */
 export function storage(): StorageDriver {
-  if (!driver) {
-    driver = (process.env.STORAGE_DRIVER || 'local') === 's3'
-      ? new S3StorageDriver()
-      : new LocalStorageDriver()
-  }
+  driver ??= (process.env.STORAGE_DRIVER || 'local') === 's3'
+    ? new S3StorageDriver()
+    : new LocalStorageDriver()
   return driver
 }
 

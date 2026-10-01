@@ -7,7 +7,7 @@ import { Router } from 'express'
 import { db } from '../db'
 import { authMiddleware } from '../auth'
 import { requireMapDM, isMapDM, param } from '../mapaccess'
-import { storage, keyOf } from '../storage'
+import { storage } from '../storage'
 import { pushTableStateToTable } from '../hub'
 
 export const tokensRouter = Router()
