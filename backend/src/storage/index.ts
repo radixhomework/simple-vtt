@@ -24,42 +24,61 @@ export interface StorageDriver {
   exists(key: string): Promise<boolean>
 }
 
+/** Reject traversal shapes before keys ever reach a path or object store. */
+export function safeKey(key: string): string | null {
+  if (!key || key.includes('..') || path.isAbsolute(key)) return null
+  return key
+}
+
 // ── Local driver: byte-identical to the pre-abstraction behavior ──────────────
 class LocalStorageDriver implements StorageDriver {
-  private dir() {
-    return process.env.UPLOADS_DIR || path.join(process.cwd(), 'uploads')
+  private readonly root = path.resolve(process.env.UPLOADS_DIR || path.join(process.cwd(), 'uploads'))
+
+  private filePath(key: string): string | null {
+    const clean = safeKey(key)
+    if (!clean) return null
+    const abs = path.resolve(this.root, clean)
+    return abs !== this.root && abs.startsWith(this.root + path.sep) ? abs : null
   }
-  private filePath(key: string): string {
-    return path.join(this.dir(), key)
-  }
+
   async put(key: string, data: Buffer): Promise<void> {
     const p = this.filePath(key)
+    if (!p) throw new Error(`invalid storage key: ${key}`)
     fs.mkdirSync(path.dirname(p), { recursive: true })
     fs.writeFileSync(p, data)
   }
   async get(key: string): Promise<Buffer> {
-    return fs.readFileSync(this.filePath(key))
+    const p = this.filePath(key)
+    if (!p) throw new Error(`invalid storage key: ${key}`)
+    return fs.readFileSync(p)
   }
   async getStream(key: string): Promise<NodeJS.ReadableStream> {
-    return fs.createReadStream(this.filePath(key))
+    const p = this.filePath(key)
+    if (!p) throw new Error(`invalid storage key: ${key}`)
+    return fs.createReadStream(p)
   }
   async delete(key: string): Promise<void> {
-    fs.unlink(this.filePath(key), () => {})
+    const p = this.filePath(key)
+    if (!p) return
+    fs.unlink(p, () => {})
   }
   async exists(key: string): Promise<boolean> {
-    return fs.existsSync(this.filePath(key))
+    const p = this.filePath(key)
+    return p !== null && fs.existsSync(p)
   }
 }
 
 // ── S3 driver: MinIO / AWS / any S3-compatible endpoint ───────────────────────
 class S3StorageDriver implements StorageDriver {
-  private client: S3Client
-  private bucket: string
+  private readonly client: S3Client
+  private readonly bucket: string
 
   constructor() {
     this.bucket = process.env.S3_BUCKET || 'simple-vtt'
+    const endpoint = process.env.S3_ENDPOINT
+    if (!endpoint) throw new Error('S3_ENDPOINT is required when STORAGE_DRIVER=s3')
     this.client = new S3Client({
-      endpoint: process.env.S3_ENDPOINT || 'http://minio:9000',
+      endpoint,
       region: process.env.S3_REGION || 'us-east-1',
       forcePathStyle: true, // MinIO-style path addressing
       credentials: {

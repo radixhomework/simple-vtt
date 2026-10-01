@@ -31,10 +31,13 @@ tokensRouter.get('/floors/:id/fog-mask', authMiddleware, async (req, res) => {
   const key = safeMaskKey(param(req, 'id'))
   if (!key) { res.status(400).json({ error: 'invalid floor id' }); return }
   try {
+    // createReadStream reports ENOENT asynchronously (after headers), so
+    // probe existence first — a never-persisted mask is a 404, not a 500
+    if (!(await storage().exists(key))) { res.status(404).end(); return }
     const stream = await storage().getStream(key)
     res.setHeader('Content-Type', 'image/png')
     stream.pipe(res)
-    stream.on('error', () => { if (!res.headersSent) res.status(500).end(); else res.destroy() })
+    stream.on('error', () => { if (!res.headersSent) res.status(404).end(); else res.destroy() })
   } catch {
     res.status(404).end()
   }

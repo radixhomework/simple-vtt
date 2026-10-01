@@ -1,7 +1,5 @@
 import { WebSocketServer, WebSocket } from 'ws'
 import { IncomingMessage } from 'http'
-import path from 'path'
-import fs from 'fs'
 import { verifyToken } from './auth'
 import { db } from './db'
 import { loadTableSettings } from './settings'
@@ -17,8 +15,6 @@ import { buildTilePyramid } from './tiles'
  * tokens they own (subject to the players_move_own_only setting) and use the
  * music transport. Everything else is admin-only and silently ignored.
  */
-
-const uploadsDir = () => process.env.UPLOADS_DIR || path.join(process.cwd(), 'uploads')
 
 /**
  * Lazy tile backfill for floors imported before tiling existed: build the
@@ -230,6 +226,17 @@ function newId(): string {
   return crypto.randomUUID().replace(/-/g, '').slice(0, 16)
 }
 
+/** Tell every other client a floor's fog changed shape globally (reset or
+ *  full reveal). Unlike point broadcasts these reach clients on ANY floor:
+ *  they carry client-side cache invalidation (explored bitmaps, mask stash). */
+function broadcastFogNotice(client: Client, floorId: string, kind: 'fog_reset' | 'fog_revealed') {
+  tables.get(client.tableId)?.forEach(c => {
+    if (c !== client && c.ws.readyState === WebSocket.OPEN) {
+      c.ws.send(JSON.stringify({ type: kind, payload: { floor_id: floorId } }))
+    }
+  })
+}
+
 function sendTableState(client: Client) {
   const table = db.prepare(
     'SELECT id, name, default_floor_id FROM tables WHERE id=?'
@@ -320,6 +327,92 @@ function normalizeToken(row: Record<string, unknown>) {
     ...row,
     has_vision: row.has_vision === 1 || row.has_vision === true,
     hidden: row.hidden === 1 || row.hidden === true,
+  }
+}
+
+/** Handle fog_update ops: reveals, erases, reset, full-reveal, paint relay. */
+function handleFogUpdate(client: Client, raw: string, payload: Record<string, unknown>): void {
+  if (client.mapRole !== 'dm') return
+  const { action, points, floor_id } = payload as {
+    action: string; points: Array<Record<string, unknown>>; floor_id?: string
+  }
+  // Fog is per floor: default to the client's viewed floor
+  const floorId = floor_id ?? client.activeFloorId ?? ''
+
+  if (action === 'fog_paint') {
+    // Live brush stroke op - relay to viewers of that floor
+    tables.get(client.tableId)?.forEach(c => {
+      if (c !== client && c.activeFloorId === floorId && c.ws.readyState === WebSocket.OPEN) c.ws.send(raw)
+    })
+    return
+  }
+
+  if (action === 'reset') {
+    // Back to arrival state: no manual reveals, explored memory cleared,
+    // any full-reveal flag removed. Clients wipe their local explored
+    // bitmaps on the fog_reset notice.
+    db.prepare('DELETE FROM fog_points WHERE table_id=? AND floor_id=?').run(client.tableId, floorId)
+    db.prepare('UPDATE floors SET revealed=0 WHERE id=?').run(floorId)
+    storage().delete(`fog_${floorId}.png`).catch(() => {})
+    pushTableStateToTable(client.tableId)
+    broadcastFogNotice(client, floorId, 'fog_reset')
+    return
+  }
+
+  if (action === 'reveal_all') {
+    // Remove ALL fog from the floor: marked fully revealed, manual
+    // points wiped. New joiners get the flag via table_state.
+    db.prepare('UPDATE floors SET revealed=1 WHERE id=?').run(floorId)
+    db.prepare('DELETE FROM fog_points WHERE table_id=? AND floor_id=?').run(client.tableId, floorId)
+    pushTableStateToTable(client.tableId)
+    broadcastFogNotice(client, floorId, 'fog_revealed')
+    return
+  }
+
+  if (action === 'clear_all') {
+    // clear_all optionally carries the surviving points (used by the
+    // erase tool: clear + re-add in one atomic step, no client flicker)
+    db.prepare('DELETE FROM fog_points WHERE table_id=? AND floor_id=?').run(client.tableId, floorId)
+    if (Array.isArray(points) && points.length > 0) {
+      const insert = db.prepare('INSERT INTO fog_points (id, table_id, x, y, radius, floor_id) VALUES (?,?,?,?,?,?)')
+      for (const p of points) {
+        insert.run(newId(), client.tableId, p.x, p.y, p.radius ?? 3, floorId)
+      }
+    }
+    // Authoritative resync for EVERY client of the table: the raw
+    // per-floor broadcast only reaches viewers of that floor, so a
+    // stale client (other floor, half-dead socket that missed the
+    // message) would keep showing cleared fog.
+    tables.get(client.tableId)?.forEach(c => sendTableState(c))
+    return
+  }
+
+  if (action === 'add' && Array.isArray(points)) {
+    // Keep client-generated ids: brush strokes then erase by id
+    // incrementally instead of resending the whole survivors array
+    const insert = db.prepare('INSERT OR IGNORE INTO fog_points (id, table_id, x, y, radius, floor_id) VALUES (?,?,?,?,?,?)')
+    for (const p of points) {
+      insert.run(typeof p.id === 'string' && p.id ? p.id : newId(), client.tableId, p.x, p.y, p.radius ?? 3, floorId)
+    }
+    // Only viewers of that floor care; others ignore the points (their
+    // state never includes the floor). Exclude the sender: it already
+    // applied the change optimistically.
+    tables.get(client.tableId)?.forEach(c => {
+      if (c !== client && c.activeFloorId === floorId && c.ws.readyState === WebSocket.OPEN) c.ws.send(raw)
+    })
+    return
+  }
+
+  if (action === 'remove_ids' && Array.isArray(payload.ids)) {
+    const ids = (payload.ids as unknown[]).filter((x): x is string => typeof x === 'string')
+    if (ids.length > 0) {
+      const del = db.prepare('DELETE FROM fog_points WHERE table_id=? AND id=?')
+      for (const id of ids) del.run(client.tableId, id)
+      // Same-floor viewers erase the same points incrementally
+      tables.get(client.tableId)?.forEach(c => {
+        if (c !== client && c.activeFloorId === floorId && c.ws.readyState === WebSocket.OPEN) c.ws.send(raw)
+      })
+    }
   }
 }
 
@@ -428,83 +521,9 @@ async function handleMessage(client: Client, raw: string): Promise<void> {
       break
     }
 
-    case 'fog_update': {
-      if (client.mapRole !== 'dm') return
-      const { action, points, floor_id } = payload as {
-        action: string; points: Array<Record<string, unknown>>; floor_id?: string
-      }
-      // Fog is per floor: default to the client's viewed floor
-      const floorId = floor_id ?? client.activeFloorId ?? ''
-      if (action === 'clear_all') {
-        // clear_all optionally carries the surviving points (used by the
-        // erase tool: clear + re-add in one atomic step, no client flicker)
-        db.prepare('DELETE FROM fog_points WHERE table_id=? AND floor_id=?').run(client.tableId, floorId)
-        if (Array.isArray(points) && points.length > 0) {
-          const insert = db.prepare('INSERT INTO fog_points (id, table_id, x, y, radius, floor_id) VALUES (?,?,?,?,?,?)')
-          for (const p of points) {
-            insert.run(newId(), client.tableId, p.x, p.y, p.radius ?? 3, floorId)
-          }
-        }
-        // Authoritative resync for EVERY client of the table: the raw
-        // per-floor broadcast only reaches viewers of that floor, so a
-        // stale client (other floor, half-dead socket that missed the
-        // message) would keep showing cleared fog.
-        tables.get(client.tableId)?.forEach(c => sendTableState(c))
-        break
-      } else if (action === 'fog_paint') {
-        // Live brush stroke op — relay to viewers of that floor
-        tables.get(client.tableId)?.forEach(c => {
-          if (c !== client && c.activeFloorId === floorId && c.ws.readyState === WebSocket.OPEN) c.ws.send(raw)
-        })
-        break
-      } else if (action === 'reset') {
-        // Back to arrival state: no manual reveals, explored memory cleared,
-        // any full-reveal flag removed. Clients wipe their local explored
-        // bitmaps on the fog_reset notice.
-        db.prepare('DELETE FROM fog_points WHERE table_id=? AND floor_id=?').run(client.tableId, floorId)
-        db.prepare('UPDATE floors SET revealed=0 WHERE id=?').run(floorId)
-        try { await storage().delete(`fog_${floorId}.png`) } catch {}
-        pushTableStateToTable(client.tableId)
-        tables.get(client.tableId)?.forEach(c => {
-          if (c !== client && c.ws.readyState === WebSocket.OPEN) {
-            c.ws.send(JSON.stringify({ type: 'fog_reset', payload: { floor_id: floorId } }))
-          }
-        })
-        break
-      } else if (action === 'reveal_all') {
-        // Remove ALL fog from the floor: marked fully revealed, manual
-        // points wiped. New joiners get the flag via table_state.
-        db.prepare('UPDATE floors SET revealed=1 WHERE id=?').run(floorId)
-        db.prepare('DELETE FROM fog_points WHERE table_id=? AND floor_id=?').run(client.tableId, floorId)
-        pushTableStateToTable(client.tableId)
-        tables.get(client.tableId)?.forEach(c => {
-          if (c !== client && c.ws.readyState === WebSocket.OPEN) {
-            c.ws.send(JSON.stringify({ type: 'fog_revealed', payload: { floor_id: floorId } }))
-          }
-        })
-        break
-      } else if (action === 'add' && Array.isArray(points)) {
-        // Keep client-generated ids: brush strokes then erase by id
-        // incrementally instead of resending the whole survivors array
-        const insert = db.prepare('INSERT OR IGNORE INTO fog_points (id, table_id, x, y, radius, floor_id) VALUES (?,?,?,?,?,?)')
-        for (const p of points) {
-          insert.run(typeof p.id === 'string' && p.id ? p.id : newId(), client.tableId, p.x, p.y, p.radius ?? 3, floorId)
-        }
-      } else if (action === 'remove_ids' && Array.isArray(payload.ids)) {
-        const ids = (payload.ids as unknown[]).filter((x): x is string => typeof x === 'string')
-        if (ids.length > 0) {
-          const del = db.prepare('DELETE FROM fog_points WHERE table_id=? AND id=?')
-          for (const id of ids) del.run(client.tableId, id)
-        }
-      }
-      // Only viewers of that floor care; others ignore the points (their
-      // state never includes the floor). Exclude the sender: it already
-      // applied the change optimistically.
-      tables.get(client.tableId)?.forEach(c => {
-        if (c !== client && c.activeFloorId === floorId && c.ws.readyState === WebSocket.OPEN) c.ws.send(raw)
-      })
+    case 'fog_update':
+      void handleFogUpdate(client, raw, payload)
       break
-    }
 
     case 'floor_select': {
       // Viewer switched to another floor of the table
