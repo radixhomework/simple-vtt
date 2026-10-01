@@ -17,6 +17,7 @@ import { decodeUploadFilename } from '../filename'
 import { param } from '../mapaccess'
 import { loadSettings } from '../settings'
 import AdmZip from 'adm-zip'
+import { storage, keyOf } from '../storage'
 
 export const assetsRouter = Router()
 
@@ -44,7 +45,6 @@ function assetUpload(req: Request, res: Response, next: NextFunction) {
 }
 
 function newId() { return crypto.randomUUID().replace(/-/g, '').slice(0, 16) }
-const uploadsDir = () => process.env.UPLOADS_DIR || path.join(process.cwd(), 'uploads')
 const importUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 500 * 1024 * 1024 } })
 
 assetsRouter.get('/assets', authMiddleware, (req, res) => {
@@ -53,7 +53,7 @@ assetsRouter.get('/assets', authMiddleware, (req, res) => {
   res.json(db.prepare('SELECT id, kind, name, path, size, folder FROM assets WHERE kind=? ORDER BY folder COLLATE NOCASE, name COLLATE NOCASE, rowid').all(kind))
 })
 
-assetsRouter.post('/assets', authMiddleware, adminOnly, assetUpload, (req, res) => {
+assetsRouter.post('/assets', authMiddleware, adminOnly, assetUpload, async (req, res) => {
   try {
   if (!req.file) { res.status(400).json({ error: 'no file' }); return }
   const kind = req.body.kind
@@ -85,9 +85,7 @@ assetsRouter.post('/assets', authMiddleware, adminOnly, assetUpload, (req, res) 
 
   const id = newId()
   const storedName = `asset_${contentHash.slice(0, 24)}${ext}`
-  fs.mkdirSync(uploadsDir(), { recursive: true })
-  const diskPath = path.join(uploadsDir(), storedName)
-  if (!fs.existsSync(diskPath)) fs.writeFileSync(diskPath, req.file.buffer)
+  await storage().put(storedName, req.file.buffer)
   const name = path.basename(original, ext)
   const url = `/uploads/${storedName}`
   db.prepare('INSERT INTO assets (id, kind, name, hash, path, size, folder) VALUES (?,?,?,?,?,?,?)')
@@ -140,7 +138,7 @@ assetsRouter.put('/assets/:id', authMiddleware, adminOnly, (req, res) => {
 
 
 // ── Asset library package export/import (admin) ──────────────────────────────
-assetsRouter.get('/assets/export', authMiddleware, adminOnly, (req, res) => {
+assetsRouter.get('/assets/export', authMiddleware, adminOnly, async (req, res) => {
   const folder = typeof req.query.folder === 'string' ? req.query.folder : null
   const rows = (folder !== null
     ? db.prepare('SELECT id, kind, name, hash, path, size, folder FROM assets WHERE folder=? ORDER BY kind, name COLLATE NOCASE').all(folder)
@@ -151,9 +149,12 @@ assetsRouter.get('/assets/export', authMiddleware, adminOnly, (req, res) => {
   const list = manifest.assets as Array<Record<string, unknown>>
   let n = 0
   for (const row of rows) {
-    const file = path.join(process.env.UPLOADS_DIR || path.join(process.cwd(), 'uploads'), path.basename(row.path))
-    if (!fs.existsSync(file)) continue
-    const buf = fs.readFileSync(file)
+    let buf: Buffer
+    try {
+      buf = await storage().get(keyOf(row.path))
+    } catch {
+      continue // object missing in storage — skip rather than fail the export
+    }
     const hash = row.hash && row.hash !== '' ? row.hash : crypto.createHash('sha256').update(buf).digest('hex')
     const zipPath = `files/${row.kind}-${n}${path.extname(row.path).toLowerCase()}`
     zip.addFile(zipPath, buf)
@@ -167,7 +168,7 @@ assetsRouter.get('/assets/export', authMiddleware, adminOnly, (req, res) => {
   res.send(zip.toBuffer())
 })
 
-assetsRouter.post('/assets/import-package', authMiddleware, adminOnly, importUpload.single('file'), (req, res) => {
+assetsRouter.post('/assets/import-package', authMiddleware, adminOnly, importUpload.single('file'), async (req, res) => {
   let zip: AdmZip
   let manifest: { format: number; kind: string; assets: Array<{ kind: string; name: string; folder: string; hash: string; zipPath: string }> }
   try {
@@ -189,7 +190,7 @@ assetsRouter.post('/assets/import-package', authMiddleware, adminOnly, importUpl
     const newId = crypto.randomUUID().replace(/-/g, '').slice(0, 16)
     const ext = path.extname(a.zipPath).toLowerCase() || '.bin'
     const fileUrl = `/uploads/asset_${newId}${ext}`
-    fs.writeFileSync(path.join(process.env.UPLOADS_DIR || path.join(process.cwd(), 'uploads'), path.basename(fileUrl)), buf)
+    await storage().put(keyOf(fileUrl), buf)
     db.prepare('INSERT INTO assets (id, kind, name, hash, path, size, folder) VALUES (?,?,?,?,?,?,?)')
       .run(newId, a.kind, a.name, a.hash, fileUrl, buf.length, a.folder ?? '')
     if (a.kind === 'audio') musicLibraryChanged()
@@ -197,7 +198,7 @@ assetsRouter.post('/assets/import-package', authMiddleware, adminOnly, importUpl
   }
   res.json({ added, skipped })
 })
-assetsRouter.delete('/assets/:id', authMiddleware, adminOnly, (req, res) => {
+assetsRouter.delete('/assets/:id', authMiddleware, adminOnly, async (req, res) => {
   const row = db.prepare('SELECT id, kind, path FROM assets WHERE id=?').get(param(req, 'id')) as
     { id: string; kind: string; path: string } | undefined
   if (!row) { res.status(404).json({ error: 'not found' }); return }
@@ -217,7 +218,7 @@ assetsRouter.delete('/assets/:id', authMiddleware, adminOnly, (req, res) => {
   // Best-effort file removal: other asset rows may share the same
   // content-addressed file, so only unlink it when nothing references it
   const shared = db.prepare('SELECT COUNT(*) AS n FROM assets WHERE path=?').get(row.path) as { n: number }
-  if (shared.n === 0) fs.unlink(path.join(uploadsDir(), path.basename(row.path)), () => {})
+  if (shared.n === 0) await storage().delete(keyOf(row.path))
 
   // Audio: rebuild every table's music queue (stops playback if current)
   if (row.kind === 'audio') musicLibraryChanged()
@@ -226,24 +227,26 @@ assetsRouter.delete('/assets/:id', authMiddleware, adminOnly, (req, res) => {
 })
 
 /** Delete an entire folder (empty string is not deletable — it is the root). */
-assetsRouter.delete('/assets-folder/:folder', authMiddleware, adminOnly, (req, res) => {
+assetsRouter.delete('/assets-folder/:folder', authMiddleware, adminOnly, async (req, res) => {
   const folder = param(req, 'folder')
   if (!folder) { res.status(400).json({ error: 'cannot delete the root' }); return }
   const rows = db.prepare('SELECT id, kind, path FROM assets WHERE folder=?').all(folder) as
     Array<{ id: string; kind: string; path: string }>
   if (rows.length === 0) { res.status(404).json({ error: 'folder not found' }); return }
 
-  const unlinkIfUnshared = (pathUrl: string) => {
+  const unlinkIfUnshared = async (pathUrl: string) => {
     const shared = db.prepare('SELECT COUNT(*) AS n FROM assets WHERE path=?').get(pathUrl) as { n: number }
-    if (shared.n === 0) fs.unlink(path.join(uploadsDir(), path.basename(pathUrl)), () => {})
+    if (shared.n === 0) await storage().delete(keyOf(pathUrl))
   }
 
   db.transaction(() => {
     for (const row of rows) {
       db.prepare('DELETE FROM assets WHERE id=?').run(row.id)
-      unlinkIfUnshared(row.path)
     }
   })()
+  for (const row of rows) {
+    await unlinkIfUnshared(row.path)
+  }
 
   // Rebuild music queues when music was removed
   if (rows.some(r => r.kind === 'audio')) musicLibraryChanged()

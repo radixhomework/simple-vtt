@@ -6,6 +6,7 @@ import { verifyToken } from './auth'
 import { db } from './db'
 import { loadTableSettings } from './settings'
 import { mapRole } from './mapaccess'
+import { storage, keyOf } from './storage'
 import { buildTilePyramid } from './tiles'
 
 /**
@@ -26,27 +27,25 @@ const uploadsDir = () => process.env.UPLOADS_DIR || path.join(process.cwd(), 'up
  * logs; the legacy full-image path keeps working.
  */
 const pyramidsInProgress = new Set<string>()
-function ensurePyramidAsync(floor: { id: string; map_image_path: string }): void {
+async function ensurePyramidAsync(floor: { id: string; map_image_path: string }): Promise<void> {
   if (pyramidsInProgress.has(floor.id)) return
   pyramidsInProgress.add(floor.id)
-  const file = path.join(uploadsDir(), path.basename(floor.map_image_path))
-  fs.readFile(file, (err, buffer) => {
-    if (err) {
+  storage()
+    .get(keyOf(floor.map_image_path))
+    .then((buffer: Buffer) => buildTilePyramid(floor.id, buffer))
+    .then(() => {
+      db.prepare('UPDATE floors SET tiles_path=? WHERE id=?').run(`/uploads/tiles/${floor.id}`, floor.id)
+      // Fresh state so connected clients see the new tiles_path (no-op
+      // when nobody is in the room — the next join picks it up anyway)
+      const tableId = (floor as { table_id?: string }).table_id
+      if (tableId) pushTableStateToTable(tableId)
+    })
+    .catch(err => {
       pyramidsInProgress.delete(floor.id)
-      console.error(`[tiles] backfill read failed for floor ${floor.id}:`, err.message)
+      console.error(`[tiles] backfill failed for floor ${floor.id}:`, err)
       return
-    }
-    buildTilePyramid(floor.id, buffer)
-      .then(() => {
-        db.prepare('UPDATE floors SET tiles_path=? WHERE id=?').run(`/uploads/tiles/${floor.id}`, floor.id)
-        // Fresh state so connected clients see the new tiles_path (no-op
-        // when nobody is in the room — the next join picks it up anyway)
-        const tableId = (floor as { table_id?: string }).table_id
-        if (tableId) pushTableStateToTable(tableId)
-      })
-      .catch(err2 => console.error(`[tiles] backfill failed for floor ${floor.id}:`, err2))
-      .finally(() => pyramidsInProgress.delete(floor.id))
-  })
+    })
+    .finally(() => pyramidsInProgress.delete(floor.id))
 }
 
 /** Floor has usable dimensions (guards tiling on malformed metadata). */
@@ -324,7 +323,7 @@ function normalizeToken(row: Record<string, unknown>) {
   }
 }
 
-function handleMessage(client: Client, raw: string) {
+async function handleMessage(client: Client, raw: string): Promise<void> {
   let msg: { type: string; payload: Record<string, unknown> }
   try { msg = JSON.parse(raw) } catch { return }
 
@@ -464,7 +463,7 @@ function handleMessage(client: Client, raw: string) {
         // bitmaps on the fog_reset notice.
         db.prepare('DELETE FROM fog_points WHERE table_id=? AND floor_id=?').run(client.tableId, floorId)
         db.prepare('UPDATE floors SET revealed=0 WHERE id=?').run(floorId)
-        try { fs.unlinkSync(path.join(process.env.UPLOADS_DIR || path.join(process.cwd(), 'uploads'), `fog_${floorId}.png`)) } catch {}
+        try { await storage().delete(`fog_${floorId}.png`) } catch {}
         pushTableStateToTable(client.tableId)
         tables.get(client.tableId)?.forEach(c => {
           if (c !== client && c.ws.readyState === WebSocket.OPEN) {
@@ -577,7 +576,7 @@ export function setupWebSocket(wss: WebSocketServer) {
     sendTableState(client)
     send(client, { type: 'music_state', payload: musicStatePayload(getMusicState(tableId)) })
 
-    ws.on('message', (data) => handleMessage(client, data.toString()))
+    ws.on('message', (data) => { void handleMessage(client, data.toString()) })
     ws.on('close', () => unregister(client))
     ws.on('error', () => { unregister(client); ws.close() })
 

@@ -7,42 +7,45 @@ import { Router } from 'express'
 import { db } from '../db'
 import { authMiddleware } from '../auth'
 import { requireMapDM, isMapDM, param } from '../mapaccess'
+import { storage, keyOf } from '../storage'
 import { pushTableStateToTable } from '../hub'
-import path from 'node:path'
-import fs from 'node:fs'
 
 export const tokensRouter = Router()
 
 /** All entity ids are 16 hex chars — rejects '..' and any path tricks. */
 const ID_RE = /^[a-f0-9]{16}$/
-const uploadsRoot = path.resolve(process.env.UPLOADS_DIR || path.join(process.cwd(), 'uploads'))
-const fogMaskFile = (floorId: string) => path.join(uploadsRoot, `fog_${floorId}.png`)
+const fogMaskKey = (floorId: string) => `fog_${floorId}.png`
 /**
  * Containment guard: resolve the final path and verify it stays inside the
  * uploads root (CodeQL S5780 / path-traversal barrier, belt and braces with
  * the ID_RE check).
  */
-const safeMaskPath = (floorId: string): string | null => {
+const safeMaskKey = (floorId: string): string | null => {
   if (!ID_RE.test(floorId)) return null
-  const p = path.resolve(fogMaskFile(floorId))
-  return p.startsWith(uploadsRoot + path.sep) ? p : null
+  return fogMaskKey(floorId)
 }
 const MAX_MASK_BYTES = 21079040
 
 /** GET the persisted reveal mask of a floor (404 when none yet). */
-tokensRouter.get('/floors/:id/fog-mask', authMiddleware, (req, res) => {
-  const p = safeMaskPath(param(req, 'id'))
-  if (!p) { res.status(400).json({ error: 'invalid floor id' }); return }
-  if (!fs.existsSync(p)) { res.status(404).end(); return }
-  res.sendFile(p)
+tokensRouter.get('/floors/:id/fog-mask', authMiddleware, async (req, res) => {
+  const key = safeMaskKey(param(req, 'id'))
+  if (!key) { res.status(400).json({ error: 'invalid floor id' }); return }
+  try {
+    const stream = await storage().getStream(key)
+    res.setHeader('Content-Type', 'image/png')
+    stream.pipe(res)
+    stream.on('error', () => { if (!res.headersSent) res.status(500).end(); else res.destroy() })
+  } catch {
+    res.status(404).end()
+  }
 })
 
 /** PUT the reveal mask (dm only). Parsed with busboy so the request size
  *  limit is explicit and enforced on the stream (Sonar S5693). */
 tokensRouter.put('/floors/:id/fog-mask', authMiddleware, (req, res) => {
   const floorId = param(req, 'id')
-  const p = safeMaskPath(floorId)
-  if (!p) { res.status(400).json({ error: 'invalid floor id' }); return }
+  const key = safeMaskKey(floorId)
+  if (!key) { res.status(400).json({ error: 'invalid floor id' }); return }
   if (!requireMapDM(req, res, floorId)) return
 
   const MAX_MASK_BYTES = 21079040 // 20 MB + 4 KB headers allowance
@@ -66,7 +69,7 @@ tokensRouter.put('/floors/:id/fog-mask', authMiddleware, (req, res) => {
     }
     chunks.push(c)
   })
-  req.on('end', () => {
+  req.on('end', async () => {
     if (aborted) { res.status(413).json({ error: 'mask size out of bounds' }); return }
     const body = Buffer.concat(chunks)
     const ct = String(req.headers['content-type'] ?? '')
@@ -82,7 +85,7 @@ tokensRouter.put('/floors/:id/fog-mask', authMiddleware, (req, res) => {
     if (nextB === -1) { res.status(400).json({ error: 'unterminated part' }); return }
 
     const file = body.subarray(headerEnd + 4, nextB)
-    fs.writeFileSync(p, file)
+    await storage().put(key, file)
     res.sendStatus(204)
   })
 })

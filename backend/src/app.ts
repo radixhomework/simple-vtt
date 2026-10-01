@@ -15,6 +15,7 @@ import { wallsRouter } from './routes/walls'
 import { propsRouter } from './routes/props'
 import { assetsRouter } from './routes/assets'
 import { apiLimiter } from './ratelimit'
+import { storage } from './storage'
 
 // db is initialised on import (runs migrations)
 import './db'
@@ -36,10 +37,24 @@ app.use((req, res, next) => {
 
 app.use(express.json({ limit: '10mb' }))
 
-// Static: uploads
-const uploadsDir = process.env.UPLOADS_DIR || path.join(process.cwd(), 'uploads')
-fs.mkdirSync(uploadsDir, { recursive: true })
-app.use('/uploads', express.static(uploadsDir))
+// Blob serving: streams from the active storage driver (local fs or S3).
+// Keys are content-addressed for assets, so the URL is the version —
+// immutable caching is safe and lets browsers keep tiles/images locally.
+app.use('/uploads/*splat', async (req, res) => {
+  try {
+    // Express 5 wildcard params: the splat lands in the '' key
+    const raw = (req.params as { splat?: string | string[] }).splat
+    const key = Array.isArray(raw) ? raw.join('/') : String(raw ?? '')
+    res.setHeader('Cache-Control', 'public, max-age=31536000, immutable')
+    if (!(await storage().exists(key))) { res.status(404).end(); return }
+    const stream = await storage().getStream(key)
+    stream.pipe(res)
+    stream.on('error', (e: unknown) => { console.error('[uploads] stream error:', e); if (!res.headersSent) res.status(500).end(); else res.destroy() })
+  } catch (e: unknown) {
+    console.error('[uploads] serve failed for key:', (req.params as { splat?: string | string[] }).splat, e)
+    res.status(404).end()
+  }
+})
 
 // API routes (rate-limited; login applies its own stricter limiter)
 app.use('/api', apiLimiter)
