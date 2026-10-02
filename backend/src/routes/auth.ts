@@ -12,8 +12,9 @@ import { param } from '../mapaccess'
 
 export const authRouter = Router()
 
-const ADMIN_USER = process.env.ADMIN_USERNAME || 'admin'
-const ADMIN_PASS = process.env.ADMIN_PASSWORD || 'admin'
+/** Environment bootstrap admin (also the recovery backdoor at login). */
+export const ADMIN_USER = process.env.ADMIN_USERNAME || 'admin'
+export const ADMIN_PASS = process.env.ADMIN_PASSWORD || 'admin'
 
 function ensureAdmin() {
   const exists = db.prepare('SELECT username FROM users WHERE username=?').get(ADMIN_USER)

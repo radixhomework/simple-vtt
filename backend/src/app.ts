@@ -14,6 +14,8 @@ import { portalsRouter } from './routes/portals'
 import { wallsRouter } from './routes/walls'
 import { propsRouter } from './routes/props'
 import { assetsRouter } from './routes/assets'
+import { backupRouter } from './routes/backup'
+import { setupRouter } from './routes/setup'
 import { apiLimiter } from './ratelimit'
 import { storage } from './storage'
 
@@ -66,6 +68,8 @@ app.use('/api', portalsRouter)
 app.use('/api', wallsRouter)
 app.use('/api', propsRouter)
 app.use('/api', assetsRouter)
+app.use('/api', backupRouter)
+app.use('/api', setupRouter)
 
 // Version information (backend package.json; the frontend ships its own)
 const pkg = (() => {

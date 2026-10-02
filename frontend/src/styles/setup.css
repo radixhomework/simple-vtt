@@ -1,0 +1,80 @@
+/* Setup wizard — reuses the login page's look; adds only what the wizard
+   needs (mode switching, secondary buttons, notes). */
+.setup-intro {
+  margin: 12px 0 16px;
+  font-size: 0.95rem;
+  line-height: 1.45;
+}
+
+.setup-note {
+  margin: 12px 0;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: rgba(74, 144, 217, 0.12);
+  font-size: 0.92rem;
+}
+
+.setup-hint {
+  margin: 10px 0 14px;
+  font-size: 0.82rem;
+  opacity: 0.75;
+  line-height: 1.4;
+}
+
+.setup-secondary {
+  display: block;
+  width: 100%;
+  margin-top: 8px;
+  padding: 8px 10px;
+  border: none;
+  background: none;
+  font: inherit;
+  font-size: 0.9rem;
+  cursor: pointer;
+  text-decoration: underline;
+  opacity: 0.8;
+}
+
+/* Restore wait screen */
+.setup-wait-title {
+  margin: 4px 0 14px;
+  font-size: 1.05rem;
+  font-weight: 600;
+}
+
+.setup-spinner {
+  width: 28px;
+  height: 28px;
+  margin: 6px auto 10px;
+  border: 3px solid var(--border);
+  border-top-color: var(--muted);
+  border-radius: 50%;
+  animation: setup-spin 0.9s linear infinite;
+}
+
+@keyframes setup-spin {
+  to { transform: rotate(360deg); }
+}
+
+.setup-progress {
+  height: 10px;
+  border-radius: 5px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  overflow: hidden;
+}
+
+.setup-progress-bar {
+  height: 100%;
+  width: 0%;
+  background: var(--muted);
+  transition: width 0.2s ease;
+}
+
+.setup-progress-label {
+  margin: 6px 0 10px;
+  font-size: 0.8rem;
+  color: var(--muted);
+  text-align: right;
+}
+

@@ -633,10 +633,26 @@ root.querySelector('#logout-btn')!.addEventListener('click', onLogout)
         </label>
         <button class="btn btn-primary" id="set-save" style="margin-top:12px">Save</button>
       </div>
+      <div class="admin-section">
+        <h3>Backup</h3>
+        <p style="font-size:12px;color:var(--muted);margin:0 0 10px">Download a ZIP of the whole instance (database${' '}
+          — plus uploaded files with local storage; S3 buckets are backed up separately). Restoring happens through the
+          first-start setup wizard of a fresh deployment.</p>
+        <button class="btn" id="backup-download">Download backup</button>
+      </div>
       <div class="msg" id="settings-msg" style="margin:0 0 8px"></div>
     `
 
     const msg = page.querySelector('#settings-msg') as HTMLElement
+    page.querySelector('#backup-download')?.addEventListener('click', async () => {
+      try {
+        msg.textContent = 'Building backup…'; msg.className = 'msg'
+        await api.exportBackup()
+        msg.textContent = 'Backup downloaded'; msg.className = 'msg msg-ok'
+      } catch (e: any) {
+        msg.textContent = e.message; msg.className = 'msg msg-err'
+      }
+    })
     page.querySelector('#set-save')?.addEventListener('click', async () => {
       const input = page.querySelector('#set-max-asset-size') as HTMLInputElement
       const value = parseFloat(input.value)
