@@ -27,3 +27,6 @@ Thumbs.db
 ## Test/export artifacts
 *.zip
 !frontend/public/*.zip
+
+## Built frontend (Docker build produces it)
+backend/public/

@@ -18,6 +18,7 @@ import { decodeUploadFilename } from '../filename'
 import { pushTableStateToTable, broadcastToTable } from '../hub'
 import { loadTableSettings, sanitizeTableSettingsPatch } from '../settings'
 import { buildTilePyramid, deleteTilePyramid } from '../tiles'
+import { storage, keyOf } from '../storage'
 import { mapRole, requireMapDM, requireMapAccess, param } from '../mapaccess'
 import {
   getTable, getFloor, floorsOf, listTablesFor, checkDimensions,
@@ -27,10 +28,9 @@ import { buildMapPackage, applyMapPackage, PACKAGE_FORMAT } from '../models/map-
 
 export const tablesRouter = Router()
 
-const uploadsDir = () => process.env.UPLOADS_DIR || path.join(process.cwd(), 'uploads')
 
-const storage = multer.memoryStorage()
-const upload = multer({ storage, limits: { fileSize: 150 * 1024 * 1024 } })
+const multerStorage = multer.memoryStorage()
+const upload = multer({ storage: multerStorage, limits: { fileSize: 150 * 1024 * 1024 } })
 
 function newId(): string { return crypto.randomUUID().replace(/-/g, '').slice(0, 16) }
 
@@ -84,13 +84,13 @@ tablesRouter.put('/tables/:id', authMiddleware, (req, res) => {
   res.json(getTable(param(req, 'id')))
 })
 
-tablesRouter.delete('/tables/:id', authMiddleware, (req, res) => {
+tablesRouter.delete('/tables/:id', authMiddleware, async (req, res) => {
   if (!requireMapDM(req, res)) return
   // Free the floors' tile pyramids (and their images) before the rows go
   for (const f of floorsOf(param(req, 'id'))) {
     if (f.tiles_path) deleteTilePyramid(f.id)
     if (f.map_image_path) {
-      try { fs.unlinkSync(path.join(uploadsDir(), path.basename(f.map_image_path))) } catch { /* gone */ }
+      try { await storage().delete(keyOf(f.map_image_path)) } catch { /* gone */ }
     }
   }
   db.prepare('DELETE FROM floors WHERE table_id=?').run(param(req, 'id')) // cascades nothing; children follow below
@@ -209,7 +209,7 @@ function parseImageRef(uvttJson: Record<string, unknown>): { uvttJson: Record<st
   return { uvttJson, imageBuffer, imageExt }
 }
 
-tablesRouter.post('/tables/import', authMiddleware, upload.single('file'), (req, res) => {
+tablesRouter.post('/tables/import', authMiddleware, upload.single('file'), async (req, res) => {
   if (!req.file) { res.status(400).json({ error: 'no file' }); return }
 
   let parsed: ReturnType<typeof parseUvttUpload>
@@ -233,11 +233,8 @@ tablesRouter.post('/tables/import', authMiddleware, upload.single('file'), (req,
   let imagePath = ''
 
   if (imageBuffer) {
-    const dir = uploadsDir()
-    fs.mkdirSync(dir, { recursive: true })
-    const filename = `map_${floorId}${imageExt}`
-    fs.writeFileSync(path.join(dir, filename), imageBuffer)
-    imagePath = `/uploads/${filename}`
+    imagePath = `/uploads/map_${floorId}${imageExt}`
+    await storage().put(keyOf(imagePath), imageBuffer)
     // Tile pyramid for heavy-map clients; built async so the import
     // response isn't held up. On failure the floor keeps its full image
     // (legacy path) — tiling is an optimization, never a blocker.
@@ -252,7 +249,7 @@ tablesRouter.post('/tables/import', authMiddleware, upload.single('file'), (req,
   const tableName = req.body.name || path.basename(decodeUploadFilename(req.file.originalname), path.extname(decodeUploadFilename(req.file.originalname)))
   const meta = JSON.stringify(uvttJson)
 
-  const insertAll = db.transaction(() => {
+  const insertAll = async () => {
     db.prepare('INSERT INTO tables (id, name, owner) VALUES (?,?,?)').run(tableId, tableName, res.locals.user)
     db.prepare("INSERT INTO map_members (table_id, username, role) VALUES (?,?,'dm')").run(tableId, res.locals.user)
     db.prepare(
@@ -282,56 +279,55 @@ tablesRouter.post('/tables/import', authMiddleware, upload.single('file'), (req,
     }
 
     // Props extension (see docs/UVTT-PROPS.md)
-    importUvttProps(uvttJson, tableId, floorId, gridSize, propAssets)
-  })
-  insertAll()
+    await importUvttProps(uvttJson, tableId, floorId, gridSize, propAssets)
+  }
+  await insertAll()
 
   res.status(201).json({ ...getTable(tableId), floors: floorsOf(tableId), my_role: mapRole(res.locals.user, tableId, res.locals.role) })
 })
 
-// ── UVTT extensions: props + stairs import (see docs/UVTT-PROPS.md) ──────────
+// ── UVTT extensions: portals, props + stairs import (see docs/UVTT-PROPS.md) ──
+
+/** Insert the UVTT portals of an imported floor: doors and windows,
+ *  coordinates converted grid units → world px. */
+function importUvttPortals(
+  uvttJson: Record<string, unknown>,
+  tableId: string,
+  floorId: string,
+  gridSize: number,
+): void {
+  if (!Array.isArray(uvttJson.portals)) return
+  const insertPortal = db.prepare('INSERT INTO portals (id, table_id, x1, y1, x2, y2, closed, floor_id, kind) VALUES (?,?,?,?,?,?,?,?,?)')
+  for (const portal of uvttJson.portals as Array<Record<string, unknown>>) {
+    const bounds = portal.bounds as Array<{ x: number; y: number }> | undefined
+    if (!bounds || bounds.length < 2) continue
+    const p1 = bounds[0], p2 = bounds[bounds.length - 1]
+    // Some exporters mark windows explicitly; unmarked portals are doors
+    const kind = portal.window === true || portal.kind === 'window' || portal.type === 'window'
+      ? 'window' : 'door'
+    insertPortal.run(
+      newId(), tableId,
+      p1.x * gridSize, p1.y * gridSize,
+      p2.x * gridSize, p2.y * gridSize,
+      portal.closed !== false ? 1 : 0,
+      floorId,
+      kind,
+    )
+  }
+}
 
 /** Resolve one prop's image to an uploads path, or null.
  *  Handles both carriage variants: inline base64 (`assetData`) and
  *  zip sidecar files (`asset`). */
-function resolvePropAsset(
-  p: Record<string, unknown>,
-  floorId: string,
-  assetFiles: Map<string, Buffer>,
-): string | null {
-  const dir = uploadsDir()
-  if (typeof p.assetData === 'string' && p.assetData.length > 32) {
-    const raw = p.assetData
-    const b64 = raw.includes(',') ? raw.split(',').pop()! : raw
-    try {
-      const buf = Buffer.from(b64, 'base64')
-      const filename = `prop_${floorId}_${newId()}.png`
-      fs.writeFileSync(path.join(dir, filename), buf)
-      return `/uploads/${filename}`
-    } catch { /* malformed base64: fall through */ }
-  }
-  if (typeof p.asset === 'string') {
-    const buf = assetFiles.get(p.asset) ?? assetFiles.get(p.asset.replace(/^assets\//, ''))
-    if (buf) {
-      const ext = path.extname(p.asset) || '.png'
-      const filename = `prop_${floorId}_${newId()}${ext}`
-      fs.writeFileSync(path.join(dir, filename), buf)
-      return `/uploads/${filename}`
-    }
-  }
-  return null
-}
-
 /** Extract `props` extension rows from a UVTT payload and insert them for
  *  `floorId` (see docs/UVTT-PROPS.md). Grid units → world px. */
-function importUvttProps(
+async function importUvttProps(
   uvttJson: Record<string, unknown>,
   tableId: string,
   floorId: string,
   gridSize: number,
   assetFiles: Map<string, Buffer>,
-): number {
-  fs.mkdirSync(uploadsDir(), { recursive: true })
+): Promise<number> {
   if (!Array.isArray(uvttJson.props)) return 0
   const insert = db.prepare(`INSERT INTO props (id, table_id, floor_id, asset_path, name, x, y, size, rotation, z, opacity)
                              VALUES (?,?,?,?,?,?,?,?,?,?,?)`)
@@ -339,7 +335,28 @@ function importUvttProps(
   for (const p of uvttJson.props as Array<Record<string, unknown>>) {
     const x = Number(p.x), y = Number(p.y)
     if (!Number.isFinite(x) || !Number.isFinite(y)) continue
-    const assetPath = resolvePropAsset(p, floorId, assetFiles)
+    const assetPath = await (async () => {
+      if (typeof p.assetData === 'string' && p.assetData.length > 32) {
+        const raw = p.assetData
+        const b64 = raw.includes(',') ? raw.split(',').pop()! : raw
+        try {
+          const buf = Buffer.from(b64, 'base64')
+          const filename = `prop_${floorId}_${newId()}.png`
+          await storage().put(filename, buf)
+          return `/uploads/${filename}`
+        } catch { /* malformed base64: fall through */ }
+      }
+      if (typeof p.asset === 'string') {
+        const buf = assetFiles.get(p.asset) ?? assetFiles.get(p.asset.replace(/^assets\//, ''))
+        if (buf) {
+          const ext = path.extname(p.asset) || '.png'
+          const filename = `prop_${floorId}_${newId()}${ext}`
+          await storage().put(filename, buf)
+          return `/uploads/${filename}`
+        }
+      }
+      return null
+    })()
     if (!assetPath) { console.warn(`[uvtt] prop skipped: asset "${String(p.asset)}" not found`); continue }
     insert.run(
       newId(), tableId, floorId, assetPath,
@@ -372,7 +389,7 @@ tablesRouter.get('/tables/:id/export', authMiddleware, (req, res) => {
   }
 })
 
-tablesRouter.post('/tables/import-package', authMiddleware, upload.single('file'), (req, res) => {
+tablesRouter.post('/tables/import-package', authMiddleware, upload.single('file'), async (req, res) => {
   if (!req.file) { res.status(400).json({ error: 'no file' }); return }
   let zip: AdmZip
   let manifest: { format: number; kind: string; name?: string; floors?: unknown[]; assets?: unknown[] }
@@ -387,7 +404,7 @@ tablesRouter.post('/tables/import-package', authMiddleware, upload.single('file'
   }
   const tableName = String(req.body.name || manifest.name || 'Imported map').slice(0, 200)
   try {
-    const result = applyMapPackage(zip, manifest as never, tableName, res.locals.user)
+    const result = await applyMapPackage(zip, manifest as never, tableName, res.locals.user)
     res.status(201).json({ id: result.tableId, name: tableName, ...result })
   } catch (e: unknown) {
     res.status(500).json({ error: e instanceof Error ? e.message : 'import failed' })
@@ -411,7 +428,7 @@ tablesRouter.post('/tables/:id/floors', authMiddleware, (req, res) => {
 })
 
 /** Import a UVTT/zip as a new floor (map + walls + portals + props). */
-tablesRouter.post('/tables/:id/floors/import', authMiddleware, upload.single('file'), (req, res) => {
+tablesRouter.post('/tables/:id/floors/import', authMiddleware, upload.single('file'), async (req, res) => {
   if (!requireMapDM(req, res)) return
   if (!req.file) { res.status(400).json({ error: 'no file' }); return }
   const table = getTable(param(req, 'id'))
@@ -448,11 +465,8 @@ tablesRouter.post('/tables/:id/floors/import', authMiddleware, upload.single('fi
   }
 
   if (imageBuffer) {
-    const dir = uploadsDir()
-    fs.mkdirSync(dir, { recursive: true })
-    const filename = `map_${floorId}${imageExt}`
-    fs.writeFileSync(path.join(dir, filename), imageBuffer)
-    imagePath = `/uploads/${filename}`
+    imagePath = `/uploads/map_${floorId}${imageExt}`
+    await storage().put(keyOf(imagePath), imageBuffer)
     // Same async pyramid build as the table import above
     buildTilePyramid(floorId, imageBuffer)
       .then(() => {
@@ -463,35 +477,16 @@ tablesRouter.post('/tables/:id/floors/import', authMiddleware, upload.single('fi
   }
 
   const meta = JSON.stringify(uvttJson)
-  db.transaction(() => {
-    db.prepare(
-      `INSERT INTO floors (id, table_id, level, name, map_image_path, grid_size, uvt_metadata, img_width, img_height)
-       VALUES (?,?,?,?,?,?,?,?,?)`
-    ).run(floorId, param(req, 'id'), level, name, imagePath, gridSize, meta, imgW, imgH)
+  db.prepare(
+    `INSERT INTO floors (id, table_id, level, name, map_image_path, grid_size, uvt_metadata, img_width, img_height)
+     VALUES (?,?,?,?,?,?,?,?,?)`
+  ).run(floorId, param(req, 'id'), level, name, imagePath, gridSize, meta, imgW, imgH)
 
-    if (Array.isArray(uvttJson.portals)) {
-      const insertPortal = db.prepare('INSERT INTO portals (id, table_id, x1, y1, x2, y2, closed, floor_id, kind) VALUES (?,?,?,?,?,?,?,?,?)')
-      for (const portal of uvttJson.portals as Array<Record<string, unknown>>) {
-        const bounds = portal.bounds as Array<{ x: number; y: number }> | undefined
-        if (!bounds || bounds.length < 2) continue
-        const p1 = bounds[0], p2 = bounds[bounds.length - 1]
-        // Some exporters mark windows explicitly; unmarked portals are doors
-        const kind = portal.window === true || portal.kind === 'window' || portal.type === 'window'
-          ? 'window' : 'door'
-        insertPortal.run(
-          newId(), param(req, 'id'),
-          p1.x * gridSize, p1.y * gridSize,
-          p2.x * gridSize, p2.y * gridSize,
-          portal.closed !== false ? 1 : 0,
-          floorId,
-          kind,
-        )
-      }
-    }
+  importUvttPortals(uvttJson, param(req, 'id'), floorId, gridSize)
 
-    // Props extension (see docs/UVTT-PROPS.md)
-    importUvttProps(uvttJson, param(req, 'id'), floorId, gridSize, propAssets)
-  })()
+  // Props extension (see docs/UVTT-PROPS.md)
+    await importUvttProps(uvttJson, param(req, 'id'), floorId, gridSize, propAssets)
+  
 
   res.status(201).json(getFloor(floorId))
 })
@@ -516,7 +511,7 @@ tablesRouter.put('/tables/:id/floors/reorder', authMiddleware, (req, res) => {
 })
 
 /** Upload/replace the map image of a floor. Client sends width/height for the dimension check. */
-tablesRouter.post('/floors/:id/upload-image', authMiddleware, upload.single('image'), (req, res) => {
+tablesRouter.post('/floors/:id/upload-image', authMiddleware, upload.single('image'), async (req, res) => {
   const floor = getFloor(param(req, 'id'))
   if (!floor) { res.status(404).json({ error: 'floor not found' }); return }
   if (!requireMapDM(req, res, floor.table_id)) return
@@ -526,17 +521,15 @@ tablesRouter.post('/floors/:id/upload-image', authMiddleware, upload.single('ima
   const dimError = checkDimensions(floor.table_id, w, h)
   if (dimError) { res.status(409).json({ error: dimError }); return }
   const ext = path.extname(decodeUploadFilename(req.file.originalname)).toLowerCase() || '.png'
-  const dir = uploadsDir()
-  fs.mkdirSync(dir, { recursive: true })
   // Unique filename per upload: browsers cache /uploads immutably, so a
   // replaced image must live at a fresh URL or clients would keep the old one
   const filename = `map_${floor.id}_${Date.now().toString(36)}${ext}`
   // Drop the superseded bitmap (extension may have changed, hence the guard)
-  const prevFile = floor.map_image_path ? path.basename(floor.map_image_path) : ''
-  if (prevFile && prevFile !== filename) {
-    try { fs.unlinkSync(path.join(dir, prevFile)) } catch { /* already gone */ }
+  const prevKey = floor.map_image_path ? keyOf(floor.map_image_path) : ''
+  if (prevKey && prevKey !== filename) {
+    try { await storage().delete(prevKey) } catch { /* already gone */ }
   }
-  fs.writeFileSync(path.join(dir, filename), req.file.buffer)
+  await storage().put(filename, req.file.buffer)
   const imagePath = `/uploads/${filename}`
   db.prepare('UPDATE floors SET map_image_path=?, img_width=?, img_height=? WHERE id=?')
     .run(imagePath, w, h, floor.id)
@@ -592,14 +585,13 @@ tablesRouter.get('/floors/:floorId/export.uvtt', authMiddleware, async (req, res
   const stairRows = db.prepare('SELECT from_x, from_y, to_floor, to_x, to_y, radius FROM stairs WHERE from_floor=?').all(floor.id) as Array<Record<string, unknown>>
 
   // Sidecar assets: unique files actually on disk
-  const uploadsRoot = process.env.UPLOADS_DIR || path.join(process.cwd(), 'uploads')
   const zip = new AdmZip()
   const usedAssets = new Map<string, string>() // asset_path → sidecar name
   let assetIndex = 0
   const propsOut: Array<Record<string, unknown>> = []
   for (const p of propRows) {
     const rel = String(p.asset_path).replace(/^\/uploads\//, '')
-    const sidecar = sidecarFor(rel, usedAssets, zip, uploadsRoot, () => assetIndex++)
+    const sidecar = await sidecarFor(rel, usedAssets, zip, () => assetIndex++)
     if (!sidecar) continue // asset file missing: skip, keep export valid
     propsOut.push(propToUvtt(p, sidecar, grid))
   }
@@ -637,8 +629,9 @@ tablesRouter.get('/floors/:floorId/export.uvtt', authMiddleware, async (req, res
 
   // The main map image rides as the zip's map entry (not base64 in JSON —
   // keeps the .uvtt readable and the bundle small).
-  const mapAbs = uploadsFile(uploadsRoot, floor.map_image_path)
-  if (mapAbs && fs.existsSync(mapAbs)) zip.addFile(String(uvtt.image), fs.readFileSync(mapAbs))
+  try {
+    zip.addFile(String(uvtt.image), await storage().get(keyOf(floor.map_image_path)))
+  } catch { /* no image stored */ }
   zip.addFile('map.uvtt', Buffer.from(JSON.stringify(uvtt, null, 2), 'utf8'))
 
   const slug = (floor.name || table.name || 'map').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'map'
@@ -647,32 +640,24 @@ tablesRouter.get('/floors/:floorId/export.uvtt', authMiddleware, async (req, res
   res.send(zip.toBuffer())
 })
 
-/** Resolve an uploads-relative path safely: rejects traversal outside the
- *  uploads dir (S2083). Returns null when the reference escapes or is empty. */
-function uploadsFile(uploadsRoot: string, rel: string): string | null {
-  const clean = rel.replace(/^\/uploads\//, '')
-  if (!clean || clean.includes('..') || path.isAbsolute(clean)) return null
-  const root = path.resolve(uploadsRoot)
-  const abs = path.resolve(root, clean)
-  if (abs !== root && !abs.startsWith(root + path.sep)) return null
-  return abs
-}
-
 /** Register `rel` as a zip sidecar (dedup via `usedAssets`); null if the
- *  file is missing on disk. */
-function sidecarFor(
+ *  object is missing in storage. */
+async function sidecarFor(
   rel: string,
   usedAssets: Map<string, string>,
   zip: AdmZip,
-  uploadsRoot: string,
   nextIndex: () => number,
-): string | null {
+): Promise<string | null> {
   const known = usedAssets.get(rel)
   if (known) return known
-  const abs = uploadsFile(uploadsRoot, rel)
-  if (!abs || !fs.existsSync(abs)) return null
+  let buf: Buffer
+  try {
+    buf = await storage().get(keyOf(rel))
+  } catch {
+    return null
+  }
   const sidecar = `assets/prop-${nextIndex()}${path.extname(rel) || '.png'}`
-  zip.addFile(sidecar, fs.readFileSync(abs))
+  zip.addFile(sidecar, buf)
   usedAssets.set(rel, sidecar)
   return sidecar
 }
@@ -700,7 +685,7 @@ function floorLevelOf(floorId: string): number {
 /** Round a grid-unit value to 3 decimals (JSON stays readable). */
 function roundG(v: number): number { return Math.round(v * 1000) / 1000 }
 
-tablesRouter.delete('/floors/:id', authMiddleware, (req, res) => {
+tablesRouter.delete('/floors/:id', authMiddleware, async (req, res) => {
   const floor = getFloor(param(req, 'id'))
   if (!floor) { res.status(404).json({ error: 'not found' }); return }
   if (!requireMapDM(req, res, floor.table_id)) return
@@ -718,7 +703,7 @@ tablesRouter.delete('/floors/:id', authMiddleware, (req, res) => {
   // Drop this floor's image and tile pyramid
   if (floor.tiles_path) deleteTilePyramid(floor.id)
   if (floor.map_image_path) {
-    try { fs.unlinkSync(path.join(uploadsDir(), path.basename(floor.map_image_path))) } catch { /* gone */ }
+    try { await storage().delete(keyOf(floor.map_image_path)) } catch { /* gone */ }
   }
   res.sendStatus(204)
 })

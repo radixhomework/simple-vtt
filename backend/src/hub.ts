@@ -1,11 +1,10 @@
 import { WebSocketServer, WebSocket } from 'ws'
 import { IncomingMessage } from 'http'
-import path from 'path'
-import fs from 'fs'
 import { verifyToken } from './auth'
 import { db } from './db'
 import { loadTableSettings } from './settings'
 import { mapRole } from './mapaccess'
+import { storage, keyOf } from './storage'
 import { buildTilePyramid } from './tiles'
 
 /**
@@ -17,8 +16,6 @@ import { buildTilePyramid } from './tiles'
  * music transport. Everything else is admin-only and silently ignored.
  */
 
-const uploadsDir = () => process.env.UPLOADS_DIR || path.join(process.cwd(), 'uploads')
-
 /**
  * Lazy tile backfill for floors imported before tiling existed: build the
  * pyramid in the background (once — the in-flight set dedupes), then push a
@@ -29,24 +26,21 @@ const pyramidsInProgress = new Set<string>()
 function ensurePyramidAsync(floor: { id: string; map_image_path: string }): void {
   if (pyramidsInProgress.has(floor.id)) return
   pyramidsInProgress.add(floor.id)
-  const file = path.join(uploadsDir(), path.basename(floor.map_image_path))
-  fs.readFile(file, (err, buffer) => {
-    if (err) {
+  storage()
+    .get(keyOf(floor.map_image_path))
+    .then((buffer: Buffer) => buildTilePyramid(floor.id, buffer))
+    .then(() => {
+      db.prepare('UPDATE floors SET tiles_path=? WHERE id=?').run(`/uploads/tiles/${floor.id}`, floor.id)
+      // Fresh state so connected clients see the new tiles_path (no-op
+      // when nobody is in the room — the next join picks it up anyway)
+      const tableId = (floor as { table_id?: string }).table_id
+      if (tableId) pushTableStateToTable(tableId)
+    })
+    .catch(err => {
       pyramidsInProgress.delete(floor.id)
-      console.error(`[tiles] backfill read failed for floor ${floor.id}:`, err.message)
-      return
-    }
-    buildTilePyramid(floor.id, buffer)
-      .then(() => {
-        db.prepare('UPDATE floors SET tiles_path=? WHERE id=?').run(`/uploads/tiles/${floor.id}`, floor.id)
-        // Fresh state so connected clients see the new tiles_path (no-op
-        // when nobody is in the room — the next join picks it up anyway)
-        const tableId = (floor as { table_id?: string }).table_id
-        if (tableId) pushTableStateToTable(tableId)
-      })
-      .catch(err2 => console.error(`[tiles] backfill failed for floor ${floor.id}:`, err2))
-      .finally(() => pyramidsInProgress.delete(floor.id))
-  })
+      console.error(`[tiles] backfill failed for floor ${floor.id}:`, err)
+    })
+    .finally(() => pyramidsInProgress.delete(floor.id))
 }
 
 /** Floor has usable dimensions (guards tiling on malformed metadata). */
@@ -231,6 +225,17 @@ function newId(): string {
   return crypto.randomUUID().replace(/-/g, '').slice(0, 16)
 }
 
+/** Tell every other client a floor's fog changed shape globally (reset or
+ *  full reveal). Unlike point broadcasts these reach clients on ANY floor:
+ *  they carry client-side cache invalidation (explored bitmaps, mask stash). */
+function broadcastFogNotice(client: Client, floorId: string, kind: 'fog_reset' | 'fog_revealed') {
+  tables.get(client.tableId)?.forEach(c => {
+    if (c !== client && c.ws.readyState === WebSocket.OPEN) {
+      c.ws.send(JSON.stringify({ type: kind, payload: { floor_id: floorId } }))
+    }
+  })
+}
+
 function sendTableState(client: Client) {
   const table = db.prepare(
     'SELECT id, name, default_floor_id FROM tables WHERE id=?'
@@ -324,229 +329,277 @@ function normalizeToken(row: Record<string, unknown>) {
   }
 }
 
-function handleMessage(client: Client, raw: string) {
+// ── fog_update ops (dm-only; one helper per action) ───────────────────────────
+
+/** Send a floor-scoped raw message to the other viewers of that floor;
+ *  the sender already applied the change optimistically. */
+function relayToFloorViewers(client: Client, raw: string, floorId: string): void {
+  tables.get(client.tableId)?.forEach(c => {
+    if (c !== client && c.activeFloorId === floorId && c.ws.readyState === WebSocket.OPEN) c.ws.send(raw)
+  })
+}
+
+/** reset: back to arrival state — no manual reveals, explored memory
+ *  cleared, any full-reveal flag removed. Clients wipe their local
+ *  explored bitmaps when the fog_reset notice arrives. */
+function fogReset(client: Client, floorId: string): void {
+  db.prepare('DELETE FROM fog_points WHERE table_id=? AND floor_id=?').run(client.tableId, floorId)
+  db.prepare('UPDATE floors SET revealed=0 WHERE id=?').run(floorId)
+  storage().delete(`fog_${floorId}.png`).catch(() => {})
+  pushTableStateToTable(client.tableId)
+  broadcastFogNotice(client, floorId, 'fog_reset')
+}
+
+/** reveal_all: remove ALL fog from the floor — marked fully revealed,
+ *  manual points wiped. New joiners get the flag via table_state. */
+function fogRevealAll(client: Client, floorId: string): void {
+  db.prepare('UPDATE floors SET revealed=1 WHERE id=?').run(floorId)
+  db.prepare('DELETE FROM fog_points WHERE table_id=? AND floor_id=?').run(client.tableId, floorId)
+  pushTableStateToTable(client.tableId)
+  broadcastFogNotice(client, floorId, 'fog_revealed')
+}
+
+/** clear_all wipes the floor's points, optionally re-inserting the
+ *  survivors (erase tool: clear + re-add in one atomic step, no flicker). */
+function fogClearAll(client: Client, floorId: string, points: Array<Record<string, unknown>>): void {
+  db.prepare('DELETE FROM fog_points WHERE table_id=? AND floor_id=?').run(client.tableId, floorId)
+  if (Array.isArray(points) && points.length > 0) {
+    const insert = db.prepare('INSERT INTO fog_points (id, table_id, x, y, radius, floor_id) VALUES (?,?,?,?,?,?)')
+    for (const p of points) {
+      insert.run(newId(), client.tableId, p.x, p.y, p.radius ?? 3, floorId)
+    }
+  }
+  // Authoritative resync for EVERY client of the table: the raw
+  // per-floor broadcast only reaches viewers of that floor, so a
+  // stale client (other floor, half-dead socket that missed the
+  // message) would keep showing cleared fog.
+  tables.get(client.tableId)?.forEach(c => sendTableState(c))
+}
+
+/** add: keep client-generated ids so brush strokes can then erase by id
+ *  incrementally instead of resending the whole survivors array. */
+function fogAddPoints(client: Client, floorId: string, points: Array<Record<string, unknown>>, raw: string): void {
+  const insert = db.prepare('INSERT OR IGNORE INTO fog_points (id, table_id, x, y, radius, floor_id) VALUES (?,?,?,?,?,?)')
+  for (const p of points) {
+    insert.run(typeof p.id === 'string' && p.id ? p.id : newId(), client.tableId, p.x, p.y, p.radius ?? 3, floorId)
+  }
+  relayToFloorViewers(client, raw, floorId)
+}
+
+function fogRemoveIds(client: Client, floorId: string, ids: string[], raw: string): void {
+  if (ids.length === 0) return
+  const del = db.prepare('DELETE FROM fog_points WHERE table_id=? AND id=?')
+  for (const id of ids) del.run(client.tableId, id)
+  // Same-floor viewers erase the same points incrementally
+  relayToFloorViewers(client, raw, floorId)
+}
+
+/** Handle fog_update ops: reveals, erases, reset, full-reveal, paint relay. */
+function handleFogUpdate(client: Client, raw: string, payload: Record<string, unknown>): void {
+  if (client.mapRole !== 'dm') return
+  const { action, points, floor_id, ids } = payload as {
+    action: string
+    points?: Array<Record<string, unknown>>
+    ids?: unknown[]
+    floor_id?: string
+  }
+  // Fog is per floor: default to the client's viewed floor
+  const floorId = floor_id ?? client.activeFloorId ?? ''
+
+  if (action === 'fog_paint') {
+    // Live brush stroke op — relay to viewers of that floor
+    relayToFloorViewers(client, raw, floorId)
+    return
+  }
+  if (action === 'reset') {
+    fogReset(client, floorId)
+    return
+  }
+  if (action === 'reveal_all') {
+    fogRevealAll(client, floorId)
+    return
+  }
+  if (action === 'clear_all') {
+    fogClearAll(client, floorId, points ?? [])
+    return
+  }
+  if (action === 'add' && Array.isArray(points)) {
+    fogAddPoints(client, floorId, points, raw)
+    return
+  }
+  if (action === 'remove_ids' && Array.isArray(ids)) {
+    fogRemoveIds(client, floorId, ids.filter((x): x is string => typeof x === 'string'), raw)
+  }
+}
+
+// ── token ops ─────────────────────────────────────────────────────────────────
+
+/** token_move: position changes, including cross-floor stairs moves. */
+function handleTokenMove(client: Client, raw: string, payload: Record<string, unknown>): void {
+  const { token_id, x, y, to_floor, to_x, to_y } = payload as {
+    token_id: string; x: number; y: number; to_floor?: string; to_x?: number; to_y?: number
+  }
+  const tokenRow = db.prepare('SELECT owner, hidden FROM tokens WHERE id=? AND table_id=?')
+    .get(token_id, client.tableId) as { owner: string; hidden: number } | undefined
+  if (client.mapRole !== 'dm') {
+    // Enforce players_move_own_only: map players may only move their own
+    // tokens, unless the setting explicitly allows moving any token.
+    const setting = db.prepare("SELECT value FROM settings WHERE key='players_move_own_only'")
+      .get() as { value: string } | undefined
+    const ownOnly = setting ? setting.value === 'true' : true
+    if (!tokenRow || (ownOnly && tokenRow.owner !== client.username)) return
+  }
+  if (!tokenRow) return
+
+  if (to_floor !== undefined) {
+    // Cross-floor move (stairs): the token changes level. A full state
+    // push resyncs every client — it leaves the floors some view and
+    // arrives on another.
+    const floor = db.prepare('SELECT id FROM floors WHERE id=? AND table_id=?')
+      .get(to_floor, client.tableId) as { id: string } | undefined
+    if (!floor) return
+    db.prepare('UPDATE tokens SET x=?, y=?, floor_id=? WHERE id=? AND table_id=?')
+      .run(to_x ?? x, to_y ?? y, to_floor, token_id, client.tableId)
+    tables.get(client.tableId)?.forEach(c => sendTableState(c))
+    return
+  }
+
+  db.prepare('UPDATE tokens SET x=?, y=? WHERE id=? AND table_id=?')
+    .run(x, y, token_id, client.tableId)
+  // Moves of hidden tokens are for admin eyes only
+  broadcast(client.tableId, raw, client, tokenRow.hidden === 1)
+}
+
+/** Merge client token fields onto the stored row: the listed keys copy
+ *  when present; owner/hidden only change when a dm sends them. */
+function mergeTokenUpdate(existing: Record<string, unknown>, t: Record<string, unknown>, dm: boolean): Record<string, unknown> {
+  const m: Record<string, unknown> = { ...existing }
+  for (const k of ['name', 'x', 'y', 'icon_path', 'has_vision', 'vision_radius', 'size', 'color']) {
+    if (t[k] !== undefined) m[k] = t[k]
+  }
+  if (dm) {
+    if (t.owner !== undefined) m.owner = t.owner
+    if (t.hidden !== undefined) m.hidden = t.hidden
+  }
+  return m
+}
+
+/** Floor change (token editor): the target floor must belong to the table. */
+function resolveTokenFloor(client: Client, m: Record<string, unknown>, t: Record<string, unknown>): void {
+  if (t.floor_id === undefined || t.floor_id === m.floor_id) return
+  const floor = db.prepare('SELECT id FROM floors WHERE id=? AND table_id=?')
+    .get(t.floor_id, client.tableId) as { id: string } | undefined
+  if (floor) m.floor_id = t.floor_id
+}
+
+/** Relay an in-place token update to the peers that can see it: updates of
+ *  hidden tokens are for admin eyes only, and clients viewing another floor
+ *  never have this token in their state. */
+function relayTokenUpdate(client: Client, raw: string, floorId: unknown, hiddenNow: boolean): void {
+  tables.get(client.tableId)?.forEach(c => {
+    if (c !== client && c.activeFloorId === floorId && (!hiddenNow || c.role === 'admin') && c.ws.readyState === WebSocket.OPEN) {
+      c.ws.send(raw)
+    }
+  })
+}
+
+/** token_update: editor changes; players may edit only their own tokens
+ *  and cannot touch owner/hidden (dm-only controls). */
+function handleTokenUpdate(client: Client, raw: string, payload: Record<string, unknown>): void {
+  const t = (payload as { token: Record<string, unknown> }).token
+  const existing = db.prepare(
+    'SELECT name, x, y, icon_path, has_vision, vision_radius, size, color, owner, hidden, floor_id FROM tokens WHERE id=? AND table_id=?'
+  ).get(t.id, client.tableId) as Record<string, unknown> | undefined
+  if (!existing) return
+  if (client.mapRole !== 'dm' && existing.owner !== client.username) return
+
+  const m = mergeTokenUpdate(existing, t, client.mapRole === 'dm')
+  resolveTokenFloor(client, m, t)
+
+  const hiddenNow = m.hidden === 1 || m.hidden === true
+  const wasHidden = existing.hidden === 1 || existing.hidden === true
+  const floorChanged = m.floor_id !== existing.floor_id
+  db.prepare(
+    `UPDATE tokens SET name=?, x=?, y=?, icon_path=?, has_vision=?, vision_radius=?, size=?, color=?, owner=?, hidden=?, floor_id=?
+     WHERE id=? AND table_id=?`
+  ).run(m.name, m.x, m.y, m.icon_path, m.has_vision ? 1 : 0, m.vision_radius, m.size, m.color, m.owner, hiddenNow ? 1 : 0, m.floor_id, t.id, client.tableId)
+
+  if (hiddenNow !== wasHidden || floorChanged) {
+    // Visibility or floor changed: push a fresh table_state so players
+    // gain/lose the token (and its sight) immediately.
+    tables.get(client.tableId)?.forEach(c => sendTableState(c))
+  } else {
+    relayTokenUpdate(client, raw, m.floor_id, hiddenNow)
+  }
+}
+
+function handleTokenDelete(client: Client, raw: string, payload: Record<string, unknown>): void {
+  if (client.mapRole !== 'dm') return
+  const { token_id } = payload as { token_id: string }
+  db.prepare('DELETE FROM tokens WHERE id=? AND table_id=?').run(token_id, client.tableId)
+  broadcast(client.tableId, raw, client)
+}
+
+// ── view ops ──────────────────────────────────────────────────────────────────
+
+/** floor_select: the viewer switched to another floor of the table. */
+function handleFloorSelect(client: Client, payload: Record<string, unknown>): void {
+  const { floor_id } = payload as { floor_id: string }
+  const floor = db.prepare('SELECT id FROM floors WHERE id=? AND table_id=?')
+    .get(floor_id, client.tableId) as { id: string } | undefined
+  if (floor) {
+    client.activeFloorId = floor_id
+    sendTableState(client)
+  }
+}
+
+/** camera_focus: DM one-time focus — snap every other client's display
+ *  (floor, camera, zoom) to the dm's current view. Not a continuous follow. */
+function handleCameraFocus(client: Client, payload: Record<string, unknown>): void {
+  if (client.mapRole !== 'dm') return
+  const { x, y, zoom, floor_id } = payload as { x: number; y: number; zoom: number; floor_id?: string }
+  if (typeof x !== 'number' || typeof y !== 'number' || typeof zoom !== 'number') return
+  const data = JSON.stringify({ type: 'camera_focus', payload: { x, y, zoom, floor_id } })
+  tables.get(client.tableId)?.forEach(c => {
+    if (c !== client && c.ws.readyState === WebSocket.OPEN) c.ws.send(data)
+  })
+}
+
+function handleMessage(client: Client, raw: string): void {
   let msg: { type: string; payload: Record<string, unknown> }
   try { msg = JSON.parse(raw) } catch { return }
 
   const { type, payload } = msg
 
   switch (type) {
-    case 'token_move': {
-      const { token_id, x, y, to_floor, to_x, to_y } = payload as {
-        token_id: string; x: number; y: number; to_floor?: string; to_x?: number; to_y?: number
-      }
-      const tokenRow = db.prepare('SELECT owner, hidden FROM tokens WHERE id=? AND table_id=?')
-        .get(token_id, client.tableId) as { owner: string; hidden: number } | undefined
-      if (client.mapRole !== 'dm') {
-        // Enforce players_move_own_only: map players may only move their own
-        // tokens, unless the setting explicitly allows moving any token.
-        const setting = db.prepare("SELECT value FROM settings WHERE key='players_move_own_only'")
-          .get() as { value: string } | undefined
-        const ownOnly = setting ? setting.value === 'true' : true
-        if (!tokenRow || (ownOnly && tokenRow.owner !== client.username)) break
-      }
-      if (!tokenRow) break
-
-      if (to_floor !== undefined) {
-        // Cross-floor move (stairs): the token changes level. A full state
-        // push resyncs every client — it leaves the floors some view and
-        // arrives on another.
-        const floor = db.prepare('SELECT id FROM floors WHERE id=? AND table_id=?')
-          .get(to_floor, client.tableId) as { id: string } | undefined
-        if (!floor) break
-        db.prepare('UPDATE tokens SET x=?, y=?, floor_id=? WHERE id=? AND table_id=?')
-          .run(to_x ?? x, to_y ?? y, to_floor, token_id, client.tableId)
-        tables.get(client.tableId)?.forEach(c => sendTableState(c))
-        break
-      }
-
-      db.prepare('UPDATE tokens SET x=?, y=? WHERE id=? AND table_id=?')
-        .run(x, y, token_id, client.tableId)
-      // Moves of hidden tokens are for admin eyes only
-      broadcast(client.tableId, raw, client, tokenRow.hidden === 1)
+    case 'token_move':
+      handleTokenMove(client, raw, payload)
       break
-    }
-
-    case 'token_update': {
-      const t = (payload as { token: Record<string, unknown> }).token
-      const existing = db.prepare(
-        'SELECT name, x, y, icon_path, has_vision, vision_radius, size, color, owner, hidden, floor_id FROM tokens WHERE id=? AND table_id=?'
-      ).get(t.id, client.tableId) as Record<string, unknown> | undefined
-      if (!existing) break
-      // Authorization: dms may edit anything; players only their own tokens,
-      // and they cannot change owner/hidden (dm-only controls).
-      const isOwner = existing.owner === client.username
-      if (client.mapRole !== 'dm' && !isOwner) break
-      const isAdmin = client.mapRole === 'dm'
-      const m = {
-        name:          t.name          !== undefined ? t.name          : existing.name,
-        x:             t.x             !== undefined ? t.x             : existing.x,
-        y:             t.y             !== undefined ? t.y             : existing.y,
-        icon_path:     t.icon_path     !== undefined ? t.icon_path     : existing.icon_path,
-        has_vision:    t.has_vision    !== undefined ? t.has_vision    : existing.has_vision,
-        vision_radius: t.vision_radius !== undefined ? t.vision_radius : existing.vision_radius,
-        size:          t.size          !== undefined ? t.size          : existing.size,
-        color:         t.color         !== undefined ? t.color         : existing.color,
-        owner:         isAdmin && t.owner !== undefined ? t.owner : existing.owner,
-        hidden:        isAdmin && t.hidden !== undefined ? t.hidden : existing.hidden,
-        floor_id:      existing.floor_id,
-      }
-      // Floor change (token editor): target floor must belong to the table
-      if (t.floor_id !== undefined && t.floor_id !== existing.floor_id) {
-        const floor = db.prepare('SELECT id FROM floors WHERE id=? AND table_id=?')
-          .get(t.floor_id, client.tableId) as { id: string } | undefined
-        if (floor) m.floor_id = t.floor_id
-      }
-      const hiddenNow = m.hidden === 1 || m.hidden === true
-      const wasHidden = existing.hidden === 1 || existing.hidden === true
-      const floorChanged = m.floor_id !== existing.floor_id
-      db.prepare(
-        `UPDATE tokens SET name=?, x=?, y=?, icon_path=?, has_vision=?, vision_radius=?, size=?, color=?, owner=?, hidden=?, floor_id=?
-         WHERE id=? AND table_id=?`
-      ).run(m.name, m.x, m.y, m.icon_path, m.has_vision ? 1 : 0, m.vision_radius, m.size, m.color, m.owner, hiddenNow ? 1 : 0, m.floor_id, t.id, client.tableId)
-
-      if (hiddenNow !== wasHidden || floorChanged) {
-        // Visibility or floor changed: push a fresh table_state so players
-        // gain/lose the token (and its sight) immediately.
-        tables.get(client.tableId)?.forEach(c => sendTableState(c))
-      } else {
-        // Updates of hidden tokens are for admin eyes only; clients viewing
-        // another floor never have this token in their state.
-        tables.get(client.tableId)?.forEach(c => {
-          if (c !== client && c.activeFloorId === m.floor_id && (!hiddenNow || c.role === 'admin') && c.ws.readyState === WebSocket.OPEN) {
-            c.ws.send(raw)
-          }
-        })
-      }
+    case 'token_update':
+      handleTokenUpdate(client, raw, payload)
       break
-    }
-
-    case 'token_delete': {
-      if (client.mapRole !== 'dm') return
-      const { token_id } = payload as { token_id: string }
-      db.prepare('DELETE FROM tokens WHERE id=? AND table_id=?').run(token_id, client.tableId)
-      broadcast(client.tableId, raw, client)
+    case 'token_delete':
+      handleTokenDelete(client, raw, payload)
       break
-    }
-
-    case 'fog_update': {
-      if (client.mapRole !== 'dm') return
-      const { action, points, floor_id } = payload as {
-        action: string; points: Array<Record<string, unknown>>; floor_id?: string
-      }
-      // Fog is per floor: default to the client's viewed floor
-      const floorId = floor_id ?? client.activeFloorId ?? ''
-      if (action === 'clear_all') {
-        // clear_all optionally carries the surviving points (used by the
-        // erase tool: clear + re-add in one atomic step, no client flicker)
-        db.prepare('DELETE FROM fog_points WHERE table_id=? AND floor_id=?').run(client.tableId, floorId)
-        if (Array.isArray(points) && points.length > 0) {
-          const insert = db.prepare('INSERT INTO fog_points (id, table_id, x, y, radius, floor_id) VALUES (?,?,?,?,?,?)')
-          for (const p of points) {
-            insert.run(newId(), client.tableId, p.x, p.y, p.radius ?? 3, floorId)
-          }
-        }
-        // Authoritative resync for EVERY client of the table: the raw
-        // per-floor broadcast only reaches viewers of that floor, so a
-        // stale client (other floor, half-dead socket that missed the
-        // message) would keep showing cleared fog.
-        tables.get(client.tableId)?.forEach(c => sendTableState(c))
-        break
-      } else if (action === 'fog_paint') {
-        // Live brush stroke op — relay to viewers of that floor
-        tables.get(client.tableId)?.forEach(c => {
-          if (c !== client && c.activeFloorId === floorId && c.ws.readyState === WebSocket.OPEN) c.ws.send(raw)
-        })
-        break
-      } else if (action === 'reset') {
-        // Back to arrival state: no manual reveals, explored memory cleared,
-        // any full-reveal flag removed. Clients wipe their local explored
-        // bitmaps on the fog_reset notice.
-        db.prepare('DELETE FROM fog_points WHERE table_id=? AND floor_id=?').run(client.tableId, floorId)
-        db.prepare('UPDATE floors SET revealed=0 WHERE id=?').run(floorId)
-        try { fs.unlinkSync(path.join(process.env.UPLOADS_DIR || path.join(process.cwd(), 'uploads'), `fog_${floorId}.png`)) } catch {}
-        pushTableStateToTable(client.tableId)
-        tables.get(client.tableId)?.forEach(c => {
-          if (c !== client && c.ws.readyState === WebSocket.OPEN) {
-            c.ws.send(JSON.stringify({ type: 'fog_reset', payload: { floor_id: floorId } }))
-          }
-        })
-        break
-      } else if (action === 'reveal_all') {
-        // Remove ALL fog from the floor: marked fully revealed, manual
-        // points wiped. New joiners get the flag via table_state.
-        db.prepare('UPDATE floors SET revealed=1 WHERE id=?').run(floorId)
-        db.prepare('DELETE FROM fog_points WHERE table_id=? AND floor_id=?').run(client.tableId, floorId)
-        pushTableStateToTable(client.tableId)
-        tables.get(client.tableId)?.forEach(c => {
-          if (c !== client && c.ws.readyState === WebSocket.OPEN) {
-            c.ws.send(JSON.stringify({ type: 'fog_revealed', payload: { floor_id: floorId } }))
-          }
-        })
-        break
-      } else if (action === 'add' && Array.isArray(points)) {
-        // Keep client-generated ids: brush strokes then erase by id
-        // incrementally instead of resending the whole survivors array
-        const insert = db.prepare('INSERT OR IGNORE INTO fog_points (id, table_id, x, y, radius, floor_id) VALUES (?,?,?,?,?,?)')
-        for (const p of points) {
-          insert.run(typeof p.id === 'string' && p.id ? p.id : newId(), client.tableId, p.x, p.y, p.radius ?? 3, floorId)
-        }
-      } else if (action === 'remove_ids' && Array.isArray(payload.ids)) {
-        const ids = (payload.ids as unknown[]).filter((x): x is string => typeof x === 'string')
-        if (ids.length > 0) {
-          const del = db.prepare('DELETE FROM fog_points WHERE table_id=? AND id=?')
-          for (const id of ids) del.run(client.tableId, id)
-        }
-      }
-      // Only viewers of that floor care; others ignore the points (their
-      // state never includes the floor). Exclude the sender: it already
-      // applied the change optimistically.
-      tables.get(client.tableId)?.forEach(c => {
-        if (c !== client && c.activeFloorId === floorId && c.ws.readyState === WebSocket.OPEN) c.ws.send(raw)
-      })
+    case 'fog_update':
+      handleFogUpdate(client, raw, payload)
       break
-    }
-
-    case 'floor_select': {
-      // Viewer switched to another floor of the table
-      const { floor_id } = payload as { floor_id: string }
-      const floor = db.prepare('SELECT id FROM floors WHERE id=? AND table_id=?')
-        .get(floor_id, client.tableId) as { id: string } | undefined
-      if (floor) {
-        client.activeFloorId = floor_id
-        sendTableState(client)
-      }
+    case 'floor_select':
+      handleFloorSelect(client, payload)
       break
-    }
-
-    case 'camera_focus': {
-      // DM one-time focus: snap every other client's display (floor,
-      // camera, zoom) to the dm's current view. Not a continuous follow.
-      if (client.mapRole !== 'dm') return
-      const { x, y, zoom, floor_id } = payload as { x: number; y: number; zoom: number; floor_id?: string }
-      if (typeof x !== 'number' || typeof y !== 'number' || typeof zoom !== 'number') return
-      const data = JSON.stringify({ type: 'camera_focus', payload: { x, y, zoom, floor_id } })
-      tables.get(client.tableId)?.forEach(c => {
-        if (c !== client && c.ws.readyState === WebSocket.OPEN) c.ws.send(data)
-      })
+    case 'camera_focus':
+      handleCameraFocus(client, payload)
       break
-    }
-
-    case 'measure_update': {
+    case 'measure_update':
       // DM-only: broadcast the dm's measurement to the other clients
-      if (client.mapRole !== 'dm') return
-      broadcast(client.tableId, raw, client)
+      if (client.mapRole === 'dm') broadcast(client.tableId, raw, client)
       break
-    }
-
     case 'music_control':
       handleMusicControl(client, payload)
       break
-
     case 'chat':
       broadcast(client.tableId, raw, client)
       break
-
     case 'ping':
       send(client, { type: 'pong', payload: {} })
       break
@@ -577,7 +630,11 @@ export function setupWebSocket(wss: WebSocketServer) {
     sendTableState(client)
     send(client, { type: 'music_state', payload: musicStatePayload(getMusicState(tableId)) })
 
-    ws.on('message', (data) => handleMessage(client, data.toString()))
+    ws.on('message', (data) => {
+      try { handleMessage(client, data.toString()) } catch (e) {
+        console.error('[ws] message handling failed:', e)
+      }
+    })
     ws.on('close', () => unregister(client))
     ws.on('error', () => { unregister(client); ws.close() })
 
