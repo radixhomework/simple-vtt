@@ -8,14 +8,18 @@ code. Codebase layout and rendering pipeline: `docs/ARCHITECTURE.md`.
 
 ## Commit policy
 
-- **Never commit or push unless the user explicitly asked for it.**
-  Finishing a task or passing tests is never consent to commit.
+- **Commit and push only on the user's explicit demand.** Finishing a
+  task or passing tests is never consent to commit.
+- **Sole exception — quality-check rounds**: when the user asks for a
+  quality check (or when the quality-fix loop below is running), the agent
+  is autonomous: it commits and pushes its fixes on its own so the fresh
+  analyses (Sonar, CodeQL) run, without asking each time.
 - If the user asks to hold for local testing ("do not commit until I test
   locally"), report "done, ready to test" and stop — don't ask again; wait
   for an explicit go.
 - Conventional-commit style, English (`feat:`, `fix:`, `refactor:`,
   `docs:` …), body bullets explaining the why. Feature work on `feat/*`
-  branches opened as PRs.
+  branches opened as PRs. Quality-fix iterations on the same branch/PR.
 - When the working tree contains files the agent did not create, inspect
   them and say so before staging everything.
 
@@ -43,6 +47,12 @@ implementation work done — inspect all three sources:
 
 Fix what was found, push, wait for the fresh analyses, then check all three
 sources again — repeating until everything is clean.
+
+**During these fix/verify rounds the agent is autonomous**: it commits and
+pushes each fix itself (this is the only case where committing without an
+explicit user demand is allowed — see Commit policy), within the
+quality-check scope only. It does not use that autonomy to commit anything
+unrelated to the findings.
 
 **Stop rule: 3 iterations maximum, autonomously.** After 3 fix/verify
 iterations, stop and report the remaining findings with what was tried;
@@ -115,3 +125,10 @@ directly.
 ## Repo-specific extras
 
 - Dependabot minor bumps are safe to merge.
+
+## Keeping this file honest
+
+Delete any section above that doesn't apply to this repository, and add
+repo-specific sections (stack conventions, build/test commands) below.
+Where this file and the org template (`radixhomework/default-template`)
+disagree, this repository's version prevails.
