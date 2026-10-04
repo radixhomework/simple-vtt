@@ -497,6 +497,14 @@ root.querySelector('#logout-btn')!.addEventListener('click', onLogout)
   }
 
   /** Page 2: user management (roles, password resets). */
+  /** `YYYY-MM-DD HH:mm` in server-local time, from an ISO 8601 string. */
+  function fmtDateTime(iso: string): string {
+    const d = new Date(iso)
+    if (isNaN(d.getTime())) return iso
+    const p = (n: number) => String(n).padStart(2, '0')
+    return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`
+  }
+
   async function renderUsersPage(page: HTMLElement) {
     const users = await api.listUsers()
     page.innerHTML = `
@@ -522,7 +530,7 @@ root.querySelector('#logout-btn')!.addEventListener('click', onLogout)
         </div>
         <table class="data-table">
           <thead>
-            <tr><th>Username</th><th>Role</th><th></th></tr>
+            <tr><th>Username</th><th>Role</th><th>Last connection</th><th></th></tr>
           </thead>
           <tbody>
             ${users.map(u => `
@@ -535,6 +543,7 @@ root.querySelector('#logout-btn')!.addEventListener('click', onLogout)
                     <option value="admin" ${u.role === 'admin' ? 'selected' : ''}>admin</option>
                   </select>`}
                 </td>
+                <td class="user-last-connection">${u.last_connection ? esc(fmtDateTime(u.last_connection)) : 'never'}</td>
                 <td class="row-actions">
                   <button class="btn btn-ghost btn-sm" data-reset-pass="${esc(u.username)}">Reset password</button>
                   ${u.username === user.username ? '' : `<button class="btn btn-danger btn-sm" data-del-user="${esc(u.username)}">Delete</button>`}

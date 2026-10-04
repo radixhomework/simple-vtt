@@ -39,6 +39,13 @@ authRouter.post('/auth/login', loginLimiter, (req, res) => {
   if (!hashOk && !envOk) { res.status(401).json({ error: 'invalid credentials' }); return }
 
   const out = row ?? { username: ADMIN_USER, role: 'admin' }
+  // Record the successful login (login-time only — failed attempts and
+  // WebSocket connections never touch this). The env-backdoor login of an
+  // account with no DB row has nothing to update.
+  if (row) {
+    db.prepare('UPDATE users SET last_connection=? WHERE username=?')
+      .run(new Date().toISOString(), row.username)
+  }
   const token = signToken({ username: out.username, role: out.role })
   res.json({ token, user: { username: out.username, role: out.role } })
 })
@@ -65,7 +72,7 @@ authRouter.get('/me', authMiddleware, (req, res) => {
 })
 
 authRouter.get('/users', authMiddleware, adminOnly, (_req, res) => {
-  const users = db.prepare('SELECT username, role FROM users').all()
+  const users = db.prepare('SELECT username, role, last_connection FROM users').all()
   res.json(users)
 })
 

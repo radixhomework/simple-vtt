@@ -174,6 +174,13 @@ if (!tokenCols.some(c => c.name === 'hidden')) {
   db.exec('ALTER TABLE tokens ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0')
 }
 
+// Last successful login per account (ISO 8601), shown in the admin Users
+// panel; restored pre-column backups get the column on startup
+const userCols = db.prepare('PRAGMA table_info(users)').all() as Array<{ name: string }>
+if (!userCols.some(c => c.name === 'last_connection')) {
+  db.exec('ALTER TABLE users ADD COLUMN last_connection TEXT')
+}
+
 // Migration: the standalone music table became the shared assets table
 // (kind='audio'); copy the rows then drop it.
 const musicTable = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='music'").get()

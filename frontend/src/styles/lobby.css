@@ -47,6 +47,7 @@
       text-transform: uppercase; letter-spacing: 0.05em; border-bottom: 1px solid var(--border);
     }
     .data-table td { padding: 9px 10px; border-bottom: 1px solid var(--border); }
+    .user-last-connection { color: var(--muted); white-space: nowrap; }
     .data-table tr:last-child td { border-bottom: none; }
     .data-table select, .data-table input[type=text] {
       padding: 5px 8px; background: var(--bg); border: 1px solid var(--border); border-radius: 6px;

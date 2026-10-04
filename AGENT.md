@@ -30,6 +30,9 @@ wait for the user's decision before running more iterations.
 - **Always wait for the user's explicit approval before committing or
   pushing** — never commit unprompted, even when the user asked for the fix
   itself.
+- The user may order a hold for local testing ("do not commit until I test
+  locally"): when implementation is done, report and stop — do not ask to
+  commit; wait for the user's explicit go.
 - Conventional-commit style, English (`feat:`, `fix:`, `refactor:`,
   `docs:` …), body bullets explaining the why.
 - Feature work happens on `feat/*` branches, opened as PRs; dependabot

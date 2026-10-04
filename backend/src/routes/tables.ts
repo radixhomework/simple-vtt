@@ -374,12 +374,15 @@ async function importUvttProps(
 
 
 // ── Map package export/import (single-map portability) ───────────────────────
-tablesRouter.get('/tables/:id/export', authMiddleware, (req, res) => {
+tablesRouter.get('/tables/:id/export', authMiddleware, async (req, res) => {
   if (!requireMapDM(req, res)) return
   const table = getTable(param(req, 'id'))
   if (!table) { res.status(404).json({ error: 'not found' }); return }
   try {
-    const buf = buildMapPackage(table.id, table.name)
+    // buildMapPackage awaits storage since the S3 driver — an un-awaited
+    // call let Express serialize the Promise to `{}` (regression caught by
+    // the add-user-last-connection roundtrip check)
+    const buf = await buildMapPackage(table.id, table.name)
     const safe = table.name.replace(/[^a-z0-9_-]+/gi, '_').slice(0, 40) || 'map'
     res.setHeader('Content-Type', 'application/zip')
     res.setHeader('Content-Disposition', `attachment; filename="simple-vtt-map-${safe}.zip"`)

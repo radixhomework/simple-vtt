@@ -5,6 +5,8 @@
 export interface User {
   username: string
   role: 'admin' | 'player'
+  /** ISO 8601 timestamp of the last successful login (admin list only). */
+  last_connection?: string | null
 }
 
 export interface Table {
