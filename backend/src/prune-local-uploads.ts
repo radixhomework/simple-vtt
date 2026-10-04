@@ -98,8 +98,8 @@ function deleteVerified(files: LocalFile[]): { deleted: number; failed: number }
   }
   walkDelete(uploadsDir)
   // Deepest first so parents empty out
-  const ordered = dirs.sort((a, b) => b.length - a.length)
-  for (const d of ordered) {
+  dirs.sort((a, b) => b.length - a.length)
+  for (const d of dirs) {
     try { fs.rmdirSync(d) } catch { /* non-empty or gone — fine */ }
   }
   return { deleted, failed }

@@ -147,6 +147,40 @@ function validateStagedDb(stagedDb: string): void {
   }
 }
 
+/** Extraction state shared across zip entries. */
+interface Staging {
+  stagedDb: string
+  stagedUploads: string
+  total: number
+  sawDb: boolean
+  sawManifest: boolean
+  driver: string | null
+}
+
+/** Stage one zip entry: the database at its root path, the manifest into
+ *  parsed state, blobs at their storage keys (only for local-driver
+ *  backups — an s3 backup is DB-only by construction); anything else is
+ *  drained. Returns nothing; mutates `st`. */
+async function stageOneEntry(e: ZipEntry, name: string, st: Staging): Promise<void> {
+  if (name === 'vtt.db') {
+    st.sawDb = true
+    st.total += await stageEntry(st.stagedDb, e)
+    return
+  }
+  if (name === 'manifest.json') {
+    const manifest = await readManifest(e)
+    st.driver = manifest.driver
+    st.sawManifest = true
+    return
+  }
+  if (st.driver !== 'local' && st.driver !== null) {
+    e.autodrain()
+    return
+  }
+  st.total += e.size ?? 0
+  await stageEntry(path.join(st.stagedUploads, name), e)
+}
+
 /** Extract + validate the staged archive. Returns the staged database and
  *  (when the backup carries blobs) staged uploads tree. Nothing existing is
  *  touched — everything lands under the staging dir; the caller writes the
@@ -155,12 +189,14 @@ async function extractAndValidate(zipPath: string): Promise<{ stagedDb: string; 
   await fs.promises.rm(extractDir, { recursive: true, force: true })
   fs.mkdirSync(extractDir, { recursive: true })
 
-  const stagedDb = path.join(extractDir, 'vtt.db')
-  const stagedUploads = path.join(extractDir, 'uploads')
-  let total = 0
-  let sawDb = false
-  let sawManifest = false
-  let manifestDriver: string | null = null
+  const st: Staging = {
+    stagedDb: path.join(extractDir, 'vtt.db'),
+    stagedUploads: path.join(extractDir, 'uploads'),
+    total: 0,
+    sawDb: false,
+    sawManifest: false,
+    driver: null,
+  }
 
   const zip = fs.createReadStream(zipPath).pipe(unzipper.Parse({ forceStream: true }))
   for await (const entry of zip) {
@@ -169,30 +205,15 @@ async function extractAndValidate(zipPath: string): Promise<{ stagedDb: string; 
     const name = e.path.replace(/\\/g, '/')
     if (name.includes('..') || path.isAbsolute(name)) { e.autodrain(); continue }
     if (e.size !== undefined && e.size > MAX_UNCOMPRESSED_BYTES) throw new Error(`entry too large: ${name}`)
-
-    if (name === 'vtt.db') {
-      sawDb = true
-      total += await stageEntry(stagedDb, e)
-    } else if (name === 'manifest.json') {
-      const manifest = await readManifest(e)
-      manifestDriver = manifest.driver
-      sawManifest = true
-    } else if (manifestDriver === 'local' || manifestDriver === null) {
-      // Blobs sit at their storage keys; only accepted for local-driver
-      // backups (an s3 backup is DB-only by construction)
-      total += e.size ?? 0
-      await stageEntry(path.join(stagedUploads, name), e)
-    } else {
-      e.autodrain()
-    }
-    if (total > MAX_UNCOMPRESSED_BYTES) throw new Error('total uncompressed size out of bounds')
+    await stageOneEntry(e, name, st)
+    if (st.total > MAX_UNCOMPRESSED_BYTES) throw new Error('total uncompressed size out of bounds')
   }
 
-  if (!sawDb || !sawManifest) throw new Error('archive is missing vtt.db or manifest.json')
-  validateStagedDb(stagedDb)
+  if (!st.sawDb || !st.sawManifest) throw new Error('archive is missing vtt.db or manifest.json')
+  validateStagedDb(st.stagedDb)
 
-  const hasBlobs = fs.existsSync(stagedUploads)
-  return { stagedDb, stagedUploads: hasBlobs ? stagedUploads : null }
+  const hasBlobs = fs.existsSync(st.stagedUploads)
+  return { stagedDb: st.stagedDb, stagedUploads: hasBlobs ? st.stagedUploads : null }
 }
 
 setupRouter.post('/setup/restore', loginLimiter, async (req: Request, res: Response) => {
