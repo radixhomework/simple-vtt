@@ -22,5 +22,5 @@
 
 ## 4. End-to-end + docs
 
-- [ ] 4.1 Exercise the migration flow end to end: take a local-driver backup on instance A → deploy a fresh instance B → restore through the wizard → log in with archived credentials and confirm maps/assets serve; repeat with an s3-driver DB-only backup against a preserved MinIO bucket
+- [x] 4.1 Exercise the migration flow end to end: take a local-driver backup on instance A → deploy a fresh instance B → restore through the wizard → log in with archived credentials and confirm maps/assets serve. Verified live (wizard UI, restart swap, archived login). The s3-driver repeat against a preserved MinIO bucket is **closed as won't-do** (accepted by the user, 2026-10-04): the DB-only s3-driver restore was verified against a real SDK client with an S3 stub; the live-MinIO combination is re-checked at deploy time.
 - [x] 4.2 Document the first-start wizard and backup/restore in the README (per-driver semantics: local = full archive, S3 = DB + separately backed-up bucket; set up fresh deployments promptly) and confirm `openspec validate` passes for the change
