@@ -1,20 +1,43 @@
-# AGENT.md — working rules for coding agents
+# AGENTS.md — working rules for coding agents
 
-Read [`product.md`](product.md) for what Simple VTT is and
+Rules for AI agents (and anyone acting as one) working in this repository.
+Project-specific details live in the repo's own documentation — read
+[`product.md`](product.md) for what Simple VTT is and
 [`architecture.md`](architecture.md) for how it is built before touching
-code.
+code. Codebase layout and rendering pipeline: `docs/ARCHITECTURE.md`.
 
-## Quality check (when the user asks for a "quality check")
+## Commit policy
 
-When asked to run or check quality on a branch or PR, always inspect all
-three sources before reporting or fixing:
+- **Never commit or push unless the user explicitly asked for it.**
+  Finishing a task or passing tests is never consent to commit.
+- If the user asks to hold for local testing ("do not commit until I test
+  locally"), report "done, ready to test" and stop — don't ask again; wait
+  for an explicit go.
+- Conventional-commit style, English (`feat:`, `fix:`, `refactor:`,
+  `docs:` …), body bullets explaining the why. Feature work on `feat/*`
+  branches opened as PRs.
+- When the working tree contains files the agent did not create, inspect
+  them and say so before staging everything.
 
-1. **SonarCloud analysis** — issues on new code and the quality-gate status
-   for the PR.
-2. **CodeQL analysis** — code-scanning alerts and review comments posted by
+## Agent-local files are never committed
+
+- **Never stage or commit agent-specific directories and files**
+  (`.zcode/`, `.claude/`, `.agents/`, `.cursor/`, `.aider*`, and the like).
+  They are machine-local configuration, not project content. The repo
+  `.gitignore` covers them; if it doesn't yet, propose adding it rather
+  than committing these paths.
+
+## Quality gates
+
+When asked for a quality check on a branch or PR — and before calling
+implementation work done — inspect all three sources:
+
+1. **SonarCloud / SonarQube** — issues on new code and the quality-gate
+   status for the PR.
+2. **CodeQL** — code-scanning alerts and review comments posted by
    github-advanced-security.
-3. **PR comments** — bot and human comments on the pull request
-   (conversation comments and inline review comments).
+3. **PR comments** — bot and human comments (conversation comments and
+   inline review comments).
 
 ## Iteration policy
 
@@ -24,21 +47,6 @@ sources again — repeating until everything is clean.
 **Stop rule: 3 iterations maximum, autonomously.** After 3 fix/verify
 iterations, stop and report the remaining findings with what was tried;
 wait for the user's decision before running more iterations.
-
-## Commits & branches
-
-- **Always wait for the user's explicit approval before committing or
-  pushing** — never commit unprompted, even when the user asked for the fix
-  itself.
-- The user may order a hold for local testing ("do not commit until I test
-  locally"): when implementation is done, report and stop — do not ask to
-  commit; wait for the user's explicit go.
-- Conventional-commit style, English (`feat:`, `fix:`, `refactor:`,
-  `docs:` …), body bullets explaining the why.
-- Feature work happens on `feat/*` branches, opened as PRs; dependabot
-  minor bumps are safe to merge.
-- When the working tree contains files the agent did not create, inspect
-  them and say so before staging everything.
 
 ## Testing stance
 
@@ -51,17 +59,43 @@ wait for the user's decision before running more iterations.
 - When a request says "do less tests and go on with the task", move
   forward — don't stall on ceremony.
 
-## OpenSpec workflow
+## Workflow (OpenSpec)
 
 - Feature work goes through the `opsx` commands: `/opsx:propose` (planning
   artifacts only — never implement in the same turn), `/opsx:apply`
   (implement task-by-task, mark checkboxes as you go), `/opsx:archive`
-  (completed changes move to `openspec/changes/archive/<date>-<name>/`).
+  (completed changes move to `openspec/changes/archive/<date>-<name>/`,
+  deltas synced into the main specs).
 - `/opsx:update` revises existing planning artifacts coherently when the
   user changes direction mid-plan (e.g. restore moved from the admin panel
   to a first-start wizard).
-- Specs describe observable behavior (WHEN/THEN scenarios); design.md
-  records decisions *and rejected alternatives* with rationale.
+- Specs describe observable behavior (WHEN/THEN scenarios) — they are the
+  acceptance criteria; `design.md` records decisions *and rejected
+  alternatives* with rationale.
+- **Documentation is part of the workflow**: planning artifacts, spec
+  syncs, and the `product.md` / `architecture.md` updates implied by a
+  change are maintained as the change progresses, not deferred.
+  `/opsx:archive` happens only once the docs reflect the implemented
+  behavior.
+
+## Product & architecture documentation
+
+`product.md` and `architecture.md` are mandatory and kept up to date as
+part of development, not as an afterthought:
+
+- Maintain them continuously: any feature, refactor, or infrastructure
+  change that alters behavior, structure, or deployment includes the
+  corresponding doc update — same change, same commit series.
+- When starting a task, read both first; if the code and the docs
+  disagree, surface the discrepancy instead of silently trusting either.
+
+## Documentation edits need approval
+
+`AGENTS.md`, `product.md`, and `architecture.md` are never edited silently
+beyond the upkeep duty above: substantive changes (new decisions, scope
+changes, removed sections) are proposed to the user and applied after
+approval. Routine sync of facts an approved change already implies goes in
+directly.
 
 ## Code conventions that came out of review rounds
 
@@ -77,3 +111,7 @@ wait for the user's decision before running more iterations.
   (e.g. sequential storage awaits).
 - User-facing errors must reach the user: wait screens, error text, and
   auto-recovery (poll + redirect) for long operations.
+
+## Repo-specific extras
+
+- Dependabot minor bumps are safe to merge.
