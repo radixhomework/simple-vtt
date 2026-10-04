@@ -58,7 +58,7 @@ export function renderSetup(root: HTMLElement, onReady: (user: User | null) => v
   vm.mode.subscribe(mode => show(mode))
   vm.progress.subscribe(fraction => {
     const pct = Math.round(fraction * 100)
-    $('#setup-progress-bar').style.width = `${pct}%`
+    $('#setup-progress').setAttribute('value', String(pct))
     $('#setup-progress-label').textContent = `${pct}%`
   })
   vm.waitText.subscribe(text => { $('#setup-wait-text').textContent = text })

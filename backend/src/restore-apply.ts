@@ -8,8 +8,8 @@
  * removed. Retired files are recorded so the boot can clean them up once
  * the app is demonstrably healthy.
  */
-import fs from 'fs'
-import path from 'path'
+import fs from 'node:fs'
+import path from 'node:path'
 
 const dbPath = process.env.DB_PATH || path.join(process.cwd(), 'vtt.db')
 const markerPath = `${dbPath}.restore.json`
@@ -20,6 +20,39 @@ const stagingDir = path.join(path.dirname(dbPath), 'vtt.db.restore-staging')
 let retiredPaths: string[] = []
 export function retiredRestorePaths(): string[] {
   return retiredPaths
+}
+
+/** Retire the current database (plus its WAL/SHM leftovers) and move the
+ *  staged one in — WAL files of the old database must not bleed into the
+ *  new one. */
+function swapDatabase(stagedDb: string, stamp: string): void {
+  if (!fs.existsSync(stagedDb)) return
+  if (fs.existsSync(dbPath)) {
+    const retiredDb = `${dbPath}.retired-${stamp}`
+    fs.renameSync(dbPath, retiredDb)
+    retiredPaths.push(retiredDb)
+  }
+  for (const suffix of ['-wal', '-shm']) {
+    const f = dbPath + suffix
+    if (fs.existsSync(f)) {
+      const retired = f + `.retired-${stamp}`
+      fs.renameSync(f, retired)
+      retiredPaths.push(retired)
+    }
+  }
+  fs.renameSync(stagedDb, dbPath)
+}
+
+/** Retire the current uploads tree and move the staged one in. */
+function swapUploads(stagedUploads: string, stamp: string): void {
+  if (!fs.existsSync(stagedUploads)) return
+  const uploadsDir = process.env.UPLOADS_DIR || path.join(process.cwd(), 'uploads')
+  if (fs.existsSync(uploadsDir)) {
+    const retiredUploads = `${uploadsDir}.retired-${stamp}`
+    fs.renameSync(uploadsDir, retiredUploads)
+    retiredPaths.push(retiredUploads)
+  }
+  fs.renameSync(stagedUploads, uploadsDir)
 }
 
 export function applyPendingRestore(): void {
@@ -34,32 +67,8 @@ export function applyPendingRestore(): void {
 
   const stamp = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14)
   try {
-    if (plan.db && fs.existsSync(plan.db)) {
-      if (fs.existsSync(dbPath)) {
-        const retiredDb = `${dbPath}.retired-${stamp}`
-        fs.renameSync(dbPath, retiredDb)
-        retiredPaths.push(retiredDb)
-      }
-      // WAL leftovers of the old database must not bleed into the new one
-      for (const suffix of ['-wal', '-shm']) {
-        const f = dbPath + suffix
-        if (fs.existsSync(f)) {
-          const retired = f + `.retired-${stamp}`
-          fs.renameSync(f, retired)
-          retiredPaths.push(retired)
-        }
-      }
-      fs.renameSync(plan.db, dbPath)
-    }
-    if (plan.uploads && fs.existsSync(plan.uploads)) {
-      const uploadsDir = process.env.UPLOADS_DIR || path.join(process.cwd(), 'uploads')
-      if (fs.existsSync(uploadsDir)) {
-        const retiredUploads = `${uploadsDir}.retired-${stamp}`
-        fs.renameSync(uploadsDir, retiredUploads)
-        retiredPaths.push(retiredUploads)
-      }
-      fs.renameSync(plan.uploads, uploadsDir)
-    }
+    swapDatabase(plan.db ?? '', stamp)
+    swapUploads(plan.uploads ?? '', stamp)
     fs.unlinkSync(markerPath)
     // Whatever is left in staging (the original zip, an empty extracted
     // dir) is consumed state — remove it

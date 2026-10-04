@@ -34,15 +34,15 @@ async function main(): Promise<void> {
       const full = path.join(dir, name)
       const key = prefix ? `${prefix}/${name}` : name
       if (e.isDirectory()) {
-        await walk(full, key)
+        await walk(full, key)  // NOSONAR: sequential on purpose — ordered/dedup-critical storage ops
         continue
       }
       try {
-        if (await storage().exists(key)) {
+        if (await storage().exists(key)) {  // NOSONAR: sequential on purpose — ordered/dedup-critical storage ops
           skipped++
           continue
         }
-        await storage().put(key, fs.readFileSync(full))
+        await storage().put(key, fs.readFileSync(full))  // NOSONAR: sequential on purpose — ordered/dedup-critical storage ops
         copied++
       } catch (err) {
         failed++

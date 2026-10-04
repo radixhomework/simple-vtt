@@ -24,7 +24,7 @@ async function main(): Promise<void> {
   const [{ default: app }, { setupWebSocket }, http, { WebSocketServer }] = await Promise.all([
     import('./app'),
     import('./hub'),
-    import('http'),
+    import('node:http'),
     import('ws'),
   ])
 

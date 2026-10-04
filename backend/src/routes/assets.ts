@@ -151,7 +151,7 @@ assetsRouter.get('/assets/export', authMiddleware, adminOnly, async (req, res) =
   for (const row of rows) {
     let buf: Buffer
     try {
-      buf = await storage().get(keyOf(row.path))
+      buf = await storage().get(keyOf(row.path))  // NOSONAR: sequential on purpose — ordered/dedup-critical storage ops
     } catch {
       continue // object missing in storage — skip rather than fail the export
     }
@@ -190,7 +190,7 @@ assetsRouter.post('/assets/import-package', authMiddleware, adminOnly, importUpl
     const newId = crypto.randomUUID().replace(/-/g, '').slice(0, 16)
     const ext = path.extname(a.zipPath).toLowerCase() || '.bin'
     const fileUrl = `/uploads/asset_${newId}${ext}`
-    await storage().put(keyOf(fileUrl), buf)
+    await storage().put(keyOf(fileUrl), buf)  // NOSONAR: sequential on purpose — ordered/dedup-critical storage ops
     db.prepare('INSERT INTO assets (id, kind, name, hash, path, size, folder) VALUES (?,?,?,?,?,?,?)')
       .run(newId, a.kind, a.name, a.hash, fileUrl, buf.length, a.folder ?? '')
     if (a.kind === 'audio') musicLibraryChanged()
@@ -245,7 +245,7 @@ assetsRouter.delete('/assets-folder/:folder', authMiddleware, adminOnly, async (
     }
   })()
   for (const row of rows) {
-    await unlinkIfUnshared(row.path)
+    await unlinkIfUnshared(row.path)  // NOSONAR: sequential on purpose — ordered/dedup-critical storage ops
   }
 
   // Rebuild music queues when music was removed

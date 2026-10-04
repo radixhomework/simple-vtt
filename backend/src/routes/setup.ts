@@ -8,8 +8,8 @@
  * login, and hard-closed once the marker exists.
  */
 import { Router, Request, Response } from 'express'
-import fs from 'fs'
-import path from 'path'
+import fs from 'node:fs'
+import path from 'node:path'
 import bcrypt from 'bcryptjs'
 import Database from 'better-sqlite3'
 import unzipper from 'unzipper'
@@ -98,6 +98,55 @@ function stageUpload(req: Request): Promise<{ ok: true; zipPath: string } | { ok
 
 const REQUIRED_TABLES = ['users', 'tables', 'floors', 'settings']
 
+type ZipEntry = unzipper.Entry & { path: string; type: string; size?: number }
+
+/** Consume one zip entry fully, writing it to `dest` with backpressure and
+ *  a per-entry uncompressed-size cap. */
+async function stageEntry(dest: string, e: ZipEntry): Promise<number> {
+  await fs.promises.mkdir(path.dirname(dest), { recursive: true })
+  const out = fs.createWriteStream(dest)
+  let written = 0
+  for await (const c of e) {
+    written += (c as Buffer).length
+    if (written > MAX_UNCOMPRESSED_BYTES) throw new Error(`entry too large: ${e.path}`)
+    if (!out.write(c as Buffer)) await new Promise<void>(r => out.once('drain', () => r()))
+  }
+  out.end()
+  return written
+}
+
+/** Read + parse the manifest entry; also asserts it is our backup kind. */
+async function readManifest(e: ZipEntry): Promise<{ driver: string | null }> {
+  const chunks: Buffer[] = []
+  for await (const c of e) chunks.push(c as Buffer)
+  try {
+    const m = JSON.parse(Buffer.concat(chunks).toString('utf8')) as { kind?: string; driver?: string }
+    if (m.kind !== 'simple-vtt-backup') throw new Error('not a simple-vtt backup')
+    return { driver: m.driver ?? null }
+  } catch {
+    throw new Error('invalid manifest.json')
+  }
+}
+
+/** The staged database must open and carry the core tables before it can
+ *  replace anything. Setup is marked completed inside it — the flag
+ *  travels with the restored state. */
+function validateStagedDb(stagedDb: string): void {
+  const staged = new Database(stagedDb)
+  try {
+    const names = (staged.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as Array<{ name: string }>)
+      .map(r => r.name)
+    const present = new Set(names)
+    for (const t of REQUIRED_TABLES) {
+      if (!present.has(t)) throw new Error(`restored database is missing table: ${t}`)
+    }
+    staged.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('setup_completed', ?)")
+      .run(new Date().toISOString())
+  } finally {
+    staged.close()
+  }
+}
+
 /** Extract + validate the staged archive. Returns the staged database and
  *  (when the backup carries blobs) staged uploads tree. Nothing existing is
  *  touched — everything lands under the staging dir; the caller writes the
@@ -115,64 +164,32 @@ async function extractAndValidate(zipPath: string): Promise<{ stagedDb: string; 
 
   const zip = fs.createReadStream(zipPath).pipe(unzipper.Parse({ forceStream: true }))
   for await (const entry of zip) {
-    const e = entry as unzipper.Entry & { path: string; type: string; size?: number }
+    const e = entry as ZipEntry
     if (e.type !== 'File') { e.autodrain(); continue }
     const name = e.path.replace(/\\/g, '/')
     if (name.includes('..') || path.isAbsolute(name)) { e.autodrain(); continue }
     if (e.size !== undefined && e.size > MAX_UNCOMPRESSED_BYTES) throw new Error(`entry too large: ${name}`)
 
-    let dest: string | null = null
-    if (name === 'vtt.db') { dest = stagedDb; sawDb = true }
-    else if (name === 'manifest.json') {
-      const chunks: Buffer[] = []
-      for await (const c of e) chunks.push(c as Buffer)
-      try {
-        const m = JSON.parse(Buffer.concat(chunks).toString('utf8')) as { kind?: string; driver?: string }
-        if (m.kind !== 'simple-vtt-backup') throw new Error('not a simple-vtt backup')
-        manifestDriver = m.driver ?? null
-      } catch { throw new Error('invalid manifest.json') }
+    if (name === 'vtt.db') {
+      sawDb = true
+      total += await stageEntry(stagedDb, e)
+    } else if (name === 'manifest.json') {
+      const manifest = await readManifest(e)
+      manifestDriver = manifest.driver
       sawManifest = true
-      continue
     } else if (manifestDriver === 'local' || manifestDriver === null) {
       // Blobs sit at their storage keys; only accepted for local-driver
       // backups (an s3 backup is DB-only by construction)
-      dest = path.join(stagedUploads, name)
-    }
-
-    if (dest) {
       total += e.size ?? 0
-      if (total > MAX_UNCOMPRESSED_BYTES) throw new Error('total uncompressed size out of bounds')
-      await fs.promises.mkdir(path.dirname(dest), { recursive: true })
-      const out = fs.createWriteStream(dest)
-      let written = 0
-      for await (const c of e) {
-        written += (c as Buffer).length
-        if (written > MAX_UNCOMPRESSED_BYTES) throw new Error(`entry too large: ${name}`)
-        if (!out.write(c as Buffer)) await new Promise<void>(r => out.once('drain', () => r()))
-      }
-      out.end()
+      await stageEntry(path.join(stagedUploads, name), e)
     } else {
       e.autodrain()
     }
+    if (total > MAX_UNCOMPRESSED_BYTES) throw new Error('total uncompressed size out of bounds')
   }
 
   if (!sawDb || !sawManifest) throw new Error('archive is missing vtt.db or manifest.json')
-
-  // The staged database must open and carry the core tables before it can
-  // replace anything. Setup is marked completed inside it — the flag
-  // travels with the restored state.
-  const staged = new Database(stagedDb)
-  try {
-    const names = (staged.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as Array<{ name: string }>)
-      .map(r => r.name)
-    for (const t of REQUIRED_TABLES) {
-      if (!names.includes(t)) throw new Error(`restored database is missing table: ${t}`)
-    }
-    staged.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('setup_completed', ?)")
-      .run(new Date().toISOString())
-  } finally {
-    staged.close()
-  }
+  validateStagedDb(stagedDb)
 
   const hasBlobs = fs.existsSync(stagedUploads)
   return { stagedDb, stagedUploads: hasBlobs ? stagedUploads : null }

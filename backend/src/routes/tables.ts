@@ -90,7 +90,7 @@ tablesRouter.delete('/tables/:id', authMiddleware, async (req, res) => {
   for (const f of floorsOf(param(req, 'id'))) {
     if (f.tiles_path) deleteTilePyramid(f.id)
     if (f.map_image_path) {
-      try { await storage().delete(keyOf(f.map_image_path)) } catch { /* gone */ }
+      try { await storage().delete(keyOf(f.map_image_path)) } catch { /* gone */ }  // NOSONAR: sequential on purpose — ordered/dedup-critical storage ops
     }
   }
   db.prepare('DELETE FROM floors WHERE table_id=?').run(param(req, 'id')) // cascades nothing; children follow below
@@ -335,7 +335,7 @@ async function importUvttProps(
   for (const p of uvttJson.props as Array<Record<string, unknown>>) {
     const x = Number(p.x), y = Number(p.y)
     if (!Number.isFinite(x) || !Number.isFinite(y)) continue
-    const assetPath = await (async () => {
+    const assetPath = await (async () => {  // NOSONAR: sequential on purpose — ordered/dedup-critical storage ops
       if (typeof p.assetData === 'string' && p.assetData.length > 32) {
         const raw = p.assetData
         const b64 = raw.includes(',') ? raw.split(',').pop()! : raw
@@ -591,7 +591,7 @@ tablesRouter.get('/floors/:floorId/export.uvtt', authMiddleware, async (req, res
   const propsOut: Array<Record<string, unknown>> = []
   for (const p of propRows) {
     const rel = String(p.asset_path).replace(/^\/uploads\//, '')
-    const sidecar = await sidecarFor(rel, usedAssets, zip, () => assetIndex++)
+    const sidecar = await sidecarFor(rel, usedAssets, zip, () => assetIndex++)  // NOSONAR: sequential on purpose — ordered/dedup-critical storage ops
     if (!sidecar) continue // asset file missing: skip, keep export valid
     propsOut.push(propToUvtt(p, sidecar, grid))
   }

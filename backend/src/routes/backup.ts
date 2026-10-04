@@ -6,12 +6,11 @@
  * references resolve against the bucket, which is backed up externally.
  */
 import { Router } from 'express'
-import fs from 'fs'
-import path from 'path'
+import fs from 'node:fs'
+import path from 'node:path'
 import archiver from 'archiver'
 import { db } from '../db'
 import { authMiddleware, adminOnly } from '../auth'
-import { storage } from '../storage'
 
 export const backupRouter = Router()
 

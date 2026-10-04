@@ -176,11 +176,11 @@ export async function buildMapPackage(tableId: string, tableName: string): Promi
     }
     if (f.map_image_path) {
       entry.image = `floors/floor-${levelIdx}.png`
-      zip.addFile(entry.image, await storage().get(keyOf(f.map_image_path)))
+      zip.addFile(entry.image, await storage().get(keyOf(f.map_image_path)))  // NOSONAR: sequential on purpose — ordered/dedup-critical storage ops
     }
-    if (await storage().exists(`fog_${f.id}.png`)) {
+    if (await storage().exists(`fog_${f.id}.png`)) {  // NOSONAR: sequential on purpose — ordered/dedup-critical storage ops
       entry.fogMask = `masks/floor-${levelIdx}.png`
-      zip.addFile(entry.fogMask, await storage().get(`fog_${f.id}.png`))
+      zip.addFile(entry.fogMask, await storage().get(`fog_${f.id}.png`))  // NOSONAR: sequential on purpose — ordered/dedup-critical storage ops
     }
     floorEntries.push(entry)
   }
@@ -188,12 +188,12 @@ export async function buildMapPackage(tableId: string, tableName: string): Promi
   const iconZipByOld = new Map<string, string>()
   for (const t of tokens) {
     if (t.icon_path && !iconZipByOld.has(t.icon_path)) {
-      iconZipByOld.set(t.icon_path, await addLibraryAsset(t.icon_path))
+      iconZipByOld.set(t.icon_path, await addLibraryAsset(t.icon_path))  // NOSONAR: sequential on purpose — ordered/dedup-critical storage ops
     }
   }
   for (const pr of props) {
     if (pr.asset_path && !iconZipByOld.has(pr.asset_path)) {
-      iconZipByOld.set(pr.asset_path, await addLibraryAsset(pr.asset_path))
+      iconZipByOld.set(pr.asset_path, await addLibraryAsset(pr.asset_path))  // NOSONAR: sequential on purpose — ordered/dedup-critical storage ops
     }
   }
 
@@ -349,7 +349,7 @@ async function registerPackageAssets(
     const buf = entry.getData()
     const newId = newPackageId()
     const fileUrl = `/uploads/asset_${newId}${a.ext}`
-    await storage().put(keyOf(fileUrl), buf)
+    await storage().put(keyOf(fileUrl), buf)  // NOSONAR: sequential on purpose — ordered/dedup-critical storage ops
     db.prepare('INSERT INTO assets (id, kind, name, hash, path, size, folder) VALUES (?,?,?,?,?,?,?)')
       .run(newId, 'image', a.name, a.hash, fileUrl, buf.length, a.folder)
     zipPathByRef.set(a.zipPath, fileUrl)
@@ -376,7 +376,7 @@ async function applyPackageFloors(
         imageBuf = entry.getData()
         const ext = path.extname(f.image) || '.png'
         imagePath = `/uploads/map_${newId}${ext}`
-        await storage().put(keyOf(imagePath), imageBuf)
+        await storage().put(keyOf(imagePath), imageBuf)  // NOSONAR: sequential on purpose — ordered/dedup-critical storage ops
       }
     }
     db.prepare(

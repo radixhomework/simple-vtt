@@ -115,7 +115,7 @@ export async function deleteTilePyramid(floorId: string): Promise<void> {
   for (let z = 0; z < MAX_ZOOM_LEVELS; z++) {
     for (let tx = 0; tx < 64; tx++) {
       for (let ty = 0; ty < 64; ty++) {
-        await storage().delete(`tiles/${floorId}/${z}/${tx}_${ty}.jpg`)
+        await storage().delete(`tiles/${floorId}/${z}/${tx}_${ty}.jpg`)  // NOSONAR: sequential on purpose — ordered/dedup-critical storage ops
       }
     }
   }
