@@ -30,7 +30,7 @@
     "@types/express": "^5.0.6",
     "@types/jsonwebtoken": "^9.0.10",
     "@types/multer": "^2.2.0",
-    "@types/node": "^22.19.0",
+    "@types/node": "^26.6.3",
     "@types/unzipper": "^0.10.11",
     "@types/ws": "^8.18.1",
     "tsx": "^4.23.12",
