@@ -30,3 +30,6 @@ Thumbs.db
 
 ## Built frontend (Docker build produces it)
 backend/public/
+
+## Local tooling (agent commands/skills)
+.zcode/
