@@ -1,3 +1,9 @@
+## Purpose
+
+Make account activity visible to administrators: record when each
+account last successfully logged in and show it in the admin Users
+panel, so stale or abandoned accounts are identifiable at a glance.
+
 ## Requirements
 
 ### Requirement: Last connection recording

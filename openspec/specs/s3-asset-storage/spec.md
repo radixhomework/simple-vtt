@@ -1,3 +1,10 @@
+## Purpose
+
+Store application blobs (map images, assets, fog masks, tile pyramids)
+behind a pluggable storage abstraction — local filesystem or any
+S3-compatible endpoint — selected by configuration, so deployments can
+choose where their data lives without changing the database format.
+
 ## Requirements
 
 ### Requirement: Storage driver selection
