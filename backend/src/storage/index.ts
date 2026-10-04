@@ -131,3 +131,38 @@ export function storage(): StorageDriver {
 export function keyOf(urlPath: string): string {
   return urlPath.replace(/^\/uploads\//, '')
 }
+
+/**
+ * Fail-fast startup check: validate the storage configuration and verify it
+ * actually works (local: uploads dir creatable+writable; s3: reachable
+ * endpoint + listable bucket) BEFORE the app starts serving. A misconfigured
+ * deployment must crash at boot with a clear message, not limp along and
+ * fail on every request.
+ */
+export async function assertStorageReady(): Promise<void> {
+  const driver = (process.env.STORAGE_DRIVER || 'local').trim().toLowerCase()
+  if (driver !== 'local' && driver !== 's3') {
+    throw new Error(`STORAGE_DRIVER must be "local" or "s3" (got "${process.env.STORAGE_DRIVER}")`)
+  }
+  const instance = storage()
+
+  if (instance instanceof LocalStorageDriver) {
+    const root = process.env.UPLOADS_DIR || path.join(process.cwd(), 'uploads')
+    const probe = path.join(root, `.write-probe-${Date.now()}`)
+    fs.mkdirSync(root, { recursive: true })
+    fs.writeFileSync(probe, 'ok')
+    fs.unlinkSync(probe)
+    return
+  }
+
+  // s3: the endpoint URL was validated by the constructor; here verify the
+  // credentials and the bucket with a cheap existence probe — a working
+  // bucket answers "false" for a missing key, while bad credentials,
+  // endpoint or a missing bucket throw
+  const bucket = process.env.S3_BUCKET || 'simple-vtt'
+  await instance.exists('startup-probe-must-not-exist').catch(err => {
+    throw new Error(
+      `S3 storage not usable (endpoint=${process.env.S3_ENDPOINT}, bucket=${bucket}): ${(err as Error).message}`,
+    )
+  })
+}

@@ -24,6 +24,30 @@ bucket itself must be backed up with your object store's tooling
 (`mc mirror`, lifecycle rules, …). Keeping the bucket across deployments
 means a database-only backup restores a fully working instance.
 
+## Migrating local blobs to S3 (and reclaiming the disk)
+
+The one-time migration copies every blob from the local uploads tree into
+the bucket, leaving the local copies in place as a fallback:
+
+```bash
+docker compose exec app node dist/migrate-to-s3.js
+```
+
+Once the app runs with `STORAGE_DRIVER=s3` and you have confirmed images
+and tiles load, reclaim the local space with the cleanup command:
+
+```bash
+# Dry run (default): verifies every local blob exists in the bucket and
+# reports what would be deleted — count and total size
+docker compose exec app node dist/prune-local-uploads.js
+
+# Delete the verified local copies (database is never touched)
+docker compose exec app node dist/prune-local-uploads.js --delete
+```
+
+The cleanup refuses to run unless `STORAGE_DRIVER=s3`, and aborts without
+deleting anything if even one object is missing from the bucket.
+
 ## Restoring on a fresh deployment
 
 Restore happens through the **first-start setup wizard**: a brand-new
