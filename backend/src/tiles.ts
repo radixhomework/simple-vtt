@@ -21,6 +21,7 @@ export const TILE_SIZE = 256
 export const MAX_ZOOM_LEVELS = 8
 
 const uploadsDir = () => process.env.UPLOADS_DIR || path.join(process.cwd(), 'uploads')
+import { storage } from './storage'
 
 /** Directory holding the pyramid for a floor. */
 export function tilesDirFor(floorId: string): string {
@@ -86,14 +87,38 @@ export async function buildTilePyramid(floorId: string, imageBuffer: Buffer): Pr
     levelH = Math.max(1, Math.floor(levelH / 2))
   }
 
-  // Atomic swap: remove the previous pyramid, move the new one in
+  // Push the built tree into the active storage driver, then drop the
+  // local staging copy. Serving always goes through the driver, so both
+  // drivers behave identically from the client's point of view.
   fs.rmSync(finalDir, { recursive: true, force: true })
-  fs.renameSync(tmpDir, finalDir)
-  return levels
+  async function walk(dir: string, prefix: string): Promise<void> {
+    const putAll: Array<Promise<void>> = []
+    for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+      const name = String(e.name)
+      const full = path.join(dir, name)
+      const key = prefix ? `${prefix}/${name}` : name
+      if (e.isDirectory()) putAll.push(walk(full, key))
+      else putAll.push(storage().put(key, fs.readFileSync(full)))
+    }
+    return Promise.all(putAll).then(() => {})
+  }
+  return walk(tmpDir, `tiles/${floorId}`).then(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true })
+    return levels
+  })
 }
 
 /** Remove a floor's entire pyramid. */
-export function deleteTilePyramid(floorId: string): void {
+export async function deleteTilePyramid(floorId: string): Promise<void> {
+  // Object stores have no directory delete: the pyramid layout is fixed
+  // (zoom z, tile tx_ty), so enumerate the same grid and delete each key.
+  for (let z = 0; z < MAX_ZOOM_LEVELS; z++) {
+    for (let tx = 0; tx < 64; tx++) {
+      for (let ty = 0; ty < 64; ty++) {
+        await storage().delete(`tiles/${floorId}/${z}/${tx}_${ty}.jpg`)  // NOSONAR: sequential on purpose — ordered/dedup-critical storage ops
+      }
+    }
+  }
   fs.rmSync(tilesDirFor(floorId), { recursive: true, force: true })
 }
 

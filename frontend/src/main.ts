@@ -6,6 +6,7 @@
  */
 import { api } from './api/client'
 import { renderLogin } from './pages/login'
+import { renderSetup } from './pages/setup'
 import { renderVtt } from './pages/vtt'
 import { renderMap } from './pages/map'
 import type { User, Table } from './types'
@@ -50,6 +51,16 @@ function currentPath() {
   return location.pathname
 }
 
+/** Straight to the login page (setup already completed or unreachable). */
+function renderLoginRoute(root: HTMLElement) {
+  push('/login')
+  renderLogin(root, (user) => {
+    state.user = user
+    push('/vtt')
+    route(root)
+  })
+}
+
 function push(path: string) {
   if (currentPath() !== path) history.pushState(null, '', path)
 }
@@ -57,15 +68,21 @@ function push(path: string) {
 function route(root: HTMLElement) {
   const path = currentPath()
 
-  // Not logged in → always go to /login
+  // Not logged in → setup wizard on first start, otherwise /login
   if (!state.user) {
     unmountCurrentPage()
-    push('/login')
-    renderLogin(root, (user) => {
-      state.user = user
-      push('/vtt')
-      route(root)
-    })
+    // First start: setup is incomplete → the wizard replaces login
+    api.setupStatus().then(status => {
+      if (!status.completed) {
+        renderSetup(root, (user) => {
+          state.user = user
+          push('/vtt')
+          route(root)
+        })
+        return
+      }
+      renderLoginRoute(root)
+    }).catch(() => renderLoginRoute(root))
     return
   }
 

@@ -372,6 +372,22 @@ const seedAll = db.transaction(() => {
 })
 seedAll()
 
+// Databases that predate the first-start setup wizard are already in use:
+// mark them set up so the wizard only appears on truly fresh installs
+// (no tables, no assets, no users beyond the env bootstrap admin).
+{
+  const marker = db.prepare("SELECT value FROM settings WHERE key='setup_completed'").get()
+  if (!marker) {
+    const count = (sql: string) => (db.prepare(sql).get() as { n: number }).n
+    const hasData = count('SELECT COUNT(*) AS n FROM tables') > 0
+      || count('SELECT COUNT(*) AS n FROM assets') > 0
+      || count('SELECT COUNT(*) AS n FROM users') > 1
+    if (hasData) {
+      db.prepare("INSERT INTO settings (key, value) VALUES ('setup_completed', 'pre-wizard')").run()
+    }
+  }
+}
+
 // Migration (one-time, guarded by a marker): door/window permissions
 // default to open for players; flip installs that still carry the old
 // 'false' seed. Later admin choices are never overridden.

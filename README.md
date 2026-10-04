@@ -9,6 +9,7 @@ or tablet (including Apple Pencil support).
 ## Documentation
 
 - [Deployment guide](DEPLOY.md) — Docker, configuration, Apache reverse proxy (HTTPS + WebSocket)
+- [Backup & restore](docs/BACKUP-RESTORE.md) — whole-instance backups, first-start setup wizard, per-driver semantics
 - [Admin (DM) guide](docs/ADMIN_GUIDE.md)
 - [Player guide](docs/PLAYER_GUIDE.md)
 - [UVTT props extension](docs/UVTT-PROPS.md) — placeable scenery (trees, furniture) in `.uvtt` bundles

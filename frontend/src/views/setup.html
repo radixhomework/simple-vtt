@@ -1,0 +1,48 @@
+<div class="login-wrap">
+  <div class="login-box">
+    <div class="login-logo">
+      <img src="/logo.png" alt="Simple VTT logo" />
+      <span class="login-title"><span class="t-ink">Simple</span> <span class="t-moss">VTT</span></span>
+    </div>
+
+    <div id="setup-wait" hidden>
+      <div class="setup-spinner" aria-hidden="true"></div>
+      <p class="setup-wait-title">Importing backup</p>
+      <progress id="setup-progress" class="setup-progress" value="0" max="100"></progress>
+      <p class="setup-progress-label" id="setup-progress-label">0%</p>
+      <p class="setup-hint" id="setup-wait-text"></p>
+    </div>
+
+    <div id="setup-choose">
+      <p class="setup-intro">Welcome! This is the first start of your Simple VTT instance. Set up an administrator account, or bring the data of a previous instance back by importing a backup.</p>
+      <button id="setup-go-credentials" class="login-btn" type="button">Create the first admin</button>
+      <button id="setup-go-restore" class="setup-secondary" type="button">Import a backup file</button>
+    </div>
+
+    <form id="setup-credentials" hidden>
+      <div class="login-field">
+        <label for="setup-user">Admin username</label>
+        <input id="setup-user" type="text" autocomplete="username" required />
+      </div>
+      <div class="login-field">
+        <label for="setup-pass">Password</label>
+        <input id="setup-pass" type="password" autocomplete="new-password" required />
+      </div>
+      <p class="setup-hint">If an environment-configured admin already exists (ADMIN_USERNAME / ADMIN_PASSWORD), submitting those credentials adopts it.</p>
+      <button class="login-btn" type="submit">Create and sign in</button>
+      <button class="setup-secondary" type="button" id="setup-cred-back">Back</button>
+      <div class="login-err" id="setup-err"></div>
+    </form>
+
+    <form id="setup-restore" hidden>
+      <div class="login-field">
+        <label for="setup-file">Backup archive (.zip)</label>
+        <input id="setup-file" type="file" accept=".zip,application/zip" required />
+      </div>
+      <p class="setup-hint">The backup replaces everything on this instance (users, maps, settings and — for local storage — all uploaded files). The server restarts when the import completes; this page follows the progress and opens the login page when the restore is done.</p>
+      <button class="login-btn" type="submit">Import backup</button>
+      <button class="setup-secondary" type="button" id="setup-restore-back">Back</button>
+      <div class="login-err" id="setup-err-restore"></div>
+    </form>
+  </div>
+</div>

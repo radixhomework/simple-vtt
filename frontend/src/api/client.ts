@@ -32,6 +32,45 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
 }
 
 export const api = {
+  // First-start setup (wizard; only served while setup is incomplete)
+  setupStatus: () => request<{ completed: boolean }>('GET', '/setup/status'),
+  setupAdmin: (username: string, password: string) =>
+    request<{ token: string; user: User }>('POST', '/setup/admin', { username, password }),
+  setupRestore: (file: File, onProgress?: (fraction: number) => void): Promise<{ ok: boolean; restarting: boolean }> =>
+    new Promise((resolve, reject) => {
+      // XHR rather than fetch: upload progress events keep the wizard's
+      // wait screen alive during potentially long transfers
+      const xhr = new XMLHttpRequest()
+      xhr.open('POST', BASE + '/setup/restore')
+      xhr.setRequestHeader('Content-Type', 'application/zip')
+      xhr.upload.onprogress = e => {
+        if (e.lengthComputable && onProgress) onProgress(e.loaded / e.total)
+      }
+      xhr.onload = () => {
+        if (xhr.status >= 200 && xhr.status < 300) {
+          resolve({ ok: true, restarting: true })
+        } else {
+          // Body is the server's JSON { error } when present
+          let msg = `restore failed (${xhr.status})`
+          try { msg = String(JSON.parse(xhr.responseText).error ?? msg) } catch { /* keep */ }
+          reject(new Error(msg))
+        }
+      }
+      xhr.onerror = () => reject(new Error('connection lost during restore'))
+      xhr.send(file)
+    }),
+  exportBackup: async (): Promise<void> => {
+    const res = await fetch(BASE + '/backup/export', { headers: authHeaders() })
+    if (!res.ok) throw new Error(`backup export: ${res.status}`)
+    const blob = await res.blob()
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = res.headers.get('Content-Disposition')?.match(/filename="([^"]+)"/)?.[1] ?? 'simple-vtt-backup.zip'
+    a.click()
+    URL.revokeObjectURL(url)
+  },
+
   // Auth
   login: (username: string, password: string) =>
     request<{ token: string; user: User }>('POST', '/auth/login', { username, password }),

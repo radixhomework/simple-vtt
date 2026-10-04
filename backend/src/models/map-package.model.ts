@@ -13,8 +13,8 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { db } from '../db'
 import { buildTilePyramid } from '../tiles'
+import { storage, keyOf } from '../storage'
 
-const uploadsDir = () => process.env.UPLOADS_DIR || path.join(process.cwd(), 'uploads')
 const userExists = (username: string) => !!db.prepare('SELECT username FROM users WHERE username=?').get(username)
 const setMember = (tableId: string, username: string, role: string) =>
   db.prepare('INSERT INTO map_members (table_id, username, role) VALUES (?,?,?) ON CONFLICT(table_id, username) DO UPDATE SET role=excluded.role').run(tableId, username, role)
@@ -82,10 +82,6 @@ export function sha256(buf: Buffer): string {
   return crypto.createHash('sha256').update(buf).digest('hex')
 }
 
-function uploadsFilePath(urlPath: string): string {
-  return path.join(uploadsDir(), path.basename(urlPath))
-}
-
 /** Collect every shared-library image referenced by a map (token icons + props). */
 export function referencedAssetPaths(tableId: string): string[] {
   const paths = new Set<string>()
@@ -99,12 +95,12 @@ export function referencedAssetPaths(tableId: string): string[] {
 }
 
 /** Library metadata for an uploads path (fallbacks when not registered). */
-export function assetMetaFor(urlPath: string): Omit<PackageAsset, 'zipPath'> {
+export async function assetMetaFor(urlPath: string): Promise<Omit<PackageAsset, 'zipPath'>> {
   const row = db.prepare('SELECT hash, folder, name FROM assets WHERE path=?').get(urlPath) as
     | { hash: string; folder: string; name: string }
     | undefined
   const ext = path.extname(urlPath).toLowerCase()
-  const buf = fs.readFileSync(uploadsFilePath(urlPath))
+  const buf = await storage().get(keyOf(urlPath))
   const base = path.basename(urlPath, path.extname(urlPath))
   return {
     hash: row?.hash && row.hash !== '' ? row.hash : sha256(buf),
@@ -115,7 +111,7 @@ export function assetMetaFor(urlPath: string): Omit<PackageAsset, 'zipPath'> {
 }
 
 /** Build the map package ZIP for a table (throws on missing files). */
-export function buildMapPackage(tableId: string, tableName: string): Buffer {
+export async function buildMapPackage(tableId: string, tableName: string): Promise<Buffer> {
   const table = db.prepare('SELECT id, name, owner, default_floor_id FROM tables WHERE id=?').get(tableId) as
     | { id: string; name: string; owner: string; default_floor_id: string }
     | undefined
@@ -150,12 +146,12 @@ export function buildMapPackage(tableId: string, tableName: string): Buffer {
   const assets: Array<Omit<PackageAsset, 'zipPath'> & { zipPath: string }> = []
   const usedHashes = new Set<string>()
 
-  const addLibraryAsset = (urlPath: string): string => {
-    const meta = assetMetaFor(urlPath)
+  const addLibraryAsset = async (urlPath: string): Promise<string> => {
+    const meta = await assetMetaFor(urlPath)
     let zipPath = `assets/${meta.hash}${meta.ext}`
     if (usedHashes.has(meta.hash)) return zipPath
     usedHashes.add(meta.hash)
-    const buf = fs.readFileSync(uploadsFilePath(urlPath))
+    const buf = await storage().get(keyOf(urlPath))
     zip.addFile(zipPath, buf)
     assets.push({ ...meta, zipPath })
     return zipPath
@@ -180,12 +176,11 @@ export function buildMapPackage(tableId: string, tableName: string): Buffer {
     }
     if (f.map_image_path) {
       entry.image = `floors/floor-${levelIdx}.png`
-      zip.addFile(entry.image, fs.readFileSync(uploadsFilePath(f.map_image_path)))
+      zip.addFile(entry.image, await storage().get(keyOf(f.map_image_path)))  // NOSONAR: sequential on purpose — ordered/dedup-critical storage ops
     }
-    const maskFile = path.join(uploadsDir(), `fog_${f.id}.png`)
-    if (fs.existsSync(maskFile)) {
+    if (await storage().exists(`fog_${f.id}.png`)) {  // NOSONAR: sequential on purpose — ordered/dedup-critical storage ops
       entry.fogMask = `masks/floor-${levelIdx}.png`
-      zip.addFile(entry.fogMask, fs.readFileSync(maskFile))
+      zip.addFile(entry.fogMask, await storage().get(`fog_${f.id}.png`))  // NOSONAR: sequential on purpose — ordered/dedup-critical storage ops
     }
     floorEntries.push(entry)
   }
@@ -193,12 +188,12 @@ export function buildMapPackage(tableId: string, tableName: string): Buffer {
   const iconZipByOld = new Map<string, string>()
   for (const t of tokens) {
     if (t.icon_path && !iconZipByOld.has(t.icon_path)) {
-      iconZipByOld.set(t.icon_path, addLibraryAsset(t.icon_path))
+      iconZipByOld.set(t.icon_path, await addLibraryAsset(t.icon_path))  // NOSONAR: sequential on purpose — ordered/dedup-critical storage ops
     }
   }
   for (const pr of props) {
     if (pr.asset_path && !iconZipByOld.has(pr.asset_path)) {
-      iconZipByOld.set(pr.asset_path, addLibraryAsset(pr.asset_path))
+      iconZipByOld.set(pr.asset_path, await addLibraryAsset(pr.asset_path))  // NOSONAR: sequential on purpose — ordered/dedup-critical storage ops
     }
   }
 
@@ -236,22 +231,22 @@ export function buildMapPackage(tableId: string, tableName: string): Buffer {
 /** Apply an uploaded map package: create the table + everything it carries.
  *  Returns the new table id. Only users that exist locally keep membership;
  *  the applying user always becomes dm/owner. */
-export function applyMapPackage(
+export async function applyMapPackage(
   zip: AdmZip,
   manifest: MapPackageManifest,
   tableName: string,
   owner: string,
-): ApplyMapResult {
+): Promise<ApplyMapResult> {
   const tableId = newPackageId()
   const counts = { floors: 0, tokens: 0, portals: 0, walls: 0, props: 0, stairs: 0, assetsAdded: 0, assetsReused: 0 }
 
-  const zipPathByOld = registerPackageAssets(zip, manifest, counts)
+  const zipPathByOld = await registerPackageAssets(zip, manifest, counts)
   const rewrite = (zipPath: string | undefined): string | undefined => (zipPath ? zipPathByOld.get(zipPath) : undefined)
 
   db.prepare('INSERT INTO tables (id, name, owner) VALUES (?,?,?)').run(tableId, tableName, owner)
   db.prepare("INSERT INTO map_members (table_id, username, role) VALUES (?,?,'dm')").run(tableId, owner)
 
-  const floorMap = applyPackageFloors(zip, manifest, tableId, counts)
+  const floorMap = await applyPackageFloors(zip, manifest, tableId, counts)
   applyPackageTokens(zip, manifest, tableId, counts, rewrite)
   applyPackagePortals(zip, manifest, tableId, counts, rewrite)
   applyPackageWalls(zip, manifest, tableId, counts, rewrite)
@@ -334,11 +329,11 @@ interface RawStair {
   radius: number
 }
 
-function registerPackageAssets(
+async function registerPackageAssets(
   zip: AdmZip,
   manifest: MapPackageManifest,
   counts: { assetsAdded: number; assetsReused: number },
-): Map<string, string> {
+): Promise<Map<string, string>> {
   const zipPathByRef = new Map<string, string>()
   for (const a of manifest.assets) {
     const entry = zip.getEntry(a.zipPath)
@@ -354,7 +349,7 @@ function registerPackageAssets(
     const buf = entry.getData()
     const newId = newPackageId()
     const fileUrl = `/uploads/asset_${newId}${a.ext}`
-    fs.writeFileSync(path.join(uploadsDir(), path.basename(fileUrl)), buf)
+    await storage().put(keyOf(fileUrl), buf)  // NOSONAR: sequential on purpose — ordered/dedup-critical storage ops
     db.prepare('INSERT INTO assets (id, kind, name, hash, path, size, folder) VALUES (?,?,?,?,?,?,?)')
       .run(newId, 'image', a.name, a.hash, fileUrl, buf.length, a.folder)
     zipPathByRef.set(a.zipPath, fileUrl)
@@ -363,12 +358,12 @@ function registerPackageAssets(
   return zipPathByRef
 }
 
-function applyPackageFloors(
+async function applyPackageFloors(
   zip: AdmZip,
   manifest: MapPackageManifest,
   tableId: string,
   counts: { floors: number },
-): Map<string, string> {
+): Promise<Map<string, string>> {
   const floorMap = new Map<string, string>()
   for (const f of manifest.floors) {
     const newId = newPackageId()
@@ -381,7 +376,7 @@ function applyPackageFloors(
         imageBuf = entry.getData()
         const ext = path.extname(f.image) || '.png'
         imagePath = `/uploads/map_${newId}${ext}`
-        fs.writeFileSync(path.join(uploadsDir(), path.basename(imagePath)), imageBuf)
+        await storage().put(keyOf(imagePath), imageBuf)  // NOSONAR: sequential on purpose — ordered/dedup-critical storage ops
       }
     }
     db.prepare(
